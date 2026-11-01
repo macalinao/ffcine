@@ -29,7 +29,9 @@ sha2.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-ffcine-import.workspace = true
+# Path only: cargo publish drops it, so a release doesn't need ffcine-import's new version on
+# crates.io first (release-plz orders publishes by normal dependencies only).
+ffcine-import = { path = "../ffcine-import" }
 
 [lints]
 workspace = true
