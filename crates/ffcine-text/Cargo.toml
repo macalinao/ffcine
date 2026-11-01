@@ -1,0 +1,25 @@
+[package]
+name = "ffcine-text"
+description = "ffcine.text generator clips: styles, cosmic-text layout, GPU overlays; .ass import"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ffcine-core.workspace = true
+ffcine-timeline.workspace = true
+ffcine-render.workspace = true
+cosmic-text.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

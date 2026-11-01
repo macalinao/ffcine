@@ -1,0 +1,167 @@
+<?xml version="1.0" standalone="no"?>
+<!-- Hand-written for ffcine's MLT importer tests (Shotcut 24 layout). -->
+<mlt LC_NUMERIC="C" version="7.24.0" title="Shotcut version 24.04.28" producer="main_bin">
+  <profile description="HD 1080p 29.97 fps" width="1920" height="1080" progressive="1" sample_aspect_num="1" sample_aspect_den="1" display_aspect_num="16" display_aspect_den="9" frame_rate_num="30000" frame_rate_den="1001" colorspace="709"/>
+  <playlist id="main_bin">
+    <property name="xml_retain">1</property>
+  </playlist>
+  <producer id="black" in="00:00:00.000" out="00:00:05.472">
+    <property name="length">00:00:05.506</property>
+    <property name="resource">0</property>
+    <property name="mlt_service">color</property>
+  </producer>
+  <playlist id="background">
+    <entry producer="black" in="00:00:00.000" out="00:00:05.472"/>
+  </playlist>
+  <producer id="producer0" in="00:00:00.000" out="00:00:09.977">
+    <property name="length">00:00:10.010</property>
+    <property name="resource">/media/clips/one.mp4</property>
+    <property name="mlt_service">avformat-novalidate</property>
+    <property name="shotcut:caption">one.mp4</property>
+    <filter id="filter0" out="00:00:01.969">
+      <property name="background">color:#00000000</property>
+      <property name="mlt_service">affine</property>
+      <property name="shotcut:filter">affineSizePosition</property>
+      <property name="transition.fill">1</property>
+      <property name="transition.distort">1</property>
+      <property name="transition.rect">00:00:00.000=0 0 1920 1080 1;00:00:01.001=960 0 960 540 1</property>
+      <property name="transition.valign">top</property>
+      <property name="transition.halign">left</property>
+    </filter>
+    <filter id="filter1" out="00:00:01.969">
+      <property name="mlt_service">brightness</property>
+      <property name="shotcut:filter">brightnessOpacity</property>
+      <property name="level">1</property>
+      <property name="alpha">0.6</property>
+    </filter>
+  </producer>
+  <chain id="chain0" out="00:00:09.977">
+    <property name="length">00:00:10.010</property>
+    <property name="resource">/media/clips/two.mp4</property>
+    <property name="mlt_service">avformat-novalidate</property>
+    <property name="shotcut:caption">two.mp4</property>
+    <link id="link0">
+      <property name="mlt_service">timeremap</property>
+      <property name="time_map">0=0;44=1;89=6</property>
+      <property name="pitch">0</property>
+    </link>
+  </chain>
+  <tractor id="tractor0" title="lumaMix" in="0" out="14">
+    <property name="shotcut:transition">lumaMix</property>
+    <track producer="producer0" in="60" out="74"/>
+    <track producer="chain0" in="0" out="14"/>
+    <transition id="transition0" out="14">
+      <property name="a_track">0</property>
+      <property name="b_track">1</property>
+      <property name="factory">loader</property>
+      <property name="mlt_service">luma</property>
+      <property name="alpha_over">1</property>
+    </transition>
+    <transition id="transition1" out="14">
+      <property name="a_track">0</property>
+      <property name="b_track">1</property>
+      <property name="start">-1</property>
+      <property name="accepts_blanks">1</property>
+      <property name="mlt_service">mix</property>
+    </transition>
+  </tractor>
+  <playlist id="playlist0">
+    <property name="shotcut:video">1</property>
+    <property name="shotcut:name">V1</property>
+    <entry producer="producer0" in="0" out="59"/>
+    <entry producer="tractor0" in="0" out="14"/>
+    <entry producer="chain0" in="15" out="104"/>
+  </playlist>
+  <producer id="producer1" in="00:00:00.000" out="00:00:02.969">
+    <property name="length">00:00:03.003</property>
+    <property name="resource">#00000000</property>
+    <property name="mlt_service">color</property>
+    <property name="shotcut:caption">transparent</property>
+    <filter id="filter2">
+      <property name="argument">Hello Shotcut</property>
+      <property name="geometry">0 810 1920 270 1</property>
+      <property name="family">Sans</property>
+      <property name="size">96</property>
+      <property name="weight">700</property>
+      <property name="style">normal</property>
+      <property name="fgcolour">#ffffff00</property>
+      <property name="halign">center</property>
+      <property name="valign">bottom</property>
+      <property name="mlt_service">dynamictext</property>
+      <property name="shotcut:filter">dynamicText</property>
+    </filter>
+  </producer>
+  <playlist id="playlist1">
+    <property name="shotcut:video">1</property>
+    <property name="shotcut:name">V2</property>
+    <blank length="00:00:01.001"/>
+    <entry producer="producer1" in="00:00:00.000" out="00:00:02.969"/>
+  </playlist>
+  <producer id="producer2" in="00:00:00.000" out="00:00:29.997">
+    <property name="length">00:00:30.030</property>
+    <property name="resource">/media/audio/music.wav</property>
+    <property name="mlt_service">avformat-novalidate</property>
+    <property name="shotcut:caption">music.wav</property>
+  </producer>
+  <playlist id="playlist2">
+    <property name="shotcut:audio">1</property>
+    <property name="shotcut:name">A1</property>
+    <entry producer="producer2" in="0" out="164">
+      <filter id="filter3">
+        <property name="window">75</property>
+        <property name="max_gain">20dB</property>
+        <property name="level">00:00:00.000=-60;00:00:01.001=0</property>
+        <property name="mlt_service">volume</property>
+        <property name="shotcut:filter">fadeInVolume</property>
+      </filter>
+      <filter id="filter4">
+        <property name="mlt_service">frei0r.bw0r</property>
+        <property name="shotcut:filter">unknownThing</property>
+      </filter>
+    </entry>
+  </playlist>
+  <tractor id="tractor1" title="Shotcut version 24.04.28" in="00:00:00.000" out="00:00:05.472">
+    <property name="shotcut">1</property>
+    <properties name="shotcut:markers">
+      <properties name="0">
+        <property name="text">Beat</property>
+        <property name="start">00:00:01.001</property>
+        <property name="end">00:00:01.001</property>
+        <property name="color">#008000</property>
+      </properties>
+      <properties name="1">
+        <property name="text">Range</property>
+        <property name="start">60</property>
+        <property name="end">90</property>
+        <property name="color">#ff0000</property>
+      </properties>
+    </properties>
+    <track producer="background"/>
+    <track producer="playlist0"/>
+    <track producer="playlist1"/>
+    <track producer="playlist2" hide="video"/>
+    <transition id="transition2">
+      <property name="a_track">0</property>
+      <property name="b_track">1</property>
+      <property name="mlt_service">mix</property>
+      <property name="always_active">1</property>
+      <property name="sum">1</property>
+    </transition>
+    <transition id="transition3">
+      <property name="a_track">0</property>
+      <property name="b_track">1</property>
+      <property name="version">0.1</property>
+      <property name="mlt_service">frei0r.cairoblend</property>
+      <property name="threads">0</property>
+      <property name="disable">1</property>
+    </transition>
+    <transition id="transition4">
+      <property name="a_track">1</property>
+      <property name="b_track">2</property>
+      <property name="version">0.1</property>
+      <property name="mlt_service">frei0r.cairoblend</property>
+      <property name="threads">0</property>
+      <property name="disable">0</property>
+    </transition>
+  </tractor>
+</mlt>

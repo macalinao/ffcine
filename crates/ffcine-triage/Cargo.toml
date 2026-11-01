@@ -1,0 +1,31 @@
+[package]
+name = "ffcine-triage"
+description = "ffcine triage: clip index from proxies (contact strips, scene cuts, speech map, word-timed transcripts, runaway flags), search, clip page, word-boundary snapping"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[features]
+default = ["ffmpeg"]
+# Decode proxies (LRF on the CPU, other clips on NVDEC with resize) and audio through libav*.
+ffmpeg = ["dep:ffmpeg-next"]
+
+[dependencies]
+ffcine-ingest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+ffmpeg-next = { workspace = true, optional = true }
+# Immich API (clip locations); plain HTTP on the LAN.
+ureq = { version = "3", default-features = false, features = ["json"] }
+
+[lints]
+workspace = true

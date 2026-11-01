@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__</title>
+<style>
+:root { --fg:#1d1d1f; --mute:#6e6e73; --line:#e5e5ea; --ok:#1f8a4c; --no:#c0392b; --warn:#b26a00; }
+* { box-sizing: border-box; }
+body { margin:0; font:15px/1.45 -apple-system, system-ui, sans-serif; color:var(--fg); background:#fafafa; }
+header { position:sticky; top:0; z-index:2; background:#fff; border-bottom:1px solid var(--line);
+  display:flex; flex-wrap:wrap; gap:.5rem; align-items:center; padding:.6rem 1rem; }
+header h1 { font-size:1rem; margin:0 .5rem 0 0; }
+header input[type=search] { flex:1 1 14rem; padding:.45rem .6rem; border:1px solid var(--line); border-radius:8px; font:inherit; }
+header select, header button, header label { font:inherit; padding:.4rem .7rem; border:1px solid var(--line); border-radius:8px; background:#fff; cursor:pointer; }
+#count { color:var(--mute); font-size:.85rem; }
+main { padding:1rem; display:grid; grid-template-columns:minmax(0, 1fr); gap:1rem; max-width:1400px; margin:auto; }
+.clip { background:#fff; border:1px solid var(--line); border-radius:12px; padding:.75rem; }
+.clip.approved { border-color:var(--ok); box-shadow:inset 4px 0 var(--ok); }
+.clip.rejected { opacity:.55; }
+.head { display:flex; flex-wrap:wrap; gap:.4rem .8rem; align-items:baseline; }
+.id { font-weight:600; }
+.meta { color:var(--mute); font-size:.85rem; }
+.flag { font-size:.75rem; padding:.05rem .45rem; border-radius:99px; background:#fff4e0; color:var(--warn); }
+.strip-wrap { overflow-x:auto; margin:.5rem 0; }
+.strip-wrap img { max-width:none; width:auto; height:108px; }
+.text { font-size:.9rem; }
+.text .seg { display:block; }
+.text .tc { color:var(--mute); font-variant-numeric:tabular-nums; margin-right:.4rem; }
+mark { background:#ffe58a; }
+.actions { display:flex; gap:.5rem; align-items:center; margin-top:.5rem; }
+.actions button { font:inherit; padding:.35rem .9rem; border-radius:8px; border:1px solid var(--line); background:#fff; cursor:pointer; }
+.approved .ok { background:var(--ok); color:#fff; border-color:var(--ok); }
+.rejected .no { background:var(--no); color:#fff; border-color:var(--no); }
+.actions input { flex:1; font:inherit; padding:.35rem .6rem; border:1px solid var(--line); border-radius:8px; }
+details summary { cursor:pointer; color:var(--mute); font-size:.85rem; }
+</style>
+</head>
+<body>
+<header>
+  <h1>__TITLE__</h1>
+  <input type="search" id="q" placeholder="Search">
+  <select id="filter">
+    <option value="all">All</option>
+    <option value="speech">Speech</option>
+    <option value="flagged">Flagged</option>
+    <option value="undecided">Undecided</option>
+    <option value="approved">Approved</option>
+    <option value="rejected">Rejected</option>
+  </select>
+  <span id="count"></span>
+  <button id="export">Export</button>
+  <label>Import<input type="file" id="import" accept=".json" hidden></label>
+</header>
+<main id="clips"></main>
+<script type="application/json" id="data">__DATA__</script>
+<script>
+const D = JSON.parse(document.getElementById('data').textContent);
+const KEY = 'ffcine-triage:' + D.root;
+let state = JSON.parse(localStorage.getItem(KEY) || '{}');
+const save = () => localStorage.setItem(KEY, JSON.stringify(state));
+const tc = t => { t = Math.max(0, t); const h = Math.floor(t / 3600), m = Math.floor(t / 60) % 60, s = Math.floor(t % 60);
+  return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(s).padStart(2, '0'); };
+const esc = s => s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fold = s => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+const main = document.getElementById('clips');
+const cards = D.clips.map(c => {
+  const el = document.createElement('section');
+  el.className = 'clip';
+  const flags = c.flags.map(f => `<span class="flag" title="${esc(f.detail)}">${f.kind}</span>`).join('');
+  const meta = [c.recorded && c.recorded.replace('T', ' '), tc(c.duration), c.lang, c.location].filter(Boolean).join(' · ');
+  const strip = c.strip ? `<div class="strip-wrap"><img loading="lazy" src="${esc(c.strip)}" alt="" title="${c.times.map(tc).join('  ')}"></div>` : '';
+  el.innerHTML = `<div class="head"><span class="id">${esc(c.id)}</span><span class="meta">${esc(meta)}</span>${flags}</div>${strip}
+    <div class="text"></div>
+    <div class="actions"><button class="ok">Use</button><button class="no">Skip</button><input placeholder="Note"></div>`;
+  c.search = fold(c.id + ' ' + (c.location || '') + ' ' + c.segments.map(s => s[1]).join(' '));
+  const st = () => state[c.id] || {};
+  const paint = () => { el.classList.toggle('approved', st().pick === 'use'); el.classList.toggle('rejected', st().pick === 'skip'); };
+  const pick = v => { state[c.id] = {...st(), pick: st().pick === v ? undefined : v}; save(); paint(); render(); };
+  el.querySelector('.ok').onclick = () => pick('use');
+  el.querySelector('.no').onclick = () => pick('skip');
+  const note = el.querySelector('input');
+  note.value = st().note || '';
+  note.oninput = () => { state[c.id] = {...st(), note: note.value}; save(); };
+  paint();
+  return {c, el};
+});
+function text(c, q) {
+  if (!c.segments.length) return '';
+  const hl = s => { let h = esc(s); if (q) for (const w of q.split(/\s+/)) if (w) h = h.replace(new RegExp('(' + w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'ig'), '<mark>$1</mark>'); return h; };
+  const segs = c.segments.map(([t, s]) => `<span class="seg"><span class="tc">${tc(t)}</span>${hl(s)}</span>`);
+  if (q || segs.length <= 3) return segs.join('');
+  return segs.slice(0, 2).join('') + `<details><summary>${segs.length - 2} more</summary>${segs.slice(2).join('')}</details>`;
+}
+function render() {
+  const q = fold(document.getElementById('q').value.trim());
+  const f = document.getElementById('filter').value;
+  let n = 0;
+  for (const {c, el} of cards) {
+    const p = (state[c.id] || {}).pick;
+    const show = (!q || q.split(/\s+/).every(w => c.search.includes(w))) &&
+      (f === 'all' || (f === 'speech' && c.segments.length) || (f === 'flagged' && c.flags.length) ||
+       (f === 'undecided' && !p) || (f === 'approved' && p === 'use') || (f === 'rejected' && p === 'skip'));
+    el.hidden = !show;
+    if (show) { n++; el.querySelector('.text').innerHTML = text(c, q); if (!el.parentNode) main.append(el); }
+  }
+  const used = cards.filter(({c}) => (state[c.id] || {}).pick === 'use').length;
+  document.getElementById('count').textContent = `${n} / ${cards.length} · ${used} used`;
+}
+cards.forEach(({el}) => main.append(el));
+document.getElementById('q').oninput = render;
+document.getElementById('filter').onchange = render;
+document.getElementById('export').onclick = () => {
+  const out = {root: D.root, clips: D.clips.filter(c => state[c.id] && (state[c.id].pick || state[c.id].note))
+    .map(c => ({id: c.id, source: c.source, pick: state[c.id].pick || null, note: state[c.id].note || ''}))};
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(out, null, 2)], {type: 'application/json'}));
+  a.download = 'approvals.json';
+  a.click();
+};
+document.getElementById('import').onchange = async e => {
+  const f = e.target.files[0]; if (!f) return;
+  for (const c of JSON.parse(await f.text()).clips || []) state[c.id] = {pick: c.pick || undefined, note: c.note || ''};
+  save(); location.reload();
+};
+render();
+</script>
+</body>
+</html>

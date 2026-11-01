@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE fcpxml>
+
+<!-- Hand-written per the FCPXML 1.9 DTD: one of each thing the ffcine reader maps. 25p, 1920x1080. -->
+<fcpxml version="1.9">
+    <resources>
+        <format id="r1" name="FFVideoFormat1080p25" frameDuration="100/2500s" width="1920" height="1080" colorSpace="1-1-1 (Rec. 709)"/>
+        <asset id="r2" name="beach" uid="A1" start="3600s" duration="60s" hasVideo="1" hasAudio="1" format="r1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" sig="A1" src="file:///media/beach.mov"/>
+            <metadata>
+                <md key="com.apple.proapps.studio.reel" value="A001"/>
+            </metadata>
+        </asset>
+        <asset id="r3" name="street" uid="A2" start="0s" duration="30s" hasVideo="1" hasAudio="1" format="r1">
+            <media-rep kind="original-media" src="file:///media/street.mov"/>
+        </asset>
+        <asset id="r4" name="music" uid="A3" start="0s" duration="120s" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" src="file:///media/music.wav"/>
+        </asset>
+        <asset id="r5" name="slowmo" uid="A4" start="0s" duration="20s" hasVideo="1" format="r1">
+            <media-rep kind="original-media" src="file:///media/slowmo.mov"/>
+        </asset>
+        <effect id="r6" name="Cross Dissolve" uid="FxPlug:4731E73A-8DAC-4113-9A30-AE85B1761265"/>
+        <effect id="r7" name="Basic Title" uid=".../Titles.localized/Bumper:Opener.localized/Basic Title.localized/Basic Title.moti"/>
+        <effect id="r8" name="Color Board" uid="FFColorBoard"/>
+        <effect id="r9" name="Gaussian Blur" uid="FFGaussianBlur"/>
+        <effect id="r10" name="Slide" uid="FxPlug:Slide"/>
+    </resources>
+    <library location="file:///Users/me/Movies/Test.fcpbundle/">
+        <event name="Day 1">
+            <project name="Features">
+                <sequence format="r1" duration="30s" tcStart="0s" tcFormat="NDF" audioLayout="stereo" audioRate="48k">
+                    <spine>
+                        <asset-clip name="beach" ref="r2" offset="0s" start="3610s" duration="10s" format="r1" tcFormat="NDF">
+                            <adjust-crop mode="trim">
+                                <trim-rect left="10" right="10" top="5" bottom="5"/>
+                            </adjust-crop>
+                            <adjust-transform position="10 -5" scale="1.2 1.2" rotation="15" anchor="0 0">
+                                <param name="position">
+                                    <keyframeAnimation>
+                                        <keyframe time="3610s" value="0 0"/>
+                                        <keyframe time="3615s" value="10 -5" interp="ease"/>
+                                    </keyframeAnimation>
+                                </param>
+                            </adjust-transform>
+                            <adjust-blend amount="0.8" mode="Multiply"/>
+                            <adjust-volume amount="-6dB">
+                                <param name="amount">
+                                    <keyframeAnimation>
+                                        <keyframe time="3610s" value="-96dB"/>
+                                        <keyframe time="3611s" value="-6dB"/>
+                                    </keyframeAnimation>
+                                </param>
+                            </adjust-volume>
+                            <filter-video ref="r8" name="Color Board">
+                                <param name="Color" key="1" value="0 0 0"/>
+                                <info-asc-cdl slope="1.1 1.0 0.9" offset="0.01 0 -0.01" power="1 1 1.05"/>
+                            </filter-video>
+                            <filter-video ref="r9" name="Gaussian Blur">
+                                <param name="Amount" key="1" value="12"/>
+                            </filter-video>
+                            <marker start="3612s" duration="1/25s" value="Wave" note="big one"/>
+                            <chapter-marker start="3611s" duration="1/25s" value="Intro" posterOffset="0s"/>
+                            <asset-clip name="music" ref="r4" lane="-1" offset="3610s" duration="20s" audioRole="music"/>
+                            <title name="Hello" ref="r7" lane="1" offset="3611s" duration="4s" start="0s">
+                                <param name="Position" key="9999/999166631/999166633/1/100/101" value="0 -400"/>
+                                <param name="Flatten" key="9999/999166631/999166633/2/351" value="1"/>
+                                <text>
+                                    <text-style ref="ts1">Hello beach</text-style>
+                                </text>
+                                <text-style-def id="ts1">
+                                    <text-style font="Helvetica" fontSize="72" fontFace="Bold" fontColor="1 0.9 0.2 1" bold="1" alignment="center"/>
+                                </text-style-def>
+                            </title>
+                        </asset-clip>
+                        <transition name="Cross Dissolve" offset="9s" duration="2s">
+                            <filter-video ref="r6" name="Cross Dissolve">
+                                <param name="Amount" key="2" value="50"/>
+                            </filter-video>
+                        </transition>
+                        <clip name="street" offset="10s" duration="8s" start="2s" tcFormat="NDF">
+                            <conform-rate srcFrameRate="50"/>
+                            <video ref="r3" offset="0s" duration="30s"/>
+                            <clip name="street" lane="-1" offset="2s" duration="8s" start="2s">
+                                <gap name="Gap" offset="0s" duration="30s">
+                                    <audio lane="-1" ref="r3" offset="0s" duration="30s" role="dialogue"/>
+                                </gap>
+                            </clip>
+                        </clip>
+                        <gap name="Gap" offset="18s" duration="2s" start="3600s"/>
+                        <transition name="Slide" offset="19s" duration="2s">
+                            <filter-video ref="r10" name="Slide"/>
+                        </transition>
+                        <asset-clip name="slowmo" ref="r5" offset="20s" duration="10s" start="0s">
+                            <timeMap>
+                                <timept time="0s" value="0s" interp="smooth2"/>
+                                <timept time="5s" value="2.5s" interp="smooth2"/>
+                                <timept time="10s" value="10s" interp="linear"/>
+                            </timeMap>
+                            <adjust-stabilization type="automatic"/>
+                        </asset-clip>
+                    </spine>
+                </sequence>
+            </project>
+        </event>
+    </library>
+</fcpxml>

@@ -1,0 +1,24 @@
+//!HOOK OUTPUT
+//!BIND HOOKED
+//!DESC grain: render.py assembly noise (c0s=3, temporal uniform, luma only)
+// Port of render.py's `noise=c0s=g:c0f=t+u:c1s=0.4g:...` at g=3 (edit.yaml grain.final).
+// Measured on that ffmpeg: vf_noise only takes 8-bit formats, so the yuv444p16le chain is converted
+// to yuv444p around it; luma noise is +-1 code value (std 0.0032 of full scale, tv-range Y), and the
+// chroma strengths 1.2 truncate to int 1, which adds nothing. So: luma only, new pattern every frame.
+// Here: continuous uniform noise with the same std, added equally to R, G and B (changes Y only),
+// at OUTPUT (output RGB, before libplacebo's dither). In full-range RGB, Y' std 0.0032 * 219/255
+// tv range -> 0.003726; uniform [-A, A] has std A/sqrt(3) -> A = 0.00645.
+uint pcg(uint v) {
+    uint s = v * 747796405u + 2891336453u;
+    uint w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
+    return (w >> 22u) ^ w;
+}
+#define AMP 0.00645
+vec4 hook() {
+    vec4 c = HOOKED_texOff(vec2(0.0));
+    uvec2 p = uvec2(HOOKED_pos * HOOKED_size);
+    uint h = pcg(p.x + pcg(p.y + pcg(uint(frame))));
+    float u = float(h) * (2.0 / 4294967295.0) - 1.0;
+    c.rgb += AMP * u;
+    return c;
+}

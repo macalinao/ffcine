@@ -1,0 +1,22 @@
+[package]
+name = "ffcine-timeline"
+description = "ffcine timeline: OTIO JSON model, ffcine metadata namespace, project grade layering"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ffcine-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

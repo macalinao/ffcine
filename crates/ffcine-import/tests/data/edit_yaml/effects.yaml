@@ -1,0 +1,63 @@
+# Effects, transitions, overlays and beat snapping, for the importer tests (media as edit.yaml).
+sources:
+  dji_dir: media
+  iphone_dir: media
+
+output:
+  fps: 24000/1001
+
+grain: {preview: 2.0, final: 1.2}
+
+looks:
+  night: {warmth: -0.03, contrast: 0.1}
+
+title: {shot: a, title: Effects, title_at: 0.3, out_at: 1.6, out_duration: 0.5}
+cards: {delay: 0.4, fade_in: 0.7, hold: 2.5, fade_out: 0.6}
+
+music:
+  tracks:
+    m: {file: music.mp3}
+  snap_max: 0.45
+  cues:
+    - {track: m, shot: a, in: 0.1, snap_in: true}
+
+shots:
+  - {id: a, src: dji:0001, in: 0, out: 2.1, vignette: 0.35, darken: 0.8, fade_in: 0.5, card: hello}
+  - {id: b, src: dji:0002, in: 0, out: 2, freeze: 1.0, flash: true, fade_out: 0.8, vignette: 0.2,
+     transition: dip}
+  - {id: c, src: iphone:IMG_1.HEIC, live: true, still_dur: 1, out: 1.5,
+     transition: {kind: whip, direction: right}}
+  - id: d
+    layout: split
+    dur: 2
+    vignette: 0.3
+    fade_out: 0.5
+    transition: {kind: flash, dur: 0.3}
+    panels:
+      - {src: dji:0001, in: 1}
+      - {src: dji:0002, in: 1}
+  - id: e
+    layout: 1+2
+    dur: 2
+    dissolve: 0.4
+    transition: {kind: dip, colour: white}
+    panels:
+      - {src: dji:0001, in: 2}
+      - {src: dji:0002, in: 2}
+      - {src: iphone:IMG_2.MOV}
+  - id: f
+    src: dji:0001
+    in: 3
+    out: 6
+    dissolve: 0.5
+    snap: false
+    overlays:
+      - image: iphone:logo.png
+        at: 0.5
+        dur: 2
+        scale: 0.2
+        position: [[0, [0.3, -0.3]], [1, [0.35, -0.3]]]
+        opacity: [{t: 0, v: 0}, {t: 0.5, v: 1, interp: ease}]
+      - {src: dji:0002, in: 1, at: 0.5, dur: 2, scale: 0.4, position: [0.25, 0.25], radius: 0.03,
+         fade_in: 0.3, fade_out: 0.3, look: night}
+  - {id: g, src: dji:0002, in: 0, out: 2, audio: orig}

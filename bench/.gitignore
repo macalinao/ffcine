@@ -1,0 +1,9 @@
+# renders, frame grabs and raw run logs live in /tmp/ffcine-bench; never commit media
+*.mkv
+*.mp4
+*.png
+*.trf
+*.raw
+runs/
+out/
+__pycache__/

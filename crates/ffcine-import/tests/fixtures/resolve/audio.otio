@@ -1,0 +1,721 @@
+{
+  "OTIO_SCHEMA": "Timeline.1",
+  "metadata": {
+    "Resolve_OTIO": {
+      "Resolve OTIO Meta Version": "1.0"
+    }
+  },
+  "name": "audio",
+  "global_start_time": {
+    "OTIO_SCHEMA": "RationalTime.1",
+    "rate": 24.0,
+    "value": 86400.0
+  },
+  "tracks": {
+    "OTIO_SCHEMA": "Stack.1",
+    "metadata": {},
+    "name": "",
+    "source_range": null,
+    "effects": [],
+    "markers": [],
+    "enabled": true,
+    "children": [
+      {
+        "OTIO_SCHEMA": "Track.1",
+        "metadata": {
+          "Resolve_OTIO": {
+            "Audio Type": "Stereo",
+            "Locked": false,
+            "SoloOn": false
+          }
+        },
+        "name": "Audio 1",
+        "source_range": null,
+        "effects": [],
+        "markers": [],
+        "enabled": true,
+        "children": [
+          {
+            "OTIO_SCHEMA": "Clip.2",
+            "metadata": {
+              "Resolve_OTIO": {
+                "Channels": [
+                  {
+                    "Source Channel ID": 0,
+                    "Source Track ID": 0
+                  }
+                ],
+                "Link Group ID": 1
+              }
+            },
+            "name": "quiet.wav",
+            "source_range": {
+              "OTIO_SCHEMA": "TimeRange.1",
+              "duration": {
+                "OTIO_SCHEMA": "RationalTime.1",
+                "rate": 24.0,
+                "value": 48.0
+              },
+              "start_time": {
+                "OTIO_SCHEMA": "RationalTime.1",
+                "rate": 24.0,
+                "value": 0.0
+              }
+            },
+            "effects": [
+              {
+                "OTIO_SCHEMA": "Effect.1",
+                "metadata": {
+                  "Resolve_OTIO": {
+                    "Effect Name": "Fairlight Clip Volume and Fades",
+                    "Enabled": true,
+                    "Name": "Volume",
+                    "Parameters": [
+                      {
+                        "Default Parameter Value": 0.0,
+                        "Key Frames": {},
+                        "Parameter ID": "volume",
+                        "Parameter Value": -6.0,
+                        "Variant Type": "Double",
+                        "maxValue": 30.0,
+                        "minValue": -100.0
+                      }
+                    ],
+                    "Type": 62
+                  }
+                },
+                "name": "",
+                "effect_name": "Resolve Effect"
+              },
+              {
+                "OTIO_SCHEMA": "Effect.1",
+                "metadata": {
+                  "Resolve_OTIO": {
+                    "Effect Name": "Fairlight Clip Pan",
+                    "Enabled": true,
+                    "Name": "Pan",
+                    "Parameters": [],
+                    "Type": 72
+                  }
+                },
+                "name": "",
+                "effect_name": "Resolve Effect"
+              },
+              {
+                "OTIO_SCHEMA": "Effect.1",
+                "metadata": {
+                  "Resolve_OTIO": {
+                    "Effect Name": "Fairlight Clip Pitch",
+                    "Enabled": true,
+                    "Name": "Pitch",
+                    "Parameters": [],
+                    "Type": 67
+                  }
+                },
+                "name": "",
+                "effect_name": "Resolve Effect"
+              },
+              {
+                "OTIO_SCHEMA": "Effect.1",
+                "metadata": {
+                  "Resolve_OTIO": {
+                    "Effect Name": "Fairlight Clip Equaliser",
+                    "Enabled": false,
+                    "Name": "Equalizer",
+                    "Parameters": [],
+                    "Type": 64
+                  }
+                },
+                "name": "",
+                "effect_name": "Resolve Effect"
+              },
+              {
+                "OTIO_SCHEMA": "Effect.1",
+                "metadata": {
+                  "Resolve_OTIO": {
+                    "Effect Name": "Fairlight Equaliser Band",
+                    "Enabled": false,
+                    "Name": "Equalizer Band",
+                    "Parameters": [
+                      {
+                        "Default Parameter Value": 0,
+                        "Parameter ID": "eq band index",
+                        "Parameter Value": 0,
+                        "Variant Type": "Int",
+                        "maxValue": 3.0,
+                        "minValue": -1.0
+                      }
+                    ],
+                    "Type": 63
+                  }
+                },
+                "name": "",
+                "effect_name": "Resolve Effect"
+              },
+              {
+                "OTIO_SCHEMA": "Effect.1",
+                "metadata": {
+                  "Resolve_OTIO": {
+                    "Effect Name": "Fairlight Equaliser Band",
+                    "Enabled": false,
+                    "Name": "Equalizer Band",
+                    "Parameters": [
+                      {
+                        "Default Parameter Value": 0,
+                        "Parameter ID": "eq band index",
+                        "Parameter Value": 1,
+                        "Variant Type": "Int",
+                        "maxValue": 3.0,
+                        "minValue": -1.0
+                      }
+                    ],
+                    "Type": 63
+                  }
+                },
+                "name": "",
+                "effect_name": "Resolve Effect"
+              }
+            ],
+            "markers": [],
+            "enabled": true,
+            "media_references": {
+              "DEFAULT_MEDIA": {
+                "OTIO_SCHEMA": "ExternalReference.1",
+                "metadata": {},
+                "name": "quiet.wav",
+                "available_range": {
+                  "OTIO_SCHEMA": "TimeRange.1",
+                  "duration": {
+                    "OTIO_SCHEMA": "RationalTime.1",
+                    "rate": 24.0,
+                    "value": 10000.0
+                  },
+                  "start_time": {
+                    "OTIO_SCHEMA": "RationalTime.1",
+                    "rate": 24.0,
+                    "value": 0.0
+                  }
+                },
+                "available_image_bounds": null,
+                "target_url": "/media/quiet.wav"
+              }
+            },
+            "active_media_reference_key": "DEFAULT_MEDIA"
+          },
+          {
+            "OTIO_SCHEMA": "Clip.2",
+            "metadata": {
+              "Resolve_OTIO": {}
+            },
+            "name": "ride.wav",
+            "source_range": {
+              "OTIO_SCHEMA": "TimeRange.1",
+              "duration": {
+                "OTIO_SCHEMA": "RationalTime.1",
+                "rate": 24.0,
+                "value": 48.0
+              },
+              "start_time": {
+                "OTIO_SCHEMA": "RationalTime.1",
+                "rate": 24.0,
+                "value": 0.0
+              }
+            },
+            "effects": [
+              {
+                "OTIO_SCHEMA": "Effect.1",
+                "metadata": {
+                  "Resolve_OTIO": {
+                    "Effect Name": "Fairlight Clip Volume and Fades",
+                    "Enabled": true,
+                    "Name": "Volume",
+                    "Parameters": [
+                      {
+                        "Default Parameter Value": 0.0,
+                        "Key Frames": {
+                          "0": {
+                            "OutBez": {
+                              "OutBez": [
+                                5.0,
+                                0.0
+                              ],
+                              "Variant Type": "POINTF"
+                            },
+                            "Value": -20.0,
+                            "Variant Type": "Double"
+                          },
+                          "24": {
+                            "InBez": {
+                              "InBez": [
+                                -5.0,
+                                0.0
+                              ],
+                              "Variant Type": "POINTF"
+                            },
+                            "Value": 0.0,
+                            "Variant Type": "Double"
+                          }
+                        },
+                        "Parameter ID": "volume",
+                        "Parameter Value": 0.0,
+                        "Variant Type": "Double",
+                        "maxValue": 30.0,
+                        "minValue": -100.0
+                      }
+                    ],
+                    "Type": 62
+                  }
+                },
+                "name": "",
+                "effect_name": "Resolve Effect"
+              },
+              {
+                "OTIO_SCHEMA": "Effect.1",
+                "metadata": {
+                  "Resolve_OTIO": {
+                    "Effect Name": "Fairlight Clip Pan",
+                    "Enabled": true,
+                    "Name": "Pan",
+                    "Parameters": [],
+                    "Type": 72
+                  }
+                },
+                "name": "",
+                "effect_name": "Resolve Effect"
+              },
+              {
+                "OTIO_SCHEMA": "Effect.1",
+                "metadata": {
+                  "Resolve_OTIO": {
+                    "Effect Name": "Fairlight Clip Pitch",
+                    "Enabled": true,
+                    "Name": "Pitch",
+                    "Parameters": [],
+                    "Type": 67
+                  }
+                },
+                "name": "",
+                "effect_name": "Resolve Effect"
+              },
+              {
+                "OTIO_SCHEMA": "Effect.1",
+                "metadata": {
+                  "Resolve_OTIO": {
+                    "Effect Name": "Fairlight Clip Equaliser",
+                    "Enabled": false,
+                    "Name": "Equalizer",
+                    "Parameters": [],
+                    "Type": 64
+                  }
+                },
+                "name": "",
+                "effect_name": "Resolve Effect"
+              },
+              {
+                "OTIO_SCHEMA": "Effect.1",
+                "metadata": {
+                  "Resolve_OTIO": {
+                    "Effect Name": "Fairlight Equaliser Band",
+                    "Enabled": false,
+                    "Name": "Equalizer Band",
+                    "Parameters": [
+                      {
+                        "Default Parameter Value": 0,
+                        "Parameter ID": "eq band index",
+                        "Parameter Value": 0,
+                        "Variant Type": "Int",
+                        "maxValue": 3.0,
+                        "minValue": -1.0
+                      }
+                    ],
+                    "Type": 63
+                  }
+                },
+                "name": "",
+                "effect_name": "Resolve Effect"
+              },
+              {
+                "OTIO_SCHEMA": "Effect.1",
+                "metadata": {
+                  "Resolve_OTIO": {
+                    "Effect Name": "Fairlight Equaliser Band",
+                    "Enabled": false,
+                    "Name": "Equalizer Band",
+                    "Parameters": [
+                      {
+                        "Default Parameter Value": 0,
+                        "Parameter ID": "eq band index",
+                        "Parameter Value": 1,
+                        "Variant Type": "Int",
+                        "maxValue": 3.0,
+                        "minValue": -1.0
+                      }
+                    ],
+                    "Type": 63
+                  }
+                },
+                "name": "",
+                "effect_name": "Resolve Effect"
+              }
+            ],
+            "markers": [],
+            "enabled": true,
+            "media_references": {
+              "DEFAULT_MEDIA": {
+                "OTIO_SCHEMA": "ExternalReference.1",
+                "metadata": {},
+                "name": "ride.wav",
+                "available_range": {
+                  "OTIO_SCHEMA": "TimeRange.1",
+                  "duration": {
+                    "OTIO_SCHEMA": "RationalTime.1",
+                    "rate": 24.0,
+                    "value": 10000.0
+                  },
+                  "start_time": {
+                    "OTIO_SCHEMA": "RationalTime.1",
+                    "rate": 24.0,
+                    "value": 0.0
+                  }
+                },
+                "available_image_bounds": null,
+                "target_url": "/media/ride.wav"
+              }
+            },
+            "active_media_reference_key": "DEFAULT_MEDIA"
+          },
+          {
+            "OTIO_SCHEMA": "Clip.2",
+            "metadata": {
+              "Resolve_OTIO": {}
+            },
+            "name": "fades.wav",
+            "source_range": {
+              "OTIO_SCHEMA": "TimeRange.1",
+              "duration": {
+                "OTIO_SCHEMA": "RationalTime.1",
+                "rate": 24.0,
+                "value": 48.0
+              },
+              "start_time": {
+                "OTIO_SCHEMA": "RationalTime.1",
+                "rate": 24.0,
+                "value": 0.0
+              }
+            },
+            "effects": [
+              {
+                "OTIO_SCHEMA": "Effect.1",
+                "metadata": {
+                  "Resolve_OTIO": {
+                    "Effect Name": "Fairlight Clip Volume and Fades",
+                    "Enabled": true,
+                    "Name": "Volume",
+                    "Parameters": [
+                      {
+                        "Default Parameter Value": 0.0,
+                        "Parameter ID": "faderIn",
+                        "Parameter Value": 12.0,
+                        "Variant Type": "Double"
+                      },
+                      {
+                        "Default Parameter Value": 0.0,
+                        "Parameter ID": "faderOut",
+                        "Parameter Value": 24.0,
+                        "Variant Type": "Double"
+                      }
+                    ],
+                    "Type": 62
+                  }
+                },
+                "name": "",
+                "effect_name": "Resolve Effect"
+              },
+              {
+                "OTIO_SCHEMA": "Effect.1",
+                "metadata": {
+                  "Resolve_OTIO": {
+                    "Effect Name": "Fairlight Clip Pan",
+                    "Enabled": true,
+                    "Name": "Pan",
+                    "Parameters": [],
+                    "Type": 72
+                  }
+                },
+                "name": "",
+                "effect_name": "Resolve Effect"
+              },
+              {
+                "OTIO_SCHEMA": "Effect.1",
+                "metadata": {
+                  "Resolve_OTIO": {
+                    "Effect Name": "Fairlight Clip Pitch",
+                    "Enabled": true,
+                    "Name": "Pitch",
+                    "Parameters": [],
+                    "Type": 67
+                  }
+                },
+                "name": "",
+                "effect_name": "Resolve Effect"
+              },
+              {
+                "OTIO_SCHEMA": "Effect.1",
+                "metadata": {
+                  "Resolve_OTIO": {
+                    "Effect Name": "Fairlight Clip Equaliser",
+                    "Enabled": false,
+                    "Name": "Equalizer",
+                    "Parameters": [],
+                    "Type": 64
+                  }
+                },
+                "name": "",
+                "effect_name": "Resolve Effect"
+              },
+              {
+                "OTIO_SCHEMA": "Effect.1",
+                "metadata": {
+                  "Resolve_OTIO": {
+                    "Effect Name": "Fairlight Equaliser Band",
+                    "Enabled": false,
+                    "Name": "Equalizer Band",
+                    "Parameters": [
+                      {
+                        "Default Parameter Value": 0,
+                        "Parameter ID": "eq band index",
+                        "Parameter Value": 0,
+                        "Variant Type": "Int",
+                        "maxValue": 3.0,
+                        "minValue": -1.0
+                      }
+                    ],
+                    "Type": 63
+                  }
+                },
+                "name": "",
+                "effect_name": "Resolve Effect"
+              },
+              {
+                "OTIO_SCHEMA": "Effect.1",
+                "metadata": {
+                  "Resolve_OTIO": {
+                    "Effect Name": "Fairlight Equaliser Band",
+                    "Enabled": false,
+                    "Name": "Equalizer Band",
+                    "Parameters": [
+                      {
+                        "Default Parameter Value": 0,
+                        "Parameter ID": "eq band index",
+                        "Parameter Value": 1,
+                        "Variant Type": "Int",
+                        "maxValue": 3.0,
+                        "minValue": -1.0
+                      }
+                    ],
+                    "Type": 63
+                  }
+                },
+                "name": "",
+                "effect_name": "Resolve Effect"
+              }
+            ],
+            "markers": [],
+            "enabled": true,
+            "media_references": {
+              "DEFAULT_MEDIA": {
+                "OTIO_SCHEMA": "ExternalReference.1",
+                "metadata": {},
+                "name": "fades.wav",
+                "available_range": {
+                  "OTIO_SCHEMA": "TimeRange.1",
+                  "duration": {
+                    "OTIO_SCHEMA": "RationalTime.1",
+                    "rate": 24.0,
+                    "value": 10000.0
+                  },
+                  "start_time": {
+                    "OTIO_SCHEMA": "RationalTime.1",
+                    "rate": 24.0,
+                    "value": 0.0
+                  }
+                },
+                "available_image_bounds": null,
+                "target_url": "/media/fades.wav"
+              }
+            },
+            "active_media_reference_key": "DEFAULT_MEDIA"
+          },
+          {
+            "OTIO_SCHEMA": "Clip.2",
+            "metadata": {
+              "Resolve_OTIO": {}
+            },
+            "name": "panned.wav",
+            "source_range": {
+              "OTIO_SCHEMA": "TimeRange.1",
+              "duration": {
+                "OTIO_SCHEMA": "RationalTime.1",
+                "rate": 24.0,
+                "value": 48.0
+              },
+              "start_time": {
+                "OTIO_SCHEMA": "RationalTime.1",
+                "rate": 24.0,
+                "value": 0.0
+              }
+            },
+            "effects": [
+              {
+                "OTIO_SCHEMA": "Effect.1",
+                "metadata": {
+                  "Resolve_OTIO": {
+                    "Effect Name": "Fairlight Clip Volume and Fades",
+                    "Enabled": true,
+                    "Name": "Volume",
+                    "Parameters": [],
+                    "Type": 62
+                  }
+                },
+                "name": "",
+                "effect_name": "Resolve Effect"
+              },
+              {
+                "OTIO_SCHEMA": "Effect.1",
+                "metadata": {
+                  "Resolve_OTIO": {
+                    "Effect Name": "Fairlight Clip Pan",
+                    "Enabled": true,
+                    "Name": "Pan",
+                    "Parameters": [
+                      {
+                        "Default Parameter Value": 0.0,
+                        "Key Frames": {},
+                        "Parameter ID": "pan",
+                        "Parameter Value": -50.0,
+                        "Variant Type": "Double",
+                        "maxValue": 100.0,
+                        "minValue": -100.0
+                      }
+                    ],
+                    "Type": 72
+                  }
+                },
+                "name": "",
+                "effect_name": "Resolve Effect"
+              },
+              {
+                "OTIO_SCHEMA": "Effect.1",
+                "metadata": {
+                  "Resolve_OTIO": {
+                    "Effect Name": "Fairlight Clip Pitch",
+                    "Enabled": true,
+                    "Name": "Pitch",
+                    "Parameters": [
+                      {
+                        "Default Parameter Value": 0.0,
+                        "Key Frames": {},
+                        "Parameter ID": "pitch semitones",
+                        "Parameter Value": 2.0,
+                        "Variant Type": "Double"
+                      }
+                    ],
+                    "Type": 67
+                  }
+                },
+                "name": "",
+                "effect_name": "Resolve Effect"
+              },
+              {
+                "OTIO_SCHEMA": "Effect.1",
+                "metadata": {
+                  "Resolve_OTIO": {
+                    "Effect Name": "Fairlight Clip Equaliser",
+                    "Enabled": true,
+                    "Name": "Equalizer",
+                    "Parameters": [],
+                    "Type": 64
+                  }
+                },
+                "name": "",
+                "effect_name": "Resolve Effect"
+              },
+              {
+                "OTIO_SCHEMA": "Effect.1",
+                "metadata": {
+                  "Resolve_OTIO": {
+                    "Effect Name": "Fairlight Equaliser Band",
+                    "Enabled": true,
+                    "Name": "Equalizer Band",
+                    "Parameters": [
+                      {
+                        "Default Parameter Value": 0,
+                        "Parameter ID": "eq band index",
+                        "Parameter Value": 0,
+                        "Variant Type": "Int",
+                        "maxValue": 3.0,
+                        "minValue": -1.0
+                      }
+                    ],
+                    "Type": 63
+                  }
+                },
+                "name": "",
+                "effect_name": "Resolve Effect"
+              },
+              {
+                "OTIO_SCHEMA": "Effect.1",
+                "metadata": {
+                  "Resolve_OTIO": {
+                    "Effect Name": "Fairlight Equaliser Band",
+                    "Enabled": true,
+                    "Name": "Equalizer Band",
+                    "Parameters": [
+                      {
+                        "Default Parameter Value": 0,
+                        "Parameter ID": "eq band index",
+                        "Parameter Value": 1,
+                        "Variant Type": "Int",
+                        "maxValue": 3.0,
+                        "minValue": -1.0
+                      }
+                    ],
+                    "Type": 63
+                  }
+                },
+                "name": "",
+                "effect_name": "Resolve Effect"
+              }
+            ],
+            "markers": [],
+            "enabled": true,
+            "media_references": {
+              "DEFAULT_MEDIA": {
+                "OTIO_SCHEMA": "ExternalReference.1",
+                "metadata": {},
+                "name": "panned.wav",
+                "available_range": {
+                  "OTIO_SCHEMA": "TimeRange.1",
+                  "duration": {
+                    "OTIO_SCHEMA": "RationalTime.1",
+                    "rate": 24.0,
+                    "value": 10000.0
+                  },
+                  "start_time": {
+                    "OTIO_SCHEMA": "RationalTime.1",
+                    "rate": 24.0,
+                    "value": 0.0
+                  }
+                },
+                "available_image_bounds": null,
+                "target_url": "/media/panned.wav"
+              }
+            },
+            "active_media_reference_key": "DEFAULT_MEDIA"
+          }
+        ],
+        "kind": "Audio"
+      }
+    ]
+  }
+}

@@ -1,0 +1,47 @@
+[package]
+name = "ffcine"
+description = "GPU video finishing: decode, grade (LUTs, tone mapping, scaling) and encode with frames kept in VRAM (facade over the ffcine-* crates)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[features]
+default = ["ffmpeg", "placebo", "nvof"]
+# libav* demux/decode/encode/mux (probe, and the I/O half of `grade`).
+ffmpeg = ["ffcine-render/ffmpeg", "ffcine-triage/ffmpeg", "audio"]
+# Audio decode of any container and the libavfilter clean chain (libav* only, no GPU).
+audio = ["ffcine-audio/ffmpeg"]
+# libplacebo on Vulkan: the processing half of `grade`.
+placebo = ["ffcine-render/placebo"]
+# NVIDIA optical flow (NVOFA) for stabilize detect, on NVDEC frames. The driver libraries are
+# loaded at run time, so it builds without them.
+nvof = ["ffmpeg", "ffcine-stabilize/nvof"]
+
+[dependencies]
+ffcine-core.workspace = true
+ffcine-timeline.workspace = true
+ffcine-import.workspace = true
+ffcine-stabilize.workspace = true
+ffcine-render.workspace = true
+ffcine-assembly.workspace = true
+ffcine-audio.workspace = true
+ffcine-ingest.workspace = true
+ffcine-filters.workspace = true
+ffcine-text.workspace = true
+ffcine-delivery.workspace = true
+ffcine-reframe.workspace = true
+ffcine-hooks.workspace = true
+ffcine-triage.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

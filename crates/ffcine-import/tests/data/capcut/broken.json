@@ -1,0 +1,16 @@
+{
+  "fps": 25,
+  "canvas_config": { "width": 1080, "height": 1920, "ratio": "9:16" },
+  "materials": {
+    "videos": [ { "id": "v1", "type": "video", "path": "/abs/a.mp4", "duration": 10000000 } ]
+  },
+  "tracks": [
+    { "type": "video", "segments": [
+      { "id": "ok", "material_id": "v1", "source_timerange": { "start": 0, "duration": 1000000 },
+        "target_timerange": { "start": 0, "duration": 1000000 }, "extra_material_refs": [ "nope" ] },
+      { "id": "lost", "material_id": "missing", "source_timerange": { "start": 0, "duration": 1000000 },
+        "target_timerange": { "start": 1000000, "duration": 1000000 } }
+    ] },
+    { "type": "hologram", "segments": [] }
+  ]
+}

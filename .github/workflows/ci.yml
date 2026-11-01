@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  nix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - uses: cachix/cachix-action@v17
+        with:
+          name: nix-community
+          skipPush: true
+
+      - name: cargo fmt
+        run: nix develop --command cargo fmt --all --check
+
+      - name: cargo clippy
+        run: nix develop --command cargo clippy --workspace --all-targets -- -D warnings
+
+      # No GPU on the runner: tests needing one skip themselves.
+      - name: cargo test
+        run: nix develop --command cargo test --workspace
+
+      # Catches a broken crates.io package before release-plz publishes it.
+      - name: cargo publish --dry-run
+        run: nix develop --command cargo publish --workspace --dry-run --locked
+
+      - name: nix build
+        run: nix build .#ffcine --print-build-logs
+
+      - name: nix flake check
+        run: nix flake check --print-build-logs
+
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories bans licenses sources
+
+  # The one check branch protection requires.
+  ci:
+    if: always()
+    needs: [nix, deny]
+    runs-on: ubuntu-latest
+    steps:
+      - name: All jobs passed
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped')
+        run: exit 1

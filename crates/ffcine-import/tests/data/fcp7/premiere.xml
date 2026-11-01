@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE xmeml>
+<xmeml version="5">
+  <project><name>P</name><children>
+  <sequence id="seq-1">
+    <name>Premiere Seq</name>
+    <rate><timebase>30</timebase><ntsc>TRUE</ntsc></rate>
+    <media>
+      <video>
+        <format><samplecharacteristics><width>1080</width><height>1920</height></samplecharacteristics></format>
+        <track>
+          <clipitem id="clipitem-1">
+            <name>Title</name>
+            <start>0</start><end>60</end><in>0</in><out>60</out>
+            <filter><effect><name>Graphic</name><effectid>GraphicAndType</effectid><effectcategory>graphic</effectcategory><effecttype>filter</effecttype><mediatype>video</mediatype>
+              <parameter><parameterid>1</parameterid><name>Source Text</name><value>tAAAAAAAAAB7ACIAbQBTAHQAeQBsAGUAUwBoAGUAZQB0ACIAOgAgAHsAIgBtAEYAbwBuAHQATgBhAG0AZQAiADoAIAAiAEgAZQBsAHYAZQB0AGkAYwBhACAATgBlAHUAZQAiACwAIAAiAG0ARgBvAG4AdABTAGkAegBlACIAOgAgADYANAB9ACwAIAAiAG0AVABlAHgAdAAiADoAIAAiAEgAZQBsAGwAbwBcAHIAVwBvAHIAbABkACIAfQA=</value></parameter>
+            </effect></filter>
+          </clipitem>
+        </track>
+      </video>
+    </media>
+  </sequence>
+  </children></project>
+</xmeml>

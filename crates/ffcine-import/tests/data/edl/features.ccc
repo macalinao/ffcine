@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ColorCorrectionCollection xmlns="urn:ASC:CDL:v1.01">
+  <ColorCorrection id="sh030">
+    <SOPNode>
+      <Slope>0.95 1.0 1.1</Slope>
+      <Offset>0.0 0.0 0.02</Offset>
+      <Power>1.0 1.0 1.0</Power>
+    </SOPNode>
+    <SatNode><Saturation>1.2</Saturation></SatNode>
+  </ColorCorrection>
+  <ColorCorrection id="sunset.mov">
+    <SOPNode><Slope>1.2 1.0 0.8</Slope><Offset>0 0 0</Offset><Power>1 1 1</Power></SOPNode>
+  </ColorCorrection>
+</ColorCorrectionCollection>

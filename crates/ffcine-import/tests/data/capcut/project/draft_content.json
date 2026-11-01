@@ -1,0 +1,8 @@
+{
+  "fps": 24.0,
+  "canvas_config": { "width": 1280, "height": 720, "ratio": "16:9" },
+  "materials": { "videos": [ { "id": "v1", "type": "video", "path": "clip.mov", "duration": 5000000 } ] },
+  "tracks": [ { "type": "video", "segments": [
+    { "id": "S1", "material_id": "v1", "source_timerange": { "start": 0, "duration": 2000000 },
+      "target_timerange": { "start": 0, "duration": 2000000 } } ] } ]
+}

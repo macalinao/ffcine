@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE fcpxml>
+
+<!-- Hand-written .fcpxmld bundle (FCPXML 1.10+ exports a directory holding Info.fcpxml). 23.976p UHD. -->
+<fcpxml version="1.11">
+    <resources>
+        <format id="r1" name="FFVideoFormat2160p2398" frameDuration="1001/24000s" width="3840" height="2160"/>
+        <asset id="r2" name="A001" uid="B1" start="0s" duration="1001/24s" hasVideo="1" hasAudio="1" format="r1">
+            <media-rep kind="original-media" src="file:///media/A001.mov"/>
+        </asset>
+    </resources>
+    <library>
+        <event name="Bundle">
+            <project name="Bundle Project">
+                <sequence format="r1" duration="1001/12s" tcStart="3600s" tcFormat="NDF">
+                    <spine>
+                        <asset-clip name="A001" ref="r2" offset="3600s" duration="1001/24s"/>
+                        <asset-clip name="A001 again" ref="r2" offset="87401/24s" duration="1001/48s" start="1001/48s" enabled="0"/>
+                    </spine>
+                </sequence>
+            </project>
+        </event>
+    </library>
+</fcpxml>

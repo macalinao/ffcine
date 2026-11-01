@@ -1,0 +1,98 @@
+# Runs from .github/workflows/release-plz.yml while the repo is public.
+# All crates share one version and one changelog and tag (on ffcine-cli).
+[workspace]
+changelog_update = false
+git_tag_enable = false
+git_release_enable = false
+publish = true
+
+[[package]]
+name = "ffcine-cli"
+changelog_update = true
+changelog_path = "CHANGELOG.md"
+changelog_include = [
+  "ffcine",
+  "ffcine-assembly",
+  "ffcine-audio",
+  "ffcine-core",
+  "ffcine-delivery",
+  "ffcine-filters",
+  "ffcine-hooks",
+  "ffcine-import",
+  "ffcine-ingest",
+  "ffcine-libplacebo-sys",
+  "ffcine-reframe",
+  "ffcine-render",
+  "ffcine-stabilize",
+  "ffcine-text",
+  "ffcine-timeline",
+  "ffcine-triage",
+]
+git_tag_enable = true
+git_tag_name = "v{{ version }}"
+git_release_enable = true
+version_group = "ffcine"
+
+[[package]]
+name = "ffcine"
+version_group = "ffcine"
+
+[[package]]
+name = "ffcine-assembly"
+version_group = "ffcine"
+
+[[package]]
+name = "ffcine-audio"
+version_group = "ffcine"
+
+[[package]]
+name = "ffcine-core"
+version_group = "ffcine"
+
+[[package]]
+name = "ffcine-delivery"
+version_group = "ffcine"
+
+[[package]]
+name = "ffcine-filters"
+version_group = "ffcine"
+
+[[package]]
+name = "ffcine-hooks"
+version_group = "ffcine"
+
+[[package]]
+name = "ffcine-import"
+version_group = "ffcine"
+
+[[package]]
+name = "ffcine-ingest"
+version_group = "ffcine"
+
+[[package]]
+name = "ffcine-libplacebo-sys"
+version_group = "ffcine"
+
+[[package]]
+name = "ffcine-reframe"
+version_group = "ffcine"
+
+[[package]]
+name = "ffcine-render"
+version_group = "ffcine"
+
+[[package]]
+name = "ffcine-stabilize"
+version_group = "ffcine"
+
+[[package]]
+name = "ffcine-text"
+version_group = "ffcine"
+
+[[package]]
+name = "ffcine-timeline"
+version_group = "ffcine"
+
+[[package]]
+name = "ffcine-triage"
+version_group = "ffcine"

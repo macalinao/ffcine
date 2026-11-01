@@ -1,0 +1,9 @@
+# nix
+result
+result-*
+.direnv
+.pre-commit-config.yaml
+
+# rust
+/target
+*.orig

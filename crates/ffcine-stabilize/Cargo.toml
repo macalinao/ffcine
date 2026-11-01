@@ -1,0 +1,28 @@
+[package]
+name = "ffcine-stabilize"
+description = "GPU stabilizer: NVIDIA optical-flow detect, trajectory smoothing, warp hook"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[features]
+default = ["nvof"]
+# NVIDIA optical flow (NVOFA) detect on NVDEC frames. The driver libraries are loaded at run
+# time, so it builds without them.
+nvof = ["dep:ffmpeg-next", "dep:libloading", "ffcine-core/ffmpeg"]
+
+[dependencies]
+ffcine-core.workspace = true
+serde_json.workspace = true
+ffmpeg-next = { workspace = true, optional = true }
+libloading = { workspace = true, optional = true }
+
+[lints]
+workspace = true

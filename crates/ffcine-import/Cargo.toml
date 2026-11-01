@@ -1,0 +1,24 @@
+[package]
+name = "ffcine-import"
+description = "Timeline importers: edit.yaml, DaVinci Resolve OTIO, FCPXML, Kdenlive/Shotcut MLT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ffcine-core.workspace = true
+ffcine-timeline.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+roxmltree.workspace = true
+yaml_serde.workspace = true
+
+[lints]
+workspace = true

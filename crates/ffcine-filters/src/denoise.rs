@@ -1,0 +1,522 @@
+//! Motion-compensated temporal denoise plus a spatial NLM, as Vulkan compute kernels.
+//!
+//! The chain per output frame (`docs/denoise.md`), every kernel on the grade's `pl_gpu`:
+//!
+//! 1. **ingest** (once per decoded frame): [`copy_kernel`] copies each source plane into the ring
+//!    slot, [`quarter_kernel`] writes a quarter-resolution luma for motion search.
+//! 2. **motion** ([`motion_kernel`], one dispatch per neighbour): block matching, one vector per
+//!    16x16 luma block. Exhaustive SAD search at quarter resolution around a predictor (the vector
+//!    to the nearer neighbour, scaled by distance) and zero, then a +-2 px full-resolution refine.
+//!    Writes `(dx, dy, mad)`: the flow from the centre to the neighbour in luma pixels and the
+//!    block's mean absolute difference (8-bit code values) at that vector, the match confidence.
+//! 3. **merge** ([`merge_kernel`], one dispatch per plane): warps each neighbour onto the centre
+//!    (bilinear vectors and samples) and averages with per-pixel weights from the 3x3 patch
+//!    distance and the block confidence. A pixel whose neighbours all mismatch (occlusion, cut,
+//!    bad vector) keeps the centre value, which is what keeps it from ghosting.
+//! 4. **spatial** ([`spatial_kernel`], one dispatch per plane): NLM with a 3x3 patch over a
+//!    `(2r+1)^2` search window, read from a shared-memory tile.
+//!
+//! Distances are in 8-bit code values of the normalised signal (`FFC_NORM` turns a sampled value
+//! into 0..1 for LSB-aligned formats), so strengths mean the same for 8-, 10- and 16-bit input.
+//! Planes are sampled as stored (`r16`/`rg16` unorm for P010/P210), never converted to 8 bits.
+
+use std::fmt::Write as _;
+
+use serde::{Deserialize, Serialize};
+
+/// Temporal (motion-compensated) part.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Temporal {
+    /// Frames on each side, 1..=5.
+    pub radius: u32,
+    /// Motion source.
+    pub motion: Motion,
+    /// Luma strength: the noise sigma (8-bit code values) treated as "the same pixel".
+    pub strength: f32,
+    /// Chroma strength; `None` = `strength`.
+    pub chroma: Option<f32>,
+}
+
+impl Default for Temporal {
+    fn default() -> Self {
+        Self {
+            radius: 2,
+            motion: Motion::default(),
+            strength: 4.0,
+            chroma: None,
+        }
+    }
+}
+
+impl Temporal {
+    pub const MAX_RADIUS: u32 = 5;
+
+    pub fn chroma_strength(&self) -> f32 {
+        self.chroma.unwrap_or(self.strength)
+    }
+}
+
+/// Spatial NLM part.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Spatial {
+    /// Search radius (window `2r+1` square), 1..=4.
+    pub radius: u32,
+    /// Luma strength, 8-bit code values; 0 skips the luma plane.
+    pub luma: f32,
+    /// Chroma strength; 0 skips the chroma planes.
+    pub chroma: f32,
+}
+
+impl Default for Spatial {
+    fn default() -> Self {
+        Self {
+            radius: 2,
+            luma: 2.0,
+            chroma: 3.0,
+        }
+    }
+}
+
+impl Spatial {
+    pub const MAX_RADIUS: u32 = 4;
+}
+
+/// A denoise stage: temporal, then spatial on its result. Either may be off.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Denoise {
+    pub temporal: Option<Temporal>,
+    pub spatial: Option<Spatial>,
+}
+
+impl Denoise {
+    pub fn is_off(&self) -> bool {
+        self.temporal.is_none() && self.spatial.is_none()
+    }
+
+    /// Frames of lookahead (and history) the stage needs.
+    pub fn radius(&self) -> u32 {
+        self.temporal.map_or(0, |t| t.radius)
+    }
+
+    /// Clamps radii into range.
+    #[must_use]
+    pub fn clamped(mut self) -> Self {
+        if let Some(t) = &mut self.temporal {
+            t.radius = t.radius.clamp(1, Temporal::MAX_RADIUS);
+        }
+        if let Some(s) = &mut self.spatial {
+            s.radius = s.radius.clamp(1, Spatial::MAX_RADIUS);
+        }
+        self
+    }
+}
+
+/// Workgroup size of every kernel here.
+pub const GROUP: u32 = 16;
+/// Luma pixels per motion vector, each way.
+pub const BLOCK: u32 = 16;
+/// Quarter-resolution search range around the predictor, in quarter pixels (+-24 luma pixels).
+pub const SEARCH: u32 = 6;
+
+/// A generated compute kernel: `header` (functions, shared memory) and `body` (inside `main`),
+/// reading and writing the descriptors named in the doc of the function that made it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Compute {
+    pub header: String,
+    pub body: String,
+    /// Shared memory in bytes.
+    pub shmem: usize,
+}
+
+fn swizzle(comps: u32) -> (&'static str, &'static str) {
+    if comps == 1 {
+        ("float", "r")
+    } else {
+        ("vec2", "rg")
+    }
+}
+
+fn store(comps: u32, v: &str) -> String {
+    if comps == 1 {
+        format!("vec4({v}, 0.0, 0.0, 1.0)")
+    } else {
+        format!("vec4({v}, 0.0, 1.0)")
+    }
+}
+
+/// Copies `src` (sampled) into `dst` (storage), same size.
+pub fn copy_kernel() -> Compute {
+    Compute {
+        header: String::new(),
+        body: r"
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (all(lessThan(p, imageSize(dst))))
+        imageStore(dst, p, texelFetch(src, p, 0));
+"
+        .into(),
+        shmem: 0,
+    }
+}
+
+/// Box-averages 4x4 luma of `src` into quarter-size `dst` (`r16f`), normalised to 0..1.
+pub fn quarter_kernel(norm: f32) -> Compute {
+    Compute {
+        header: String::new(),
+        body: format!(
+            r"
+    ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+    if (all(lessThan(q, imageSize(dst)))) {{
+        ivec2 hi = textureSize(src, 0) - 1;
+        float s = 0.0;
+        for (int j = 0; j < 4; j++)
+            for (int i = 0; i < 4; i++)
+                s += texelFetch(src, min(q * 4 + ivec2(i, j), hi), 0).r;
+        imageStore(dst, q, vec4(s * ({norm:.8} / 16.0), 0.0, 0.0, 1.0));
+    }}
+"
+        ),
+        shmem: 0,
+    }
+}
+
+/// Block matching from the centre frame to one neighbour.
+///
+/// Descriptors: `qc`, `qn` (quarter luma of centre and neighbour), `lc`, `ln` (full luma),
+/// `pred` (motion to the nearer neighbour, only if `pred_scale` is set: its vectors times
+/// `pred_scale` seed the search), `dst` (`rgba16f`, one texel per [`BLOCK`]).
+pub fn motion_kernel(norm: f32, pred_scale: Option<f32>) -> Compute {
+    let pred = pred_scale.map_or_else(
+        || "vec2 vp = vec2(0.0);".to_owned(),
+        |s| format!("vec2 vp = texelFetch(pred, b, 0).xy * {s:.6};"),
+    );
+    Compute {
+        header: String::new(),
+        body: format!(
+            r"
+    ivec2 b = ivec2(gl_GlobalInvocationID.xy);
+    if (all(lessThan(b, imageSize(dst)))) {{
+        const float K = {norm:.8} * 255.0;
+        ivec2 qhi = textureSize(qn, 0) - 1;
+        ivec2 q0 = b * 4;
+        float cq[16];
+        for (int i = 0; i < 16; i++)
+            cq[i] = texelFetch(qc, min(q0 + ivec2(i & 3, i >> 2), qhi), 0).r;
+        {pred}
+        ivec2 seed = ivec2(round(vp * 0.25));
+        ivec2 best = ivec2(0);
+        float bc = 1e9;
+        for (int pass = 0; pass < 2; pass++) {{
+            ivec2 c0 = pass == 0 ? ivec2(0) : seed;
+            int r = pass == 0 ? 1 : {SEARCH};
+            for (int dy = -r; dy <= r; dy++)
+                for (int dx = -r; dx <= r; dx++) {{
+                    ivec2 v = c0 + ivec2(dx, dy);
+                    float c = 0.0;
+                    for (int i = 0; i < 16; i++)
+                        c += abs(cq[i] - texelFetch(qn, clamp(q0 + ivec2(i & 3, i >> 2) + v, ivec2(0), qhi), 0).r);
+                    // Prefer short vectors on flat or ambiguous blocks.
+                    c += 0.002 * float(abs(v.x) + abs(v.y));
+                    if (c < bc) {{ bc = c; best = v; }}
+                }}
+        }}
+        // Full-resolution refine around 4x the quarter vector: steps of 2 px, then 1 px, on the
+        // 16x16 block subsampled by 2 (centre samples cached).
+        ivec2 lhi = textureSize(ln, 0) - 1;
+        ivec2 l0 = b * {BLOCK};
+        float cl[64];
+        for (int i = 0; i < 64; i++)
+            cl[i] = texelFetch(lc, min(l0 + 2 * ivec2(i & 7, i >> 3), lhi), 0).r;
+        ivec2 fbest = best * 4;
+        float fc = 1e9;
+        for (int step = 2; step >= 1; step--) {{
+            ivec2 c1 = fbest;
+            for (int dy = -1; dy <= 1; dy++)
+                for (int dx = -1; dx <= 1; dx++) {{
+                    if (step == 1 && dx == 0 && dy == 0) continue;
+                    ivec2 v = c1 + step * ivec2(dx, dy);
+                    float c = 0.0;
+                    for (int i = 0; i < 64; i++)
+                        c += abs(cl[i] - texelFetch(ln, clamp(l0 + 2 * ivec2(i & 7, i >> 3) + v, ivec2(0), lhi), 0).r);
+                    if (c < fc) {{ fc = c; fbest = v; }}
+                }}
+        }}
+        float mad = fc * K / float(({BLOCK} / 2) * ({BLOCK} / 2));
+        imageStore(dst, b, vec4(vec2(fbest), mad, 1.0));
+    }}
+"
+        ),
+        shmem: 0,
+    }
+}
+
+/// Where the motion vectors come from.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Motion {
+    /// NVIDIA optical flow (NVOFA) on half-resolution 8-bit luma, 4x4 grid (8x8 luma pixels),
+    /// via CUDA, rescored in Vulkan; falls back to `blocks` where NVOF isn't available.
+    #[default]
+    Nvof,
+    /// Vulkan compute block matching, 16x16 blocks.
+    Blocks,
+}
+
+impl std::str::FromStr for Motion {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "nvof" => Ok(Self::Nvof),
+            "blocks" => Ok(Self::Blocks),
+            _ => Err(format!("unknown motion source {s:?} (nvof, blocks)")),
+        }
+    }
+}
+
+/// Luma pixels per NVOF vector: half-resolution input, 4x4 output grid.
+pub const NVOF_BLOCK: u32 = 8;
+
+/// Half-resolution 8-bit luma for NVOF: 2x2 box average of `src` into `dst` (`r8`).
+pub fn luma8_kernel(norm: f32) -> Compute {
+    Compute {
+        header: String::new(),
+        body: format!(
+            r"
+    ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+    if (all(lessThan(q, imageSize(dst)))) {{
+        ivec2 hi = textureSize(src, 0) - 1;
+        float s = 0.0;
+        for (int i = 0; i < 4; i++)
+            s += texelFetch(src, min(q * 2 + ivec2(i & 1, i >> 1), hi), 0).r;
+        imageStore(dst, q, vec4((clamp(s * ({norm:.8} / 4.0), 0.0, 1.0)), 0.0, 0.0, 1.0));
+    }}
+"
+        ),
+        shmem: 0,
+    }
+}
+
+/// Scores NVOF's vectors like [`motion_kernel`] does its own: `flow` (`rg32f`, luma pixels, one
+/// per [`NVOF_BLOCK`]) in, `(dx, dy, mad)` out to `dst` (`rgba16f`), the MAD of the block at its
+/// vector between full-resolution `lc` and `ln`.
+pub fn confidence_kernel(norm: f32) -> Compute {
+    Compute {
+        header: String::new(),
+        body: format!(
+            r"
+    ivec2 b = ivec2(gl_GlobalInvocationID.xy);
+    if (all(lessThan(b, imageSize(dst)))) {{
+        // NVOF's vector, its four neighbours' and zero: keep the best match. NVOF regularises
+        // flat dark areas into arbitrary vectors; static ones are usually right there.
+        ivec2 fhi = imageSize(dst) - 1;
+        vec2 cand[6] = vec2[6](
+            texelFetch(flow, b, 0).xy, vec2(0.0),
+            texelFetch(flow, clamp(b + ivec2(1, 0), ivec2(0), fhi), 0).xy,
+            texelFetch(flow, clamp(b - ivec2(1, 0), ivec2(0), fhi), 0).xy,
+            texelFetch(flow, clamp(b + ivec2(0, 1), ivec2(0), fhi), 0).xy,
+            texelFetch(flow, clamp(b - ivec2(0, 1), ivec2(0), fhi), 0).xy);
+        ivec2 lhi = textureSize(ln, 0) - 1;
+        ivec2 l0 = b * {NVOF_BLOCK};
+        float cl[{NVOF_BLOCK} * {NVOF_BLOCK}];
+        for (int i = 0; i < {NVOF_BLOCK} * {NVOF_BLOCK}; i++)
+            cl[i] = texelFetch(lc, min(l0 + ivec2(i % {NVOF_BLOCK}, i / {NVOF_BLOCK}), lhi), 0).r;
+        vec2 v = cand[0];
+        float c = 1e9;
+        for (int k = 0; k < 6; k++) {{
+            ivec2 iv = ivec2(round(cand[k]));
+            float ck = 0.0;
+            for (int i = 0; i < {NVOF_BLOCK} * {NVOF_BLOCK}; i++) {{
+                ivec2 p = min(l0 + ivec2(i % {NVOF_BLOCK}, i / {NVOF_BLOCK}), lhi);
+                ck += abs(cl[i] - texelFetch(ln, clamp(p + iv, ivec2(0), lhi), 0).r);
+            }}
+            if (ck < c) {{ c = ck; v = cand[k]; }}
+        }}
+        float mad = c * {norm:.8} * 255.0 / float({NVOF_BLOCK} * {NVOF_BLOCK});
+        imageStore(dst, b, vec4(v, mad, 1.0));
+    }}
+"
+        ),
+        shmem: 0,
+    }
+}
+
+/// Shape of a plane relative to luma.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Plane {
+    /// 1 (luma or a single chroma plane) or 2 (interleaved chroma).
+    pub comps: u32,
+    /// Subsampling relative to luma (1 or 2 each way).
+    pub sub: (u32, u32),
+}
+
+/// Motion-compensated merge of `k` neighbours into the centre.
+///
+/// Descriptors: `cur` (centre plane, nearest), `n0..n{k-1}` (neighbour planes, linear),
+/// `m0..m{k-1}` (their motion, linear), `dst` (storage, plane size).
+pub fn merge_kernel(k: usize, plane: Plane, norm: f32, strength: f32, block: u32) -> Compute {
+    let (ty, sw) = swizzle(plane.comps);
+    let (sx, sy) = plane.sub;
+    let h = strength.max(0.1);
+    // Block MAD between two frames of pure noise sigma h is ~1.13 h (luma, at the vector);
+    // beyond that the match itself is doubtful.
+    let mth = 1.5 * h + 1.0;
+    let header = format!(
+        r"
+const float FFC_K = {norm:.8} * 255.0;
+const vec2 FFC_SUB = vec2({sx}.0, {sy}.0);
+const float FFC_H2 = {h2:.6};
+const float FFC_MTH = {mth:.6};
+const float FFC_MS = {ms:.6};
+
+void ffc_merge(sampler2D n, sampler2D m, ivec2 p, vec2 sz, {ty} cp[9], inout {ty} acc, inout float wsum) {{
+    vec2 msz = vec2(textureSize(m, 0)) * {block}.0;
+    vec3 mv = textureLod(m, (vec2(p) + 0.5) * FFC_SUB / msz, 0.0).xyz;
+    vec2 q = vec2(p) + 0.5 + mv.xy / FFC_SUB;
+    if (any(lessThan(q, vec2(0.5))) || any(greaterThan(q, sz - 0.5)))
+        return;
+    float d2 = 0.0;
+    {ty} c = {ty}(0.0);
+    for (int i = 0; i < 9; i++) {{
+        {ty} v = textureLod(n, (q + vec2(i % 3 - 1, i / 3 - 1)) / sz, 0.0).{sw};
+        if (i == 4) c = v * FFC_K;
+        {ty} d = v * FFC_K - cp[i];
+        d2 += dot(d, d);
+    }}
+    d2 /= {n9}.0;
+    float w = exp(-max(d2 - 2.0 * FFC_H2, 0.0) / FFC_H2)
+            * exp(-max(mv.z - FFC_MTH, 0.0) / FFC_MS);
+    acc += w * c;
+    wsum += w;
+}}
+",
+        h2 = h * h,
+        ms = 0.5 * h + 0.5,
+        n9 = 9 * plane.comps,
+    );
+    let mut body = format!(
+        r"
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 isz = textureSize(cur, 0);
+    if (all(lessThan(p, isz))) {{
+        vec2 sz = vec2(isz);
+        {ty} cp[9];
+        for (int i = 0; i < 9; i++)
+            cp[i] = texelFetch(cur, clamp(p + ivec2(i % 3 - 1, i / 3 - 1), ivec2(0), isz - 1), 0).{sw} * FFC_K;
+        {ty} acc = cp[4];
+        float wsum = 1.0;
+"
+    );
+    for i in 0..k {
+        let _ = writeln!(body, "        ffc_merge(n{i}, m{i}, p, sz, cp, acc, wsum);");
+    }
+    let _ = writeln!(
+        body,
+        "        imageStore(dst, p, {});\n    }}",
+        store(plane.comps, "acc / (wsum * FFC_K)")
+    );
+    Compute {
+        header,
+        body,
+        shmem: 0,
+    }
+}
+
+/// NLM (3x3 patch, `(2 radius + 1)^2` search) from `src` (sampled) to `dst` (storage).
+pub fn spatial_kernel(radius: u32, comps: u32, norm: f32, strength: f32) -> Compute {
+    let (ty, sw) = swizzle(comps);
+    let halo = radius + 1;
+    let t = GROUP + 2 * halo;
+    let h = strength.max(0.1);
+    let header = format!(
+        r"
+const int FFC_T = {t};
+const int FFC_R = {radius};
+const float FFC_K = {norm:.8} * 255.0;
+const float FFC_H2 = {h2:.6};
+shared {ty} ffc_tile[FFC_T * FFC_T];
+{ty} ffc_at(ivec2 l) {{ return ffc_tile[l.y * FFC_T + l.x]; }}
+",
+        h2 = h * h,
+    );
+    let body = format!(
+        r"
+    ivec2 isz = textureSize(src, 0);
+    ivec2 g0 = ivec2(gl_WorkGroupID.xy) * {GROUP} - {halo};
+    for (uint i = gl_LocalInvocationIndex; i < uint(FFC_T * FFC_T); i += {GROUP}u * {GROUP}u) {{
+        ivec2 o = ivec2(int(i) % FFC_T, int(i) / FFC_T);
+        ffc_tile[i] = texelFetch(src, clamp(g0 + o, ivec2(0), isz - 1), 0).{sw} * FFC_K;
+    }}
+    barrier();
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (all(lessThan(p, isz))) {{
+        ivec2 l = ivec2(gl_LocalInvocationID.xy) + {halo};
+        {ty} acc = {ty}(0.0);
+        float wsum = 0.0;
+        for (int sy = -FFC_R; sy <= FFC_R; sy++)
+            for (int sx = -FFC_R; sx <= FFC_R; sx++) {{
+                ivec2 s = l + ivec2(sx, sy);
+                float d2 = 0.0;
+                for (int j = -1; j <= 1; j++)
+                    for (int i = -1; i <= 1; i++) {{
+                        {ty} d = ffc_at(s + ivec2(i, j)) - ffc_at(l + ivec2(i, j));
+                        d2 += dot(d, d);
+                    }}
+                d2 /= {n9}.0;
+                float w = exp(-max(d2 - 2.0 * FFC_H2, 0.0) / FFC_H2);
+                acc += w * ffc_at(s);
+                wsum += w;
+            }}
+        imageStore(dst, p, {st});
+    }}
+",
+        n9 = 9 * comps,
+        st = store(comps, "acc / (wsum * FFC_K)"),
+    );
+    let shmem = (t * t) as usize * 4 * comps as usize;
+    Compute {
+        header,
+        body,
+        shmem,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn denoise_params_parse_and_clamp() {
+        let d: Denoise =
+            serde_json::from_str(r#"{"temporal": {"radius": 9, "strength": 6}}"#).unwrap();
+        let d = d.clamped();
+        assert_eq!(d.radius(), 5);
+        assert!(d.spatial.is_none());
+        assert!((d.temporal.unwrap().chroma_strength() - 6.0).abs() < f32::EPSILON);
+        assert!(Denoise::default().is_off());
+    }
+
+    #[test]
+    fn merge_calls_every_neighbour() {
+        let c = merge_kernel(
+            4,
+            Plane {
+                comps: 2,
+                sub: (2, 2),
+            },
+            1.0,
+            4.0,
+            BLOCK,
+        );
+        assert_eq!(c.body.matches("ffc_merge(").count(), 4);
+        assert!(c.body.contains("n3, m3"));
+        assert!(c.header.contains("vec2 cp[9]"));
+    }
+
+    #[test]
+    fn spatial_shmem_fits() {
+        let c = spatial_kernel(Spatial::MAX_RADIUS, 2, 1.0, 2.0);
+        assert!(c.shmem <= 16 * 1024, "{}", c.shmem);
+    }
+}

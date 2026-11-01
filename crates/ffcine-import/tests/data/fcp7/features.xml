@@ -1,0 +1,154 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE xmeml>
+<xmeml version="4">
+  <sequence id="seq-1">
+    <name>Features</name>
+    <duration>144</duration>
+    <rate><timebase>24</timebase><ntsc>FALSE</ntsc></rate>
+    <timecode><rate><timebase>24</timebase></rate><string>01:00:00:00</string><frame>86400</frame><displayformat>NDF</displayformat></timecode>
+    <uuid>abc-123</uuid>
+    <marker><name>Chapter</name><comment>intro</comment><in>24</in><out>-1</out></marker>
+    <media>
+      <video>
+        <format><samplecharacteristics><width>1920</width><height>1080</height></samplecharacteristics></format>
+        <track>
+          <clipitem id="clipitem-1">
+            <name>A</name>
+            <rate><timebase>24</timebase></rate>
+            <start>0</start><end>-1</end><in>10</in><out>58</out>
+            <file id="file-1">
+              <name>a.mov</name>
+              <pathurl>file://localhost/media/a%20b.mov</pathurl>
+              <rate><timebase>24</timebase></rate>
+              <duration>500</duration>
+              <timecode><string>10:00:00:00</string><frame>864000</frame><reel><name>A001</name></reel></timecode>
+              <media><video/><audio/></media>
+            </file>
+            <filter><effect><name>Basic Motion</name><effectid>basic</effectid><effectcategory>motion</effectcategory><effecttype>motion</effecttype><mediatype>video</mediatype>
+              <parameter><parameterid>scale</parameterid><name>Scale</name>
+                <keyframe><when>10</when><value>100</value></keyframe>
+                <keyframe><when>34</when><value>150</value><interpolation><name>FCPCurve</name></interpolation></keyframe>
+              </parameter>
+              <parameter><parameterid>rotation</parameterid><name>Rotation</name><value>15</value></parameter>
+              <parameter><parameterid>center</parameterid><name>Center</name><value><horiz>0.25</horiz><vert>-0.1</vert></value></parameter>
+              <parameter><parameterid>centerOffset</parameterid><name>Anchor Point</name><value><horiz>0</horiz><vert>0</vert></value></parameter>
+              <parameter><parameterid>aspectratio</parameterid><name>Aspect Ratio</name><value>0</value></parameter>
+            </effect></filter>
+            <filter><effect><name>Drop Shadow</name><effectid>dropshadow</effectid><effecttype>motion</effecttype></effect></filter>
+            <link><linkclipref>clipitem-1</linkclipref><mediatype>video</mediatype></link>
+            <link><linkclipref>clipitem-3</linkclipref><mediatype>audio</mediatype></link>
+            <marker><name>Beat</name><in>20</in><out>22</out></marker>
+            <logginginfo><description>wide</description><scene>3</scene><shottake></shottake></logginginfo>
+            <labels><label2>Iris</label2></labels>
+          </clipitem>
+          <transitionitem>
+            <start>44</start><end>52</end><alignment>center</alignment>
+            <effect><name>Cross Dissolve</name><effectid>Cross Dissolve</effectid><effectcategory>Dissolve</effectcategory><effecttype>transition</effecttype><mediatype>video</mediatype></effect>
+          </transitionitem>
+          <clipitem id="clipitem-2">
+            <name>B</name>
+            <start>-1</start><end>96</end><in>100</in><out>148</out>
+            <file id="file-1"/>
+            <filter><effect><name>Crop</name><effectid>crop</effectid>
+              <parameter><parameterid>left</parameterid><value>10</value></parameter>
+              <parameter><parameterid>right</parameterid><value>0</value></parameter>
+              <parameter><parameterid>top</parameterid><value>5</value></parameter>
+              <parameter><parameterid>bottom</parameterid><value>5</value></parameter>
+              <parameter><parameterid>edgefeather</parameterid><value>2</value></parameter>
+            </effect></filter>
+            <filter><effect><name>Opacity</name><effectid>opacity</effectid>
+              <parameter><parameterid>opacity</parameterid><value>50</value></parameter>
+            </effect></filter>
+            <filter><effect><name>Time Remap</name><effectid>timeremap</effectid>
+              <parameter><parameterid>variablespeed</parameterid><value>0</value></parameter>
+              <parameter><parameterid>speed</parameterid><value>50</value></parameter>
+              <parameter><parameterid>reverse</parameterid><value>FALSE</value></parameter>
+            </effect></filter>
+          </clipitem>
+          <transitionitem>
+            <start>88</start><end>96</end><alignment>end-black</alignment>
+            <effect><name>Iris Round</name><effectid>Iris Round</effectid><effecttype>transition</effecttype></effect>
+          </transitionitem>
+          <generatoritem id="gen-1">
+            <name>Red</name>
+            <start>120</start><end>144</end><in>0</in><out>24</out>
+            <effect><name>Color</name><effectid>Color</effectid><effectcategory>Matte</effectcategory><effecttype>generator</effecttype>
+              <parameter><parameterid>color</parameterid><value><alpha>255</alpha><red>255</red><green>0</green><blue>0</blue></value></parameter>
+            </effect>
+          </generatoritem>
+          <enabled>TRUE</enabled>
+          <locked>FALSE</locked>
+        </track>
+        <track>
+          <generatoritem id="gen-2">
+            <name>Title</name>
+            <start>0</start><end>48</end><in>0</in><out>48</out>
+            <effect><name>Text</name><effectid>Text</effectid><effectcategory>Text</effectcategory><effecttype>generator</effecttype>
+              <parameter><parameterid>str</parameterid><value>Hi there</value></parameter>
+              <parameter><parameterid>fontname</parameterid><value>Lucida Grande</value></parameter>
+              <parameter><parameterid>fontsize</parameterid><value>36</value></parameter>
+              <parameter><parameterid>fontstyle</parameterid><value>2</value></parameter>
+              <parameter><parameterid>fontalign</parameterid><value>2</value></parameter>
+              <parameter><parameterid>fontcolor</parameterid><value><alpha>255</alpha><red>255</red><green>255</green><blue>255</blue></value></parameter>
+              <parameter><parameterid>origin</parameterid><value><horiz>0</horiz><vert>0.3</vert></value></parameter>
+              <parameter><parameterid>autokern</parameterid><value>TRUE</value></parameter>
+            </effect>
+          </generatoritem>
+          <clipitem id="clipitem-4">
+            <name>C</name>
+            <start>48</start><end>72</end><in>0</in><out>24</out>
+            <file id="file-2"><name>c.mov</name><duration>100</duration></file>
+            <filter><effect><name>Time Remap</name><effectid>timeremap</effectid>
+              <parameter><parameterid>variablespeed</parameterid><value>1</value></parameter>
+              <parameter><parameterid>graphdict</parameterid>
+                <keyframe><when>0</when><value>0</value></keyframe>
+                <keyframe><when>12</when><value>12</value></keyframe>
+                <keyframe><when>24</when><value>36</value></keyframe>
+              </parameter>
+            </effect></filter>
+          </clipitem>
+          <clipitem id="clipitem-5">
+            <name>D</name>
+            <start>72</start><end>96</end><in>50</in><out>74</out>
+            <file id="file-1"/>
+            <filter><effect><name>Time Remap</name><effectid>timeremap</effectid>
+              <parameter><parameterid>speed</parameterid><value>100</value></parameter>
+              <parameter><parameterid>reverse</parameterid><value>TRUE</value></parameter>
+            </effect></filter>
+          </clipitem>
+        </track>
+      </video>
+      <audio>
+        <numOutputChannels>2</numOutputChannels>
+        <track>
+          <clipitem id="clipitem-3">
+            <name>A</name>
+            <start>0</start><end>-1</end><in>10</in><out>58</out>
+            <file id="file-1"/>
+            <sourcetrack><mediatype>audio</mediatype><trackindex>1</trackindex></sourcetrack>
+            <filter><effect><name>Audio Levels</name><effectid>audiolevels</effectid>
+              <parameter><parameterid>level</parameterid>
+                <keyframe><when>10</when><value>1</value></keyframe>
+                <keyframe><when>58</when><value>0.5</value></keyframe>
+              </parameter>
+            </effect></filter>
+            <filter><effect><name>Audio Pan</name><effectid>audiopan</effectid>
+              <parameter><parameterid>pan</parameterid><value>-1</value></parameter>
+            </effect></filter>
+            <link><linkclipref>clipitem-1</linkclipref></link>
+            <link><linkclipref>clipitem-3</linkclipref></link>
+          </clipitem>
+          <transitionitem>
+            <start>44</start><end>52</end><alignment>center</alignment>
+            <effect><name>Cross Fade (+3dB)</name><effectid>KGAudioTransCrossFade3dB</effectid></effect>
+          </transitionitem>
+          <clipitem id="clipitem-6">
+            <name>B</name>
+            <start>-1</start><end>96</end><in>100</in><out>148</out>
+            <file id="file-1"/>
+          </clipitem>
+        </track>
+      </audio>
+    </media>
+  </sequence>
+</xmeml>

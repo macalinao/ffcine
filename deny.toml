@@ -1,0 +1,31 @@
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = [
+  # ttf-parser unmaintained: transitive through cosmic-text (rustybuzz), no fix to take yet.
+  { id = "RUSTSEC-2026-0192", reason = "transitive via cosmic-text" },
+]
+
+[licenses]
+version = 2
+allow = [
+  "Apache-2.0",
+  "MIT",
+  "Unicode-3.0",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "WTFPL",
+] # WTFPL: ffmpeg-next
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

@@ -1,0 +1,101 @@
+# ffcine: GPU video finishing on ffmpeg (libav*) + libplacebo (Vulkan).
+# `ffcine` is a facade over the ffcine-* library crates, ffcine-cli the `ffcine`
+# binary, libplacebo-sys the bindgen FFI (no maintained libplacebo bindings on
+# crates.io). Crate map: docs/design.md#crates.
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/macalinao/ffcine"
+homepage = "https://github.com/macalinao/ffcine"
+readme = "README.md"
+authors = ["Ian Macalinao <me@ianm.com>"]
+keywords = ["video", "ffmpeg", "libplacebo", "vulkan", "color-grading"]
+categories = ["multimedia::video"]
+rust-version = "1.85"
+
+[workspace.dependencies]
+# Internal crates
+ffcine = { path = "crates/ffcine", version = "0.1.0", default-features = false }
+ffcine-core = { path = "crates/ffcine-core", version = "0.1.0" }
+ffcine-timeline = { path = "crates/ffcine-timeline", version = "0.1.0" }
+ffcine-import = { path = "crates/ffcine-import", version = "0.1.0" }
+ffcine-stabilize = { path = "crates/ffcine-stabilize", version = "0.1.0", default-features = false }
+ffcine-render = { path = "crates/ffcine-render", version = "0.1.0", default-features = false }
+ffcine-filters = { path = "crates/ffcine-filters", version = "0.1.0" }
+ffcine-reframe = { path = "crates/ffcine-reframe", version = "0.1.0" }
+ffcine-audio = { path = "crates/ffcine-audio", version = "0.1.0", default-features = false }
+ffcine-assembly = { path = "crates/ffcine-assembly", version = "0.1.0" }
+ffcine-hooks = { path = "crates/ffcine-hooks", version = "0.1.0" }
+ffcine-ingest = { path = "crates/ffcine-ingest", version = "0.1.0" }
+ffcine-text = { path = "crates/ffcine-text", version = "0.1.0" }
+ffcine-delivery = { path = "crates/ffcine-delivery", version = "0.1.0" }
+ffcine-triage = { path = "crates/ffcine-triage", version = "0.1.0", default-features = false }
+# Published as ffcine-libplacebo-sys (libplacebo-sys on crates.io is an unrelated 2019 crate).
+libplacebo-sys = { package = "ffcine-libplacebo-sys", path = "crates/libplacebo-sys", version = "0.1.0" }
+
+# External
+anyhow = "1"
+thiserror = "2"
+# OTIO JSON timeline model: key order kept, floats written back bit-exact.
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+# FCPXML and MLT XML importers.
+roxmltree = "0.21"
+# Text layout and rasterising for ffcine.text clips.
+cosmic-text = { version = "0.19", default-features = false, features = [
+  "std",
+  "swash",
+  "fontconfig",
+] }
+# edit.yaml importer.
+yaml_serde = "0.10"
+# Content keys of the assembly recipe cache.
+sha2 = "0.10"
+# Contact sheets and JPEG stills (`ffcine looks`).
+image = { version = "0.25", default-features = false, features = [
+  "png",
+  "jpeg",
+] }
+# Ingest checksums (verify copies against the card).
+blake3 = "1"
+# Command-line parsing, derive API.
+bpaf = { version = "0.9", features = ["derive"] }
+# libav* demux/decode/encode/mux; tracks ffmpeg majors (9.x <-> ffmpeg 9).
+ffmpeg-next = "9"
+bindgen = "0.73"
+pkg-config = "0.3"
+cc = "1"
+# Audio: EBU R128 loudness and true peak, WAV I/O (32-bit float), FFT cross-correlation.
+ebur128 = "0.1"
+hound = "3"
+rustfft = "6"
+# dlopen of the NVIDIA driver libraries (CUDA, optical flow) at run time.
+libloading = "0.8"
+
+# PNG decode and JPEG encode in `ffcine looks` are unusably slow unoptimised.
+[profile.dev.package.image]
+opt-level = 3
+[profile.dev.package.png]
+opt-level = 3
+[profile.dev.package.fdeflate]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+complexity = { level = "deny", priority = -1 }
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+module_name_repetitions = "allow"
+unwrap_used = "deny"
+clone_on_ref_ptr = "deny"

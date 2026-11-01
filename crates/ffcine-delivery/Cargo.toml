@@ -1,0 +1,21 @@
+[package]
+name = "ffcine-delivery"
+description = "Delivery extras from a timeline: YouTube chapters, music credits, still frames"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ffcine-core.workspace = true
+ffcine-timeline.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

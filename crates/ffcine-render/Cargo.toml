@@ -1,0 +1,30 @@
+[package]
+name = "ffcine-render"
+description = "ffcine render path: Pipeline, Grade, encoder settings, and the ffmpeg + libplacebo (Vulkan) backend"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[features]
+default = ["ffmpeg", "placebo"]
+# libav* demux/decode/encode/mux (probe, and the I/O half of `grade`).
+ffmpeg = ["dep:ffmpeg-next", "ffcine-core/ffmpeg", "ffcine-stabilize/nvof"]
+# libplacebo on Vulkan: the processing half of `grade`.
+placebo = ["dep:libplacebo-sys", "libplacebo-sys/libav"]
+
+[dependencies]
+ffcine-core.workspace = true
+ffcine-filters.workspace = true
+ffcine-stabilize.workspace = true
+ffmpeg-next = { workspace = true, optional = true }
+libplacebo-sys = { workspace = true, optional = true }
+
+[lints]
+workspace = true

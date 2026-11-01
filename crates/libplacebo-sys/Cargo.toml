@@ -1,0 +1,25 @@
+[package]
+name = "ffcine-libplacebo-sys"
+description = "Raw FFI bindings to libplacebo (bindgen), Vulkan backend"
+links = "placebo"
+build = "build.rs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+authors.workspace = true
+keywords = ["libplacebo", "vulkan", "video", "ffi", "bindings"]
+categories = ["external-ffi-bindings", "multimedia::video"]
+rust-version.workspace = true
+
+[features]
+# libplacebo/utils/libav.h (pl_map_avframe_ex & co.), compiled from its header-only
+# implementation; needs the libav* headers.
+libav = ["dep:cc"]
+
+[build-dependencies]
+bindgen.workspace = true
+pkg-config.workspace = true
+cc = { workspace = true, optional = true }

@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mlt LC_NUMERIC="C" version="7.42.0" root="/tmp/ffimp-melt" title="color:red">
+  <profile description="HD 1080p 25 fps" width="1920" height="1080" progressive="1" sample_aspect_num="1" sample_aspect_den="1" display_aspect_num="16" display_aspect_den="9" frame_rate_num="25" frame_rate_den="1" colorspace="709"/>
+  <producer id="producer0" in="0" out="49">
+    <property name="length">15000</property>
+    <property name="eof">pause</property>
+    <property name="resource">red</property>
+    <property name="aspect_ratio">1</property>
+    <property name="mlt_service">color</property>
+  </producer>
+  <producer id="producer1" in="0" out="49">
+    <property name="length">15000</property>
+    <property name="eof">pause</property>
+    <property name="resource">blue</property>
+    <property name="aspect_ratio">1</property>
+    <property name="mlt_service">color</property>
+  </producer>
+  <tractor id="tractor0" in="0" out="9">
+    <track producer="producer0" in="40" out="49"/>
+    <track producer="producer1" in="0" out="9"/>
+    <transition id="transition0" out="9">
+      <property name="a_track">0</property>
+      <property name="b_track">1</property>
+      <property name="factory">loader</property>
+      <property name="mlt_service">luma</property>
+    </transition>
+    <transition id="transition1" out="9">
+      <property name="a_track">0</property>
+      <property name="b_track">1</property>
+      <property name="duck_threshold">0</property>
+      <property name="duck_attenuation">-12</property>
+      <property name="duck_level">0</property>
+      <property name="duck_fade_in">1500</property>
+      <property name="duck_fade_out">250</property>
+      <property name="prefix"></property>
+      <property name="start">-1</property>
+      <property name="accepts_blanks">1</property>
+      <property name="mlt_service">mix</property>
+    </transition>
+  </tractor>
+  <playlist id="playlist0">
+    <entry producer="producer0" in="0" out="39"/>
+    <entry producer="tractor0" in="0" out="9"/>
+    <entry producer="producer1" in="10" out="49"/>
+  </playlist>
+  <producer id="producer2" in="0" out="99">
+    <property name="length">15000</property>
+    <property name="eof">pause</property>
+    <property name="resource">green</property>
+    <property name="aspect_ratio">1</property>
+    <property name="mlt_service">color</property>
+  </producer>
+  <playlist id="playlist1">
+    <entry producer="producer2" in="0" out="99"/>
+    <filter id="filter0">
+      <property name="background">colour:0</property>
+      <property name="mlt_service">affine</property>
+      <property name="transition.rect">10%/10%:50%x50%:80</property>
+    </filter>
+  </playlist>
+  <tractor id="tractor1" title="color:red" in="0" out="99">
+    <track producer="playlist0"/>
+    <track producer="playlist1"/>
+  </tractor>
+</mlt>

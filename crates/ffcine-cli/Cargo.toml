@@ -1,0 +1,37 @@
+[package]
+name = "ffcine-cli"
+description = "ffcine command-line interface"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories = ["command-line-utilities", "multimedia::video"]
+rust-version.workspace = true
+
+[[bin]]
+name = "ffcine"
+path = "src/main.rs"
+
+[features]
+default = ["gpu"]
+# The GPU commands (grade, batch, stabilize, jitter, probe, import) and the GPU doctor checks:
+# links libav* and libplacebo. Without it (`--no-default-features`, the macOS offload build)
+# the binary has ingest, catalog and doctor only, and needs no system libraries.
+gpu = ["audio", "ffcine/ffmpeg", "ffcine/placebo", "ffcine/nvof", "dep:image"]
+# `sync` (recorder WAVs to camera clips) and `audio` (the mix): libav* only, no GPU, so the Mac
+# build can have them: `--no-default-features --features audio`.
+audio = ["ffcine/audio"]
+
+[dependencies]
+ffcine.workspace = true
+anyhow.workspace = true
+bpaf.workspace = true
+image = { workspace = true, optional = true }
+serde_json.workspace = true
+
+[lints]
+workspace = true

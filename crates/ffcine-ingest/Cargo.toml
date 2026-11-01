@@ -1,0 +1,24 @@
+[package]
+name = "ffcine-ingest"
+description = "ffcine card offload (verified copy, backup, manifest), per-camera clock fixes and the clip catalog with picture profile detection; no GPU, runs on macOS"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ffcine-core.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+yaml_serde.workspace = true
+blake3.workspace = true
+
+[lints]
+workspace = true

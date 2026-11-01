@@ -1,0 +1,23 @@
+TITLE: Sample Day 3
+FCM: NON-DROP FRAME
+
+001  A001     V     C        01:00:00:00 01:00:04:00 01:00:00:00 01:00:04:00
+* FROM CLIP NAME: beach.mov
+* SOURCE FILE: /media/beach.mov
+*ASC_SOP (1.1 1.0 0.9)(0.01 0.0 -0.01)(1.0 1.0 1.05)
+*ASC_SAT 0.9
+* LOC: 01:00:01:00 RED   wave
+002  A001     V     C        01:00:04:00 01:00:04:00 01:00:04:00 01:00:04:00
+002  A003     V     D    025 03:00:00:00 03:00:03:00 01:00:04:00 01:00:07:00
+* FROM CLIP NAME: beach.mov
+* TO CLIP NAME: market.mov
+* ASC_CC_XML sh030
+003  A004     AA/V  C        04:00:00:00 04:00:04:00 01:00:07:00 01:00:09:00
+M2   A004       050.0                04:00:00:00
+* FROM CLIP NAME: talk.mov
+* COMMENT: interview
+004  A005     V     W001 010 05:00:00:00 05:00:02:00 01:00:09:00 01:00:11:00
+* FROM CLIP NAME: sunset.mov
+005  A006     V     K B      06:00:00:00 06:00:01:00 01:00:11:00 01:00:12:00
+006  A007     A2    C        07:00:00:00 07:00:01:00 01:00:12:00 01:00:13:00
+* FROM CLIP NAME: wind.wav

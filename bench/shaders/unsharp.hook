@@ -1,0 +1,18 @@
+//!HOOK PREOUTPUT
+//!BIND HOOKED
+//!DESC unsharp 5x5 luma (render.py gpu_shaders.unsharp)
+// ffmpeg unsharp=5:5:amount on BT.601 luma: separable binomial [1 4 6 4 1]/16 blur,
+// out = in + AMOUNT * (in - blur), the same delta on R, G and B. Same maths as gpu_shaders.py,
+// with the amount as a #define.
+#define AMOUNT 0.30
+vec4 hook() {
+    const vec3 k = vec3(0.299, 0.587, 0.114);
+    const float w[5] = float[5](1.0, 4.0, 6.0, 4.0, 1.0);
+    vec4 c = HOOKED_texOff(vec2(0.0));
+    float b = 0.0;
+    for (int j = -2; j <= 2; j++)
+        for (int i = -2; i <= 2; i++)
+            b += w[i + 2] * w[j + 2] * dot(HOOKED_texOff(vec2(float(i), float(j))).rgb, k);
+    c.rgb += AMOUNT * (dot(c.rgb, k) - b / 256.0);
+    return c;
+}

@@ -1,0 +1,25 @@
+[package]
+name = "ffcine-core"
+description = "ffcine core types: errors, colour spaces, 3D LUTs, media info, 2D geometry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[features]
+# `Error::Ffmpeg` (From<ffmpeg_next::Error>), for crates that call libav*.
+ffmpeg = ["dep:ffmpeg-next"]
+
+[dependencies]
+thiserror.workspace = true
+serde_json.workspace = true
+ffmpeg-next = { workspace = true, optional = true }
+
+[lints]
+workspace = true

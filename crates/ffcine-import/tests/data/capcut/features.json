@@ -1,0 +1,94 @@
+{
+  "id": "D0000000-0000-0000-0000-000000000000",
+  "name": "features",
+  "fps": 30.0,
+  "duration": 7000000,
+  "canvas_config": { "width": 1920, "height": 1080, "ratio": "16:9" },
+  "platform": { "app_version": "5.9.0", "os": "windows" },
+  "materials": {
+    "videos": [
+      { "id": "v1", "type": "video", "path": "##_draftpath_placeholder_0E685133-18CE-45ED-8CB8-2904A212EC80_##/media/a.mp4",
+        "duration": 10000000, "width": 3840, "height": 2160, "material_name": "a.mp4", "crop_ratio": "free" },
+      { "id": "v2", "type": "photo", "path": "/abs/b.jpg", "duration": 10800000000, "width": 1080, "height": 1920, "material_name": "b.jpg" }
+    ],
+    "audios": [
+      { "id": "a1", "type": "extract_music", "path": "music.mp3", "duration": 60000000, "name": "Song" }
+    ],
+    "texts": [
+      { "id": "tx1", "type": "text", "alignment": 1,
+        "content": "{\"text\":\"Hello\\nWorld\",\"styles\":[{\"range\":[0,11],\"size\":10,\"font\":{\"path\":\"/fonts/Inter-Bold.ttf\"},\"fill\":{\"content\":{\"solid\":{\"color\":[1,0,0]}}},\"bold\":true}]}" }
+    ],
+    "speeds": [
+      { "id": "s1", "type": "speed", "mode": 0, "speed": 1.0, "curve_speed": null },
+      { "id": "s2", "type": "speed", "mode": 0, "speed": 2.0, "curve_speed": null },
+      { "id": "s3", "type": "speed", "mode": 1, "speed": 1.0,
+        "curve_speed": { "id": "cs1", "name": "Custom", "speed_points": [ { "x": 0.0, "y": 1.0 }, { "x": 1.0, "y": 3.0 } ] } }
+    ],
+    "transitions": [
+      { "id": "t1", "type": "transition", "name": "Dissolve", "duration": 500000, "effect_id": "322577", "is_overlap": true }
+    ],
+    "canvases": [ { "id": "c1", "type": "canvas_color", "color": "", "blur": 0.0 } ],
+    "audio_fades": [ { "id": "f1", "type": "audio_fade", "fade_in_duration": 1000000, "fade_out_duration": 2000000 } ],
+    "effects": [ { "id": "e1", "type": "brightness", "value": 0.1 } ],
+    "video_effects": [ { "id": "ve1", "type": "video_effect", "name": "Glitch", "effect_id": "1234", "resource_id": "abcd" } ],
+    "filters": [ { "id": "fl1", "type": "filter", "name": "Warm", "effect_id": "5678", "value": 1.0 } ],
+    "material_animations": [
+      { "id": "an1", "type": "sticker_animation", "animations": [ { "type": "in", "name": "Fade In", "duration": 500000, "start": 0 } ] }
+    ],
+    "unused_pool": [ { "id": "u1", "x": 1 } ]
+  },
+  "tracks": [
+    { "id": "trk-v", "type": "video", "attribute": 0, "flag": 0, "segments": [
+      { "id": "A1111111-1111-1111-1111-111111111111", "material_id": "v1",
+        "source_timerange": { "start": 1000000, "duration": 2000000 },
+        "target_timerange": { "start": 0, "duration": 2000000 },
+        "speed": 1.0, "volume": 1.0, "visible": true, "render_index": 0,
+        "extra_material_refs": [ "s1", "t1", "c1" ],
+        "clip": { "alpha": 0.8, "flip": { "horizontal": true, "vertical": false }, "rotation": 30.0,
+                  "scale": { "x": 1.2, "y": 1.2 }, "transform": { "x": 0.5, "y": 0.5 } },
+        "common_keyframes": [
+          { "id": "k1", "property_type": "KFTypePositionX", "keyframe_list": [
+            { "id": "k1a", "curveType": "Line", "time_offset": 0, "values": [0.0] },
+            { "id": "k1b", "curveType": "Line", "time_offset": 1000000, "values": [1.0] } ] },
+          { "id": "k2", "property_type": "KFTypeMask", "keyframe_list": [
+            { "id": "k2a", "time_offset": 0, "values": [1.0] } ] }
+        ] },
+      { "id": "B2222222-2222-2222-2222-222222222222", "material_id": "v2",
+        "source_timerange": { "start": 0, "duration": 4000000 },
+        "target_timerange": { "start": 2000000, "duration": 2000000 },
+        "speed": 2.0, "volume": 1.0, "extra_material_refs": [ "s2" ],
+        "clip": { "alpha": 1.0, "flip": { "horizontal": false, "vertical": false }, "rotation": 0.0,
+                  "scale": { "x": 1.0, "y": 1.0 }, "transform": { "x": 0.0, "y": 0.0 } } },
+      { "id": "C3333333-3333-3333-3333-333333333333", "material_id": "v1",
+        "source_timerange": { "start": 0, "duration": 4000000 },
+        "target_timerange": { "start": 5000000, "duration": 2000000 },
+        "speed": 1.0, "volume": 0.0, "extra_material_refs": [ "s3", "e1", "ve1" ],
+        "common_keyframes": [
+          { "id": "k3", "property_type": "KFTypeSaturation", "keyframe_list": [
+            { "id": "k3a", "curveType": "Bezier", "time_offset": 0, "values": [0.2] },
+            { "id": "k3b", "curveType": "Line", "time_offset": 1000000, "values": [0.5] } ] }
+        ] }
+    ] },
+    { "id": "trk-t", "type": "text", "segments": [
+      { "id": "T4444444-4444-4444-4444-444444444444", "material_id": "tx1",
+        "target_timerange": { "start": 1000000, "duration": 2000000 },
+        "extra_material_refs": [ "an1" ],
+        "clip": { "alpha": 1.0, "rotation": 0.0, "scale": { "x": 1.0, "y": 1.0 }, "transform": { "x": 0.0, "y": -0.8 } } }
+    ] },
+    { "id": "trk-f", "type": "filter", "segments": [
+      { "id": "F5555555-5555-5555-5555-555555555555", "material_id": "fl1",
+        "target_timerange": { "start": 0, "duration": 2000000 } }
+    ] },
+    { "id": "trk-a", "type": "audio", "segments": [
+      { "id": "M6666666-6666-6666-6666-666666666666", "material_id": "a1",
+        "source_timerange": { "start": 0, "duration": 6000000 },
+        "target_timerange": { "start": 0, "duration": 6000000 },
+        "speed": 1.0, "volume": 0.5, "extra_material_refs": [ "f1" ],
+        "common_keyframes": [
+          { "id": "k4", "property_type": "KFTypeVolume", "keyframe_list": [
+            { "id": "k4a", "time_offset": 0, "values": [1.0] },
+            { "id": "k4b", "time_offset": 3000000, "values": [0.5] } ] }
+        ] }
+    ] }
+  ]
+}

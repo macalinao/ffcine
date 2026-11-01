@@ -1,0 +1,32 @@
+[package]
+name = "ffcine-audio"
+description = "Per-timeline audio: recorder sync, clean chain, R128 levelling, buses with ducking, master limiter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[features]
+default = ["ffmpeg"]
+# libav* decode of any container (camera clips) and the libavfilter clean chain. Without it only
+# WAV sources load and the clean chain is just the high-pass.
+ffmpeg = ["dep:ffmpeg-next", "ffcine-core/ffmpeg"]
+
+[dependencies]
+ffcine-core.workspace = true
+ffcine-timeline.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ebur128.workspace = true
+hound.workspace = true
+rustfft.workspace = true
+ffmpeg-next = { workspace = true, optional = true }
+
+[lints]
+workspace = true

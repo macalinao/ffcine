@@ -1,0 +1,13 @@
+clip,candidate,reference,ssim_y,ssim_all,psnr_y,psnr_avg
+payday,onepass_full,proto_cpu,0.986021,0.988216,47.848288,48.48239
+payday,onepass_compat,proto_cpu,0.997258,0.997455,54.414038,54.487916
+payday,proto_gpu,proto_cpu,0.997259,0.997456,54.415864,54.490067
+nightpath,onepass_full,proto_cpu,0.977198,0.980668,41.966048,42.875642
+nightpath,onepass_compat,proto_cpu,0.98371,0.985133,42.574862,43.290465
+nightpath,proto_gpu,proto_cpu,0.984341,0.985203,42.703335,43.3481
+r10,onepass_full,proto_cpu,0.987932,0.991088,45.038073,46.536361
+r10,onepass_compat,proto_cpu,0.996502,0.997091,51.727526,52.670763
+r10,proto_gpu,proto_cpu,0.996507,0.997041,50.919884,52.008098
+verdict,onepass_full,proto_cpu,0.604502,0.692242,13.41269,15.077451
+verdict,proto_gpu,proto_cpu,0.996241,0.996419,49.994417,50.802652
+verdict,onepass_stab,proto_cpu,0.985551,0.985783,46.305596,46.541704

@@ -1,0 +1,75 @@
+# A small edit.yaml in the Python prototype's format, for the importer tests.
+sources:
+  dji_dir: media
+  iphone_dir: media
+
+output:
+  fps: 24000/1001
+  preview: {width: 1920, height: 1080}
+  audio: {lufs: -14, true_peak: -1}
+
+grade:
+  look: day
+  lut: normal
+  gamma: 1.0
+  light: 0.6
+
+looks:
+  day: {warmth: 0.022, contrast: 0.16}
+  night: {gamma: 1.22, denoise: 3}
+
+luts:
+  normal: luts/normal.cube
+
+style: {fonts_dir: fonts, serif: Serif.ttf}
+cards: {delay: 0.4, fade_in: 0.7, hold: 2.5, fade_out: 0.6, sfx: {file: whoosh.wav, at: 0.0, gain: 0}}
+
+sfx:
+  dir: sfx
+  ref_dbfs: -18
+  public_map:
+    meme/giggle.wav: giggle.wav
+
+music:
+  level_lufs: -20.0
+  duck_db: -12.0
+  nat_duck_db: -7.0
+  duck_release: 0.5
+  tracks:
+    m: {file: music.mp3, attribution: someone}
+  cues:
+    - {track: m, shot: a, in: 5.0, fade_in: 0.05}
+
+audio:
+  dialogue_lufs: -18.0
+  xfade: 0.125
+  clean: 0.5
+
+ambience:
+  - {from: a, to: b, src: dji:0002, in: 0.5, out: 3.5, level_lufs: -36, lowpass: 9000}
+
+shots:
+  - id: a
+    src: dji:0001
+    in: 1.0
+    out: 3.0
+    audio: orig
+    look: night
+    chapter: Intro
+    label: first
+    subs: [[1.5, 2.5, "hi *there*"]]
+    sfx: [{file: whoosh.wav, at: -0.2}]
+    vignette: 0.3
+  - {id: b, src: dji:0002, in: 0, out: 4, speed: 2, dissolve: 0.5, freeze: 1.0, card: 'day 1',
+     grade: {gamma: 1.2}, sfx: [{file: meme/giggle.wav, at: 0.5, gain: -4}]}
+  - id: c
+    layout: split
+    dur: 2
+    gap: 0.01
+    audio: music
+    panels:
+      - {src: iphone:IMG_1.HEIC, live: true, still_dur: 1}
+      - {src: iphone:IMG_2.MOV, in: 0.5, out: 1.0, focus: [0.5, 0.4]}
+  - {id: d, src: dji:0001, in: 0, out: 1, skip: true}
+  - {id: e, src: dji:0001, in: 10, out: 16, ramp: [[0, 2], [1, 4]], blend: 3, stabilize: 30,
+     punch: [{at: 1.0, zoom: 1.3}]}

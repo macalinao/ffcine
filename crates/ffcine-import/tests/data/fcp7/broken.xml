@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xmeml version="5">
+  <sequence>
+    <name>Broken</name>
+    <rate><timebase>25</timebase></rate>
+    <media><video><track>
+      <clipitem id="c1"><name>Ok</name><start>0</start><end>25</end><in>0</in><out>25</out><file id="f1"><name>x.mov</name><pathurl>file:///x.mov</pathurl></file></clipitem>
+      <clipitem id="c2"><name>Bad</name><start>abc</start><end>50</end><in>0</in><out>25</out></clipitem>
+      <hologramitem><start>50</start><end>75</end></hologramitem>
+      <clipitem id="c3"><name>Ref</name><start>50</start><end>75</end><in>0</in><out>25</out><file id="nope"/></clipitem>
+    </track></video></media>
+  </sequence>
+</xmeml>

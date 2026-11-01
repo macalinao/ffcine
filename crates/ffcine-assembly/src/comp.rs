@@ -1,0 +1,548 @@
+//! Compositing maths for assembly, backend-neutral and per frame: the per-shot finish
+//! (`ffcine.fx.vignette/1`, `fade/1`, `flash/1`, `darken/1`), transition curves
+//! (`ffcine.transition/1`), split-screen geometry (`ffcine.comp.layout/1`) and overlay placement
+//! (`ffcine.geo.transform/1` + `ffcine.comp.blend/1`). `exec` turns these into GPU hooks and
+//! layers.
+
+use std::f64::consts::FRAC_PI_2;
+
+use ffcine_reframe::Keyed;
+use serde_json::{Map, Value, json};
+
+fn f(m: &Map<String, Value>, k: &str) -> Option<f64> {
+    m.get(k).and_then(Value::as_f64)
+}
+
+/// `[r, g, b]` from a list or `"black"`/`"white"`.
+pub fn colour(v: Option<&Value>, default: [f64; 3]) -> [f64; 3] {
+    match v {
+        Some(Value::String(s)) if s == "white" => [1.0; 3],
+        Some(Value::String(s)) if s == "black" => [0.0; 3],
+        Some(Value::Array(a)) if a.len() >= 3 => {
+            let c = |i: usize| a[i].as_f64().unwrap_or(0.0).clamp(0.0, 1.0);
+            [c(0), c(1), c(2)]
+        }
+        _ => default,
+    }
+}
+
+/// Per-shot finishing after the grade (`render.py`'s `post` filters).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Finish {
+    /// `ffcine.fx.vignette/1` `amount`; ffmpeg's `vignette` angle is `amount · π/2`.
+    pub vignette: f64,
+    /// `ffcine.fx.darken/1` `amount`: RGB multiplier.
+    pub darken: f64,
+    /// `ffcine.fx.fade/1`: seconds from / to `fade_colour` at the clip's start / end.
+    pub fade_in: f64,
+    pub fade_out: f64,
+    pub fade_colour: [f64; 3],
+    /// `ffcine.fx.flash/1`: `at` seconds from the clip's first frame, then one lift per frame.
+    pub flash: Option<(f64, Vec<f64>)>,
+}
+
+impl Default for Finish {
+    fn default() -> Self {
+        Self {
+            vignette: 0.0,
+            darken: 1.0,
+            fade_in: 0.0,
+            fade_out: 0.0,
+            fade_colour: [0.0; 3],
+            flash: None,
+        }
+    }
+}
+
+impl Finish {
+    /// Folds one effect's `metadata.ffcine` into the finish; `false` if `schema` isn't one.
+    pub fn add(&mut self, schema: (&str, u32), m: &Map<String, Value>) -> bool {
+        match schema {
+            ("ffcine.fx.vignette", 1) => self.vignette = f(m, "amount").unwrap_or(0.0),
+            ("ffcine.fx.darken", 1) => self.darken = f(m, "amount").unwrap_or(1.0),
+            ("ffcine.fx.fade", 1) => {
+                self.fade_in = f(m, "in").unwrap_or(0.0).max(0.0);
+                self.fade_out = f(m, "out").unwrap_or(0.0).max(0.0);
+                self.fade_colour = colour(m.get("colour"), [0.0; 3]);
+            }
+            ("ffcine.fx.flash", 1) => {
+                let levels = m.get("levels").and_then(Value::as_array).map_or_else(
+                    || vec![0.5, 0.5, 0.2],
+                    |a| a.iter().filter_map(Value::as_f64).collect(),
+                );
+                self.flash = Some((f(m, "at").unwrap_or(0.0), levels));
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    pub fn is_identity(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Whether the result depends on where a piece sits in its clip (fades, flash).
+    pub fn is_timed(&self) -> bool {
+        self.fade_in > 0.0 || self.fade_out > 0.0 || self.flash.is_some()
+    }
+
+    /// Per-frame `(fade, lift)` for frames `at..at + n` of a clip `len` frames long, ffmpeg's
+    /// `fade` maths (frame time `i / rate`; `fade` 0 is the colour, 1 the picture).
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+    pub fn tracks(&self, at: i64, n: i64, len: i64, rate: f64) -> (Vec<f32>, Vec<f32>) {
+        let flash_at = self
+            .flash
+            .as_ref()
+            .map(|(s, l)| ((s * rate).round() as i64, l));
+        (at..at + n)
+            .map(|i| {
+                let t = i as f64 / rate;
+                let mut k: f64 = 1.0;
+                if self.fade_in > 0.0 {
+                    k = k.min(t / self.fade_in);
+                }
+                if self.fade_out > 0.0 {
+                    let st = len as f64 / rate - self.fade_out;
+                    k = k.min(1.0 - (t - st) / self.fade_out);
+                }
+                let lift = flash_at
+                    .and_then(|(s, l)| usize::try_from(i - s).ok().and_then(|j| l.get(j)))
+                    .copied()
+                    .unwrap_or(0.0);
+                (k.clamp(0.0, 1.0) as f32, lift as f32)
+            })
+            .unzip()
+    }
+
+    /// `render.py`'s vignette angle in radians.
+    pub fn vignette_angle(&self) -> f64 {
+        self.vignette * FRAC_PI_2
+    }
+}
+
+/// How a transition mixes its two sides.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TransitionKind {
+    Dissolve,
+    /// Out to the colour over the first half, in from it over the second.
+    Dip([f64; 3]),
+    /// Blacks lifted to white and back (a shutter flash at the cut).
+    Flash,
+    /// The picture moves the way of the unit vector, motion-blurred.
+    Whip([f64; 2]),
+}
+
+impl TransitionKind {
+    /// From a `Transition`'s `metadata.ffcine` (`ffcine.transition/1`); anything else is a
+    /// dissolve (docs/timeline.md).
+    pub fn from_meta(m: Option<&Map<String, Value>>) -> Self {
+        let Some(m) = m else { return Self::Dissolve };
+        match m.get("kind").and_then(Value::as_str) {
+            Some("dip") => Self::Dip(colour(m.get("colour"), [0.0; 3])),
+            Some("flash") => {
+                let c = colour(m.get("colour"), [1.0; 3]);
+                if c.iter().all(|x| (x - 1.0).abs() < 1e-9) {
+                    Self::Flash
+                } else {
+                    Self::Dip(c)
+                }
+            }
+            Some("whip") => Self::Whip(match m.get("direction").and_then(Value::as_str) {
+                Some("right") => [1.0, 0.0],
+                Some("up") => [0.0, -1.0],
+                Some("down") => [0.0, 1.0],
+                _ => [-1.0, 0.0],
+            }),
+            _ => Self::Dissolve,
+        }
+    }
+
+    pub fn recipe(&self) -> Value {
+        match self {
+            Self::Dissolve => json!("dissolve"),
+            Self::Dip(c) => json!({"dip": c}),
+            Self::Flash => json!("flash"),
+            Self::Whip(d) => json!({"whip": d}),
+        }
+    }
+}
+
+/// Progress through frame `i` of `n`, sampled at the frame's middle.
+#[allow(clippy::cast_precision_loss)]
+pub fn progress(i: i64, n: i64) -> f64 {
+    ((i as f64 + 0.5) / n.max(1) as f64).clamp(0.0, 1.0)
+}
+
+/// `3p² − 2p³`.
+pub fn smoothstep(p: f64) -> f64 {
+    let p = p.clamp(0.0, 1.0);
+    p * p * (3.0 - 2.0 * p)
+}
+
+/// A rectangle in output pixels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Rect {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+}
+
+/// Split-screen layout (`ffcine.comp.layout/1`), `render.py` `layout_geom` and `layout_chain`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Layout {
+    /// `split`/`row` (side by side), `column` (stacked), `1+2` (one left, two stacked right).
+    pub kind: String,
+    pub gap: f64,
+    pub margin: f64,
+    pub radius: f64,
+    pub weights: Vec<f64>,
+    pub stagger: f64,
+    pub slide: f64,
+    pub enter: bool,
+    pub first_static: bool,
+}
+
+impl Layout {
+    pub fn parse(m: &Map<String, Value>) -> Self {
+        Self {
+            kind: m
+                .get("layout")
+                .and_then(Value::as_str)
+                .unwrap_or("split")
+                .to_owned(),
+            gap: f(m, "gap").unwrap_or(0.008),
+            margin: f(m, "margin").unwrap_or(0.0),
+            radius: f(m, "radius").unwrap_or(0.012),
+            weights: m
+                .get("weights")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Value::as_f64).collect())
+                .unwrap_or_default(),
+            stagger: f(m, "stagger").unwrap_or(0.22),
+            slide: f(m, "slide").unwrap_or(0.42),
+            enter: m.get("enter").and_then(Value::as_str) != Some("none"),
+            first_static: m
+                .get("first_static")
+                .and_then(Value::as_bool)
+                .unwrap_or(true),
+        }
+    }
+
+    /// Corner radius in pixels for a frame `h` tall.
+    pub fn radius_px(&self, h: u32) -> f64 {
+        (self.radius * f64::from(h)).round()
+    }
+
+    /// Panel rectangles for `k` panels in a `w x h` frame (even sizes, as `render.py`).
+    #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+    #[allow(clippy::many_single_char_names)]
+    pub fn rects(&self, k: usize, w: u32, h: u32) -> Vec<Rect> {
+        let (fw, fh) = (f64::from(w), f64::from(h));
+        let gap = (self.gap * fh).round();
+        let mar = (self.margin * fh).round();
+        let even = |x: f64| (x / 2.0).floor() * 2.0;
+        // Sizes along one axis: `avail` split by the weights, the last one taking the rest.
+        let split = |avail: f64, k: usize, weights: &[f64]| -> Vec<f64> {
+            let wts: Vec<f64> = if weights.len() == k {
+                weights.to_vec()
+            } else {
+                vec![1.0; k]
+            };
+            let sum: f64 = wts.iter().sum();
+            let mut v: Vec<f64> = wts
+                .iter()
+                .map(|x| even((avail * x / sum).floor()))
+                .collect();
+            if v.pop().is_some() {
+                let rest: f64 = v.iter().sum();
+                v.push(even(avail - rest));
+            }
+            v
+        };
+        let row = |x0: f64, y0: f64, avail_w: f64, ph: f64, k: usize, wts: &[f64]| {
+            let mut x = x0;
+            split(avail_w, k, wts)
+                .into_iter()
+                .map(|pw| {
+                    let r = Rect {
+                        x,
+                        y: y0,
+                        w: pw,
+                        h: ph,
+                    };
+                    x += pw + gap;
+                    r
+                })
+                .collect::<Vec<_>>()
+        };
+        let col = |x0: f64, y0: f64, pw: f64, avail_h: f64, k: usize, wts: &[f64]| {
+            let mut y = y0;
+            split(avail_h, k, wts)
+                .into_iter()
+                .map(|ph| {
+                    let r = Rect {
+                        x: x0,
+                        y,
+                        w: pw,
+                        h: ph,
+                    };
+                    y += ph + gap;
+                    r
+                })
+                .collect::<Vec<_>>()
+        };
+        let kf = k.max(1) as f64;
+        match self.kind.as_str() {
+            "column" => col(
+                mar,
+                mar,
+                even(fw - 2.0 * mar),
+                fh - 2.0 * mar - gap * (kf - 1.0),
+                k,
+                &self.weights,
+            ),
+            "1+2" if k == 3 => {
+                let wts = if self.weights.len() == 2 {
+                    self.weights.clone()
+                } else {
+                    vec![1.0, 1.0]
+                };
+                let cols = row(
+                    mar,
+                    mar,
+                    fw - 2.0 * mar - gap,
+                    even(fh - 2.0 * mar),
+                    2,
+                    &wts,
+                );
+                let mut v = vec![cols[0]];
+                v.extend(col(cols[1].x, mar, cols[1].w, fh - 2.0 * mar - gap, 2, &[]));
+                v
+            }
+            _ => row(
+                mar,
+                mar,
+                fw - 2.0 * mar - gap * (kf - 1.0),
+                even(fh - 2.0 * mar),
+                k,
+                &self.weights,
+            ),
+        }
+    }
+
+    /// Panel `i`'s slide-in offset in pixels at `t` seconds into the layout: panels enter
+    /// `stagger` apart, alternating from below and above (from the right and left in a column),
+    /// easing out over `slide` (`1 − (1 − u)³`).
+    #[allow(clippy::many_single_char_names)]
+    pub fn enter_offset(&self, i: usize, t: f64, w: u32, h: u32) -> [f64; 2] {
+        if !self.enter || (i == 0 && self.first_static) {
+            return [0.0; 2];
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let t0 = i as f64 * self.stagger - if self.first_static { 0.0 } else { 0.16 };
+        let u = ((t - t0) / self.slide.max(1e-6)).clamp(0.0, 1.0);
+        let e = 1.0 - (1.0 - u).powi(3);
+        let d = if i % 2 == 0 { 1.0 } else { -1.0 };
+        if self.kind == "column" {
+            [d * f64::from(w) * (1.0 - e), 0.0]
+        } else {
+            [0.0, d * f64::from(h) * (1.0 - e)]
+        }
+    }
+}
+
+/// The source window (x, y, w, h) of a `sw x sh` picture covering a `w x h` slot around `focus`
+/// (fractions, `[0.5, 0.5]` = centred), zoomed in by `zoom` (>= 1) around the same point.
+pub fn cover(sw: f64, sh: f64, w: f64, h: f64, focus: [f64; 2], zoom: f64) -> Rect {
+    let (mut cw, mut ch) = if sw / sh > w / h {
+        (sh * w / h, sh)
+    } else {
+        (sw, sw * h / w)
+    };
+    let z = zoom.max(1e-3);
+    cw /= z;
+    ch /= z;
+    Rect {
+        x: (sw - cw) * focus[0].clamp(0.0, 1.0),
+        y: (sh - ch) * focus[1].clamp(0.0, 1.0),
+        w: cw,
+        h: ch,
+    }
+}
+
+/// An overlay's placement and opacity over time: `ffcine.geo.transform/1` (`translate_x`,
+/// `translate_y` as fractions of the frame from its middle, `scale_x`, `scale_y` of the picture
+/// fitted inside the frame) and `ffcine.comp.blend/1` (`opacity`, `radius` as a fraction of the
+/// frame height). Each may be keyframes in source time.
+#[derive(Debug, Clone)]
+pub struct Placement {
+    tx: Keyed<f64>,
+    ty: Keyed<f64>,
+    sx: Keyed<f64>,
+    sy: Keyed<f64>,
+    opacity: Keyed<f64>,
+    pub radius: f64,
+}
+
+impl Placement {
+    /// From the two effects' parameters (either may be empty). Unparseable values fall back
+    /// to the defaults; `warn` gets what's ignored.
+    pub fn parse(
+        transform: &Map<String, Value>,
+        blend: &Map<String, Value>,
+        warn: &mut dyn FnMut(String),
+    ) -> Self {
+        let mut key = |m: &Map<String, Value>, k: &'static str, d: f64| match m.get(k) {
+            None => Keyed::Const(d),
+            Some(v) => Keyed::parse(v, k).unwrap_or_else(|e| {
+                warn(format!("{k}: {e}"));
+                Keyed::Const(d)
+            }),
+        };
+        let p = Self {
+            tx: key(transform, "translate_x", 0.0),
+            ty: key(transform, "translate_y", 0.0),
+            sx: key(transform, "scale_x", 1.0),
+            sy: key(transform, "scale_y", 1.0),
+            opacity: key(blend, "opacity", 1.0),
+            radius: f(blend, "radius").unwrap_or(0.0),
+        };
+        if f(transform, "rotate_deg").is_some_and(|r| r != 0.0) {
+            warn("overlay rotation not rendered yet".into());
+        }
+        if transform
+            .get("anchor")
+            .and_then(Value::as_array)
+            .is_some_and(|a| a.iter().any(|v| v.as_f64().is_some_and(|x| x != 0.0)))
+        {
+            warn("overlay anchor not rendered yet (scaled about its middle)".into());
+        }
+        p
+    }
+
+    /// The rectangle of a `sw x sh` picture at source time `t` in a `w x h` frame.
+    pub fn rect(&self, t: f64, sw: f64, sh: f64, w: u32, h: u32) -> Rect {
+        let (fw, fh) = (f64::from(w), f64::from(h));
+        let fit = (fw / sw).min(fh / sh);
+        let ev = |k: &Keyed<f64>, d| k.eval(t).unwrap_or(d);
+        let (pw, ph) = (sw * fit * ev(&self.sx, 1.0), sh * fit * ev(&self.sy, 1.0));
+        let (cx, cy) = (
+            fw / 2.0 + ev(&self.tx, 0.0) * fw,
+            fh / 2.0 + ev(&self.ty, 0.0) * fh,
+        );
+        Rect {
+            x: cx - pw / 2.0,
+            y: cy - ph / 2.0,
+            w: pw,
+            h: ph,
+        }
+    }
+
+    pub fn opacity(&self, t: f64) -> f64 {
+        self.opacity.eval(t).unwrap_or(1.0).clamp(0.0, 1.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[allow(clippy::needless_pass_by_value)]
+    fn obj(v: Value) -> Map<String, Value> {
+        v.as_object().cloned().unwrap()
+    }
+
+    #[test]
+    fn fades_follow_ffmpeg() {
+        let mut fin = Finish::default();
+        assert!(fin.add(
+            ("ffcine.fx.fade", 1),
+            &obj(json!({"in": 1.0, "out": 0.5, "colour": "white"}))
+        ));
+        assert!(fin.is_timed());
+        assert_eq!(fin.fade_colour, [1.0; 3]);
+        // 24 fps, a 48-frame clip: in over frames 0..24, out over the last 12.
+        let (k, lift) = fin.tracks(0, 48, 48, 24.0);
+        assert!(k[0].abs() < 1e-6);
+        assert!((k[12] - 0.5).abs() < 1e-6);
+        assert!((k[30] - 1.0).abs() < 1e-6);
+        assert!((k[47] - 1.0 / 12.0).abs() < 1e-5);
+        assert!(lift.iter().all(|l| *l == 0.0));
+        // A later piece of the same clip gets the same values.
+        let (k2, _) = fin.tracks(40, 8, 48, 24.0);
+        assert_eq!(k2, k[40..]);
+    }
+
+    #[test]
+    fn flash_lifts_frames() {
+        let mut fin = Finish::default();
+        fin.add(("ffcine.fx.flash", 1), &obj(json!({"at": 0.5})));
+        let (_, lift) = fin.tracks(10, 6, 100, 24.0);
+        assert_eq!(lift, [0.0, 0.0, 0.5, 0.5, 0.2, 0.0]);
+    }
+
+    #[test]
+    fn transition_kinds() {
+        let k = |v: Value| TransitionKind::from_meta(Some(&obj(v)));
+        assert_eq!(k(json!({"kind": "dip"})), TransitionKind::Dip([0.0; 3]));
+        assert_eq!(
+            k(json!({"kind": "dip", "colour": "white"})),
+            TransitionKind::Dip([1.0; 3])
+        );
+        assert_eq!(k(json!({"kind": "flash"})), TransitionKind::Flash);
+        assert_eq!(
+            k(json!({"kind": "whip", "direction": "up"})),
+            TransitionKind::Whip([0.0, -1.0])
+        );
+        assert_eq!(k(json!({"kind": "wipe"})), TransitionKind::Dissolve);
+        assert_eq!(TransitionKind::from_meta(None), TransitionKind::Dissolve);
+    }
+
+    #[test]
+    fn layout_rects_match_render_py() {
+        let l = Layout::parse(&obj(json!({"layout": "split"})));
+        // render.py: gap round(0.008 * 1080) = 9, avail = 1920 - 9 = 1911, 954 + 956.
+        let r = l.rects(2, 1920, 1080);
+        assert_eq!((r[0].x, r[0].w, r[0].h), (0.0, 954.0, 1080.0));
+        assert_eq!((r[1].x, r[1].w), (963.0, 956.0));
+        let r3 = l.rects(3, 1920, 1080);
+        assert_eq!(r3.len(), 3);
+        assert!(r3[2].x + r3[2].w <= 1920.0);
+        let one_two =
+            Layout::parse(&obj(json!({"layout": "1+2", "gap": 0.01}))).rects(3, 1920, 1080);
+        assert_eq!(one_two[0].h, 1080.0);
+        assert_eq!(one_two[1].x, one_two[2].x);
+        assert!(one_two[2].y > one_two[1].y);
+        let col = Layout::parse(&obj(json!({"layout": "column"}))).rects(2, 1080, 1920);
+        assert_eq!(col[0].w, 1080.0);
+        assert!(col[1].y > col[0].y);
+    }
+
+    #[test]
+    fn panels_slide_in() {
+        let l = Layout::parse(&obj(json!({})));
+        assert_eq!(l.enter_offset(0, 0.0, 1920, 1080), [0.0; 2]);
+        let start = l.enter_offset(1, 0.0, 1920, 1080);
+        assert_eq!(start, [0.0, -1080.0]);
+        assert_eq!(l.enter_offset(1, 0.22 + 0.42, 1920, 1080), [0.0, 0.0]);
+        let mid = l.enter_offset(2, 0.44 + 0.21, 1920, 1080)[1];
+        assert!(mid > 0.0 && mid < 1080.0 * 0.2);
+    }
+
+    #[test]
+    fn cover_and_placement() {
+        let c = cover(3840.0, 2160.0, 960.0, 1080.0, [0.5, 0.5], 1.0);
+        assert!((c.w - 1920.0).abs() < 1e-9 && (c.x - 960.0).abs() < 1e-9);
+        let mut warns = Vec::new();
+        let p = Placement::parse(
+            &obj(json!({"translate_x": 0.25, "scale_x": 0.5, "scale_y": 0.5})),
+            &obj(json!({"opacity": [{"t": 0.0, "v": 0.0}, {"t": 1.0, "v": 1.0}], "radius": 0.02})),
+            &mut |w| warns.push(w),
+        );
+        assert_eq!(warns, Vec::<String>::new());
+        let r = p.rect(0.0, 1920.0, 1080.0, 1920, 1080);
+        assert_eq!((r.x, r.y, r.w, r.h), (960.0, 270.0, 960.0, 540.0));
+        assert!((p.opacity(0.5) - 0.5).abs() < 1e-9);
+    }
+}
