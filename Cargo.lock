@@ -370,7 +370,7 @@ dependencies = [
 
 [[package]]
 name = "ffcine"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ffcine-assembly",
  "ffcine-audio",
@@ -391,7 +391,7 @@ dependencies = [
 
 [[package]]
 name = "ffcine-assembly"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ffcine-audio",
  "ffcine-core",
@@ -411,7 +411,7 @@ dependencies = [
 
 [[package]]
 name = "ffcine-audio"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ebur128",
  "ffcine-core",
@@ -425,7 +425,7 @@ dependencies = [
 
 [[package]]
 name = "ffcine-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "bpaf",
@@ -436,7 +436,7 @@ dependencies = [
 
 [[package]]
 name = "ffcine-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ffmpeg-next",
  "serde_json",
@@ -445,7 +445,7 @@ dependencies = [
 
 [[package]]
 name = "ffcine-delivery"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ffcine-core",
  "ffcine-timeline",
@@ -454,7 +454,7 @@ dependencies = [
 
 [[package]]
 name = "ffcine-filters"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -462,7 +462,7 @@ dependencies = [
 
 [[package]]
 name = "ffcine-hooks"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ffcine-core",
  "ffcine-reframe",
@@ -473,7 +473,7 @@ dependencies = [
 
 [[package]]
 name = "ffcine-import"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ffcine-core",
  "ffcine-timeline",
@@ -485,7 +485,7 @@ dependencies = [
 
 [[package]]
 name = "ffcine-ingest"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "blake3",
  "ffcine-core",
@@ -497,7 +497,7 @@ dependencies = [
 
 [[package]]
 name = "ffcine-libplacebo-sys"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bindgen",
  "cc",
@@ -506,7 +506,7 @@ dependencies = [
 
 [[package]]
 name = "ffcine-reframe"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ffcine-core",
  "ffcine-render",
@@ -517,7 +517,7 @@ dependencies = [
 
 [[package]]
 name = "ffcine-render"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ffcine-core",
  "ffcine-filters",
@@ -528,7 +528,7 @@ dependencies = [
 
 [[package]]
 name = "ffcine-stabilize"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ffcine-core",
  "ffmpeg-next",
@@ -538,7 +538,7 @@ dependencies = [
 
 [[package]]
 name = "ffcine-text"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cosmic-text",
  "ffcine-core",
@@ -551,7 +551,7 @@ dependencies = [
 
 [[package]]
 name = "ffcine-timeline"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ffcine-core",
  "serde",
@@ -561,7 +561,7 @@ dependencies = [
 
 [[package]]
 name = "ffcine-triage"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ffcine-ingest",
  "ffmpeg-next",
