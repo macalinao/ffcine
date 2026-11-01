@@ -25,6 +25,8 @@ confidence-threshold = 0.9
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# ffcine-assembly's path-only ffcine-import dev-dependency (dropped on publish).
+allow-wildcard-paths = true
 
 [sources]
 unknown-registry = "deny"
