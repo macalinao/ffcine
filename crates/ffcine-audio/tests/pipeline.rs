@@ -380,3 +380,243 @@ fn project_mix_and_length() {
     );
     assert!((mix.lufs + 16.0).abs() <= 0.3, "master {:.2}", mix.lufs);
 }
+
+/// Dialogue 4..7 s over a music track 0..10 s, with `project.mix.buses` from `buses`.
+fn routed(name: &str, buses: serde_json::Value) -> (Timeline, MixOptions) {
+    let d = dir(name);
+    let (tp, mp) = (d.join("talk.wav"), d.join("music.wav"));
+    write(&tp, scene(2, 3.0));
+    write(&mp, sine(440.0, 0.3, 10.0));
+    let mut dia = Track::new("Dialogue 1", track_kind::AUDIO);
+    dia.children.push(Item::Gap(ffcine_timeline::Gap::new(
+        RationalTime::from_seconds(4.0, 48000.0),
+    )));
+    let quiet = Level {
+        duck_db: Some(0.0),
+        ..Level::default()
+    };
+    dia.children.push(clip(
+        &tp,
+        0.0,
+        3.0,
+        vec![schema::make_effect("level", schema::LEVEL, &quiet).expect("fx")],
+    ));
+    let mut music = Track::new("Music", track_kind::AUDIO);
+    music.children.push(clip(&mp, 0.0, 10.0, vec![]));
+    let mut tl = Timeline::new("buses");
+    tl.tracks
+        .children
+        .extend([Item::Track(dia), Item::Track(music)]);
+    let project = ffcine_timeline::Project {
+        mix: ffcine_timeline::MixParams {
+            normalize: Some(false),
+            buses: serde_json::from_value(buses).expect("buses"),
+            ..ffcine_timeline::MixParams::default()
+        },
+        ..ffcine_timeline::Project::default()
+    };
+    tl.set_project(&project).expect("project");
+    let opts = MixOptions::for_timeline(&tl, None).expect("options");
+    (tl, opts)
+}
+
+fn stem(mix: &ffcine_audio::Mix, bus: Bus) -> &Audio {
+    &mix.buses.iter().find(|b| b.0 == bus).expect("bus").1
+}
+
+fn aux<'a>(mix: &'a ffcine_audio::Mix, name: &str) -> &'a Audio {
+    &mix.aux.iter().find(|b| b.0 == name).expect("aux").1
+}
+
+#[test]
+fn bus_gain_moves_the_stem() {
+    let (tl, opts) = routed("bus-gain", serde_json::json!({}));
+    let flat = render_audio(&tl, &opts).expect("render");
+    let (tl, opts) = routed("bus-gain2", serde_json::json!({"music": {"gain_db": -6.0}}));
+    let cut = render_audio(&tl, &opts).expect("render");
+    let span = secs(1.0)..secs(2.0);
+    let (a, b) = (
+        rms_db(&stem(&flat, Bus::Music).channels[0][span.clone()]),
+        rms_db(&stem(&cut, Bus::Music).channels[0][span.clone()]),
+    );
+    assert!((a - b - 6.0).abs() < 0.01, "{a:.2} -> {b:.2}");
+    // Only music plays there, and normalize is off: the master follows.
+    let (a, b) = (
+        rms_db(&flat.master.channels[0][span.clone()]),
+        rms_db(&cut.master.channels[0][span]),
+    );
+    assert!((a - b - 6.0).abs() < 0.1, "master {a:.2} -> {b:.2}");
+    // The dialogue isn't touched.
+    let span = secs(5.0)..secs(6.0);
+    let (a, b) = (
+        rms_db(&stem(&flat, Bus::Dialogue).channels[0][span.clone()]),
+        rms_db(&stem(&cut, Bus::Dialogue).channels[0][span]),
+    );
+    assert!((a - b).abs() < 0.01, "dialogue {a:.2} -> {b:.2}");
+}
+
+#[test]
+fn reverb_send_rings_past_the_dialogue() {
+    let (tl, opts) = routed(
+        "reverb",
+        serde_json::json!({
+            "dialogue": {"sends": [{"to": "room", "gain_db": -6.0}]},
+            "room": {"reverb": {"room": 0.8}, "gain_db": -3.0},
+        }),
+    );
+    let mix = render_audio(&tl, &opts).expect("render");
+    let wet = &aux(&mix, "room").channels[0];
+    assert_eq!(wet.len(), mix.master.frames());
+    // Nothing before the dialogue, sound during it, and a tail after it.
+    assert!(rms_db(&wet[secs(1.0)..secs(3.0)]) < -100.0);
+    let during = rms_db(&wet[secs(5.0)..secs(6.0)]);
+    let tail = rms_db(&wet[secs(7.2)..secs(7.6)]);
+    assert!(during > -60.0, "during {during:.1}");
+    assert!(tail > -80.0 && tail < during, "{during:.1} {tail:.1}");
+    let dry = &stem(&mix, Bus::Dialogue).channels[0];
+    assert!(rms_db(&dry[secs(7.2)..secs(7.6)]) < -100.0);
+    // The master has the return.
+    assert!(rms_db(&mix.master.channels[0][secs(8.2)..secs(8.4)]) > -60.0);
+}
+
+/// A post-fader send follows the fader; a pre-fader one doesn't. And the return's level is the
+/// bus's level plus the send.
+#[test]
+fn send_taps_before_or_after_the_fader() {
+    let level = |pre: bool, gain: f64| {
+        let (tl, opts) = routed(
+            &format!("send-{pre}-{gain}"),
+            serde_json::json!({
+                "music": {"gain_db": gain, "sends": [{"to": "copy", "gain_db": -6.0, "pre": pre}]},
+                "copy": {},
+            }),
+        );
+        let mix = render_audio(&tl, &opts).expect("render");
+        let m = rms_db(&stem(&mix, Bus::Music).channels[0][secs(1.0)..secs(2.0)]);
+        let c = rms_db(&aux(&mix, "copy").channels[0][secs(1.0)..secs(2.0)]);
+        (m, c)
+    };
+    let (m, c) = level(false, 0.0);
+    assert!((m - c - 6.0).abs() < 0.01, "{m:.2} {c:.2}");
+    let (m2, c2) = level(false, -10.0);
+    assert!((m - m2 - 10.0).abs() < 0.01 && (c - c2 - 10.0).abs() < 0.01);
+    let (m3, c3) = level(true, -10.0);
+    assert!((m - m3 - 10.0).abs() < 0.01 && (c - c3).abs() < 0.01);
+}
+
+/// A send to a key bus ducks its target while the key is loud, and isn't heard itself.
+#[test]
+fn key_bus_ducks_its_target() {
+    let (tl, opts) = routed(
+        "key",
+        serde_json::json!({
+            "dialogue": {"sends": [{"to": "key"}]},
+            "key": {"duck": {"targets": ["music"], "depth_db": -9.0}},
+        }),
+    );
+    let mix = render_audio(&tl, &opts).expect("render");
+    assert_eq!(mix.aux.len(), 0);
+    let m = &stem(&mix, Bus::Music).channels[0];
+    let open = rms_db(&m[secs(1.0)..secs(2.0)]);
+    let ducked = rms_db(&m[secs(5.0)..secs(6.0)]);
+    // Gated noise, so the key opens and closes: well under the open level, at most the depth.
+    assert!(
+        open - ducked > 3.0 && open - ducked <= 9.1,
+        "{open:.1} {ducked:.1}"
+    );
+    assert!((rms_db(&m[secs(8.5)..secs(9.0)]) - open).abs() < 0.2);
+}
+
+#[test]
+fn bus_filter_runs_in_sync() {
+    let (tl, plain) = routed("bus-filter", serde_json::json!({}));
+    let flat = render_audio(&tl, &plain).expect("render");
+    let (tl, opts) = routed(
+        "bus-filter2",
+        serde_json::json!({"music": {"filter": "afftdn=nr=1:nf=-80,highpass=f=4000"},
+                           "dialogue": {"filter": "lowpass=f=20000"}}),
+    );
+    let mix = render_audio(&tl, &opts).expect("render");
+    let cut = rms_db(&stem(&mix, Bus::Music).channels[0][secs(1.0)..secs(2.0)]);
+    let open = rms_db(&stem(&flat, Bus::Music).channels[0][secs(1.0)..secs(2.0)]);
+    assert!(open - cut > 20.0, "{open:.1} -> {cut:.1}");
+    // Still lined up with the unfiltered dialogue.
+    let (a, b) = (
+        &stem(&flat, Bus::Dialogue).channels[0][secs(4.5)..secs(6.5)],
+        &stem(&mix, Bus::Dialogue).channels[0][secs(4.5)..secs(6.5)],
+    );
+    let c = ffcine_audio::dsp::xcorr(a, b);
+    let (k, _) = c
+        .iter()
+        .enumerate()
+        .max_by(|x, y| x.1.total_cmp(y.1))
+        .expect("xcorr");
+    assert_eq!(k as isize - (a.len() as isize - 1), 0);
+}
+
+#[test]
+fn bad_routing_is_refused() {
+    for buses in [
+        serde_json::json!({"music": {"sends": [{"to": "nowhere"}]}}),
+        serde_json::json!({"music": {"sends": [{"to": "dialogue"}]}, "dialogue": {}}),
+        serde_json::json!({"music": {"reverb": {}}}),
+        serde_json::json!({"room": {"sends": [{"to": "room"}]}}),
+        serde_json::json!({"../room": {}}),
+        serde_json::json!({"key": {"duck": {"targets": ["nowhere"]}}}),
+    ] {
+        let (tl, opts) = routed("bad-routing", buses.clone());
+        assert!(render_audio(&tl, &opts).is_err(), "{buses}");
+    }
+}
+
+/// The clip paths through the scratch files give what they should: a loop of a short file fills a
+/// clip, with its seams, and drift correction still reads the right samples.
+#[test]
+fn looped_bed_fills_the_clip() {
+    let d = dir("loop");
+    let p = d.join("bed.wav");
+    write(&p, sine(300.0, 0.2, 2.0));
+    let lp = schema::make_effect(
+        "loop",
+        schema::LOOP,
+        &schema::Loop {
+            r#in: Some(0.0),
+            out: Some(2.0),
+            crossfade: 0.5,
+        },
+    )
+    .expect("fx");
+    let off = Level {
+        mode: Some(LevelMode::Off),
+        fade_in: Some(0.0),
+        fade_out: Some(0.0),
+        ..Level::default()
+    };
+    let lv = schema::make_effect("level", schema::LEVEL, &off).expect("fx");
+    let clean = schema::make_effect(
+        "clean",
+        schema::CLEAN,
+        &Clean {
+            amount: 0.0,
+            highpass: None,
+            dialogue: Some(false),
+            ..Clean::default()
+        },
+    )
+    .expect("fx");
+    let mut t = Track::new("Amb", track_kind::AUDIO);
+    t.children.push(clip(&p, 0.0, 7.0, vec![lp, lv, clean]));
+    let mut tl = Timeline::new("loop");
+    tl.tracks.children.push(Item::Track(t));
+    let mut opts = MixOptions::default();
+    opts.master.lufs = None;
+    opts.master.fade_out = 0.0;
+    let mix = render_audio(&tl, &opts).expect("render");
+    let a = &stem(&mix, Bus::Ambience).channels[0];
+    assert_eq!(a.len(), secs(7.0));
+    for s in 0..7 {
+        let l = rms_db(&a[secs(f64::from(s))..secs(f64::from(s) + 1.0)]);
+        // 0.2 peak, -3 dB for the sine, -3 dB per side going from mono to stereo.
+        assert!((l + 20.0).abs() < 2.0, "second {s}: {l:.1} dB");
+    }
+}

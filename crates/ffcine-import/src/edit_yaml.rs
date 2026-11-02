@@ -2134,8 +2134,12 @@ impl Converter {
                     .warn(format!("ambience[{k}]: unknown shot {from} or {to}"));
                 continue;
             };
-            let start = shots[i0].start;
-            let end = shots[i1].start + shots[i1].n;
+            // The bed runs a little past its shots at both ends, within the edit.
+            let total = shots.last().map_or(0, |s| s.start + s.n);
+            let pre = self.s2f(b.f64("pre").unwrap_or(0.3));
+            let post = self.s2f(b.f64("post").unwrap_or(0.3));
+            let start = (shots[i0].start - pre).max(0);
+            let end = (shots[i1].start + shots[i1].n + post).min(total);
             let source = self.resolve(&src, &format!("ambience[{k}]"));
             let in_s = b.f64("in").unwrap_or(0.0);
             let out_s = b.f64("out");
@@ -2151,10 +2155,25 @@ impl Converter {
             if let Some(l) = b.f64("level_lufs") {
                 lv.insert("lufs".into(), l.into());
             }
+            if let Some(f) = b.f64("fade") {
+                lv.insert("fade_in".into(), f.into());
+                lv.insert("fade_out".into(), f.into());
+            }
             c.effects.push(Effect::Effect(GenericEffect::ffcine(
                 "ffcine.audio.level/1",
                 lv,
             )));
+            let (highpass, lowpass) = (b.f64("highpass"), b.f64("lowpass"));
+            if highpass.is_some() || lowpass.is_some() {
+                c.effects.push(Effect::Effect(GenericEffect::ffcine(
+                    "ffcine.audio.clean/1",
+                    obj(json!({
+                        "amount": 0.0,
+                        "highpass": highpass.unwrap_or(60.0),
+                        "lowpass": lowpass.unwrap_or(14000.0),
+                    })),
+                )));
+            }
             let mut lp = obj(json!({"in": in_s, "crossfade": 1.0}));
             if let Some(o) = out_s {
                 lp.insert("out".into(), o.into());

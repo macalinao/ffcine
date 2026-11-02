@@ -30,7 +30,10 @@ use std::path::Path;
 
 pub use metadata::{FFCINE, FFCINE_VERSION, HasMetadata};
 pub use place::{Placed, PlacedMarker};
-pub use project::{ClipGrade, GradeParams, MixParams, Output, OutputMode, Project, SourceKind};
+pub use project::{
+    BusDuck, BusParams, BusReverb, BusSend, ClipGrade, GradeParams, MixParams, Output, OutputMode,
+    Project, SourceKind,
+};
 pub use schema::{
     Clip, DEFAULT_MEDIA_KEY, Effect, ExternalReference, Gap, GeneratorReference, GenericEffect,
     Item, LinearTimeWarp, Marker, MediaReference, MissingReference, Stack, Timeline, Track,

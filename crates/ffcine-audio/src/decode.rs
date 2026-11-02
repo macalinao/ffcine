@@ -27,29 +27,103 @@ const PREROLL: f64 = 0.5;
 
 /// Loads `req` from `path`.
 pub fn load(path: &Path, req: &Request<'_>) -> Result<Audio> {
-    let filter = req.filter.filter(|f| !f.is_empty());
-    let pre = if filter.is_some() {
-        PREROLL.min(req.start)
-    } else {
-        0.0
-    };
-    // Filters with lookahead (afftdn: 25 ms) delay their output; read further and drop it.
-    let lat = match filter {
-        Some(f) => latency(f, req.rate, req.channels)?,
-        None => 0,
-    };
-    let rate = f64::from(req.rate);
-    let from = req.start - pre;
-    let dur = req.duration.map(|d| d + pre + lat as f64 / rate);
-    let mut a = load_raw(path, from, dur, req)?;
-    let skip = (pre * rate).round() as usize + lat;
-    for c in &mut a.channels {
-        c.drain(..skip.min(c.len()));
+    let mut stream = Stream::open(path, req)?;
+    let mut channels = vec![Vec::new(); req.channels];
+    while let Some(c) = stream.read()? {
+        for (o, c) in channels.iter_mut().zip(c) {
+            o.extend(c);
+        }
     }
-    if let Some(d) = req.duration {
-        a.set_frames((d * rate).round() as usize);
+    Ok(Audio {
+        rate: req.rate,
+        channels,
+    })
+}
+
+/// [`load`] a chunk at a time, for media too long to hold.
+pub struct Stream {
+    raw: Raw,
+    channels: usize,
+    rate: f64,
+    /// Media time (s) the decoder starts from, and frames to drop past that (pre-roll, latency).
+    from: f64,
+    extra: usize,
+    /// Frames still to drop once the first decoded time is known; negative: silence to add.
+    head: Option<i64>,
+    /// Frames left to return; `None` to the end of the file.
+    left: Option<usize>,
+}
+
+impl Stream {
+    pub fn open(path: &Path, req: &Request<'_>) -> Result<Self> {
+        let filter = req.filter.filter(|f| !f.is_empty());
+        let pre = if filter.is_some() {
+            PREROLL.min(req.start)
+        } else {
+            0.0
+        };
+        // Filters with lookahead (afftdn: 25 ms) delay their output; read further and drop it.
+        let lat = match filter {
+            Some(f) => latency(f, req.rate, req.channels)?,
+            None => 0,
+        };
+        let rate = f64::from(req.rate);
+        let from = req.start - pre;
+        Ok(Self {
+            raw: Raw::open(path, from, req)?,
+            channels: req.channels,
+            rate,
+            from,
+            extra: (pre * rate).round() as usize + lat,
+            head: None,
+            left: req.duration.map(|d| (d * rate).round().max(0.0) as usize),
+        })
     }
-    Ok(a)
+
+    /// The next frames, or `None` at the end. Short files pad with silence up to `duration`.
+    pub fn read(&mut self) -> Result<Option<Vec<Vec<f32>>>> {
+        loop {
+            if self.left == Some(0) {
+                return Ok(None);
+            }
+            let Some(mut c) = self.raw.next()? else {
+                let Some(left) = self.left else {
+                    return Ok(None);
+                };
+                let n = left.min(crate::spool::CHUNK);
+                self.left = Some(left - n);
+                return Ok(Some(vec![vec![0.0; n]; self.channels]));
+            };
+            let (from, extra, rate) = (self.from, self.extra as i64, self.rate);
+            let first = self.raw.first();
+            let head = self
+                .head
+                .get_or_insert_with(|| ((from - first) * rate).round() as i64 + extra);
+            if *head > 0 {
+                let n = (*head as usize).min(c[0].len());
+                for ch in &mut c {
+                    ch.drain(..n);
+                }
+                *head -= n as i64;
+            } else if *head < 0 {
+                for ch in &mut c {
+                    ch.splice(0..0, std::iter::repeat_n(0.0, (-*head) as usize));
+                }
+                *head = 0;
+            }
+            if c[0].is_empty() {
+                continue;
+            }
+            if let Some(left) = &mut self.left {
+                let n = c[0].len().min(*left);
+                for ch in &mut c {
+                    ch.truncate(n);
+                }
+                *left -= n;
+            }
+            return Ok(Some(c));
+        }
+    }
 }
 
 /// Delay (samples) a filter chain adds: a noise burst through it, located by
@@ -103,247 +177,334 @@ pub fn latency(_spec: &str, _rate: u32, _channels: usize) -> Result<usize> {
 }
 
 /// Runs in-memory audio (mono or stereo) through a libavfilter chain; same rate and layout out.
-#[cfg(feature = "ffmpeg")]
 pub fn filter(input: &Audio, spec: &str) -> Result<Audio> {
-    use ffmpeg_next as ff;
-    ff::init()?;
     let n = input.channels.len();
-    let layout = if n == 1 {
-        ff::ChannelLayout::MONO
-    } else {
-        ff::ChannelLayout::STEREO
-    };
-    let lname = if n == 1 { "mono" } else { "stereo" };
-    let tail = format!(
-        "{spec},aformat=sample_fmts=fltp:sample_rates={}:channel_layouts={lname}",
-        input.rate
-    );
-    let fmt = ff::format::Sample::F32(ff::format::sample::Type::Planar);
-    let mut out = vec![Vec::with_capacity(input.frames()); n];
-    let mut graph: Option<ff::filter::Graph> = None;
-    let mut sink = ff::frame::Audio::empty();
-    let mut drain = |g: &mut ff::filter::Graph, out: &mut Vec<Vec<f32>>| {
-        if let Some(mut o) = g.get("out") {
-            while o.sink().frame(&mut sink).is_ok() {
-                for (c, v) in out.iter_mut().enumerate() {
-                    v.extend_from_slice(&sink.plane::<f32>(c)[..sink.samples()]);
-                }
-            }
-        }
-    };
-    let chunk = 1024;
-    let mut pos = 0;
-    while pos < input.frames() {
-        let len = chunk.min(input.frames() - pos);
-        let mut f = ff::frame::Audio::new(fmt, len, layout);
-        f.set_rate(input.rate);
-        f.set_pts(Some(pos as i64));
-        for (c, src) in input.channels.iter().enumerate() {
-            f.plane_mut::<f32>(c)[..len].copy_from_slice(&src[pos..pos + len]);
-        }
-        if graph.is_none() {
-            graph = Some(build_graph(&f, &tail)?);
-        }
-        let g = graph
-            .as_mut()
-            .ok_or(Error::Pipeline("filter graph".into()))?;
-        g.get("in")
-            .ok_or(Error::Pipeline("filter graph input".into()))?
-            .source()
-            .add(&f)?;
-        drain(g, &mut out);
-        pos += len;
-    }
-    if let Some(g) = graph.as_mut() {
-        if let Some(mut src) = g.get("in") {
-            src.source().flush()?;
-        }
-        drain(g, &mut out);
+    let mut chain = FilterChain::new(spec, input.rate, n)?;
+    let mut channels = chain.push(&input.channels)?;
+    for (o, c) in channels.iter_mut().zip(chain.finish()?) {
+        o.extend(c);
     }
     Ok(Audio {
         rate: input.rate,
-        channels: out,
+        channels,
     })
 }
 
-#[cfg(not(feature = "ffmpeg"))]
-fn load_raw(path: &Path, start: f64, dur: Option<f64>, req: &Request<'_>) -> Result<Audio> {
-    if req.filter.is_some_and(|f| !f.is_empty()) {
-        return Err(Error::Unimplemented(
-            "audio filter chains without the ffmpeg feature",
-        ));
-    }
-    let a = Audio::read_wav(path)?;
-    let lo = ((start * f64::from(a.rate)).round().max(0.0)) as usize;
-    let hi = dur.map_or(a.frames(), |d| {
-        lo + (d * f64::from(a.rate)).round() as usize
-    });
-    let channels: Vec<Vec<f32>> = a
-        .channels
-        .iter()
-        .map(|c| {
-            let mut v = c[lo.min(c.len())..hi.min(c.len())].to_vec();
-            v.resize(hi - lo, 0.0);
-            crate::dsp::resample(&v, a.rate, req.rate)
-        })
-        .collect();
-    let a = Audio {
-        rate: req.rate,
-        channels,
-    };
-    Ok(if req.channels == 1 {
-        Audio::mono(req.rate, a.to_mono())
-    } else {
-        a.to_stereo()
-    })
+/// A libavfilter chain over audio fed in chunks (mono or stereo); same rate and layout out.
+#[cfg(feature = "ffmpeg")]
+pub struct FilterChain {
+    tail: String,
+    rate: u32,
+    channels: usize,
+    graph: Option<ffmpeg_next::filter::Graph>,
+    pts: i64,
 }
 
 #[cfg(feature = "ffmpeg")]
-#[allow(clippy::too_many_lines)] // one decode loop with its closures
-fn load_raw(path: &Path, start: f64, dur: Option<f64>, req: &Request<'_>) -> Result<Audio> {
-    use ffmpeg_next as ff;
-
-    static QUIET: std::sync::Once = std::sync::Once::new();
-    ff::init()?;
-    QUIET.call_once(|| ff::util::log::set_level(ff::util::log::Level::Error));
-    let open_err = |msg: &str| Error::Import {
-        path: path.to_owned(),
-        msg: msg.to_owned(),
-    };
-    let mut ictx = ff::format::input(path)?;
-    // The first audio stream: the camera's main track (iPhones add a 4-channel APAC one that
-    // `best` would pick).
-    let stream = ictx
-        .streams()
-        .find(|s| s.parameters().medium() == ff::media::Type::Audio)
-        .ok_or_else(|| open_err("no audio stream"))?;
-    let idx = stream.index();
-    let tb = f64::from(stream.time_base());
-    let t0 = match stream.start_time() {
-        ff::ffi::AV_NOPTS_VALUE => 0.0,
-        s => s as f64 * tb,
-    };
-    let mut dec = ff::codec::context::Context::from_parameters(stream.parameters())?
-        .decoder()
-        .audio()?;
-    if start > 1.0 {
-        let ts = ((t0 + start - 1.0) * 1e6) as i64;
-        ictx.seek(ts, ..ts)?;
+impl FilterChain {
+    pub fn new(spec: &str, rate: u32, channels: usize) -> Result<Self> {
+        ffmpeg_next::init()?;
+        let lname = if channels == 1 { "mono" } else { "stereo" };
+        Ok(Self {
+            tail: format!(
+                "{spec},aformat=sample_fmts=fltp:sample_rates={rate}:channel_layouts={lname}"
+            ),
+            rate,
+            channels,
+            graph: None,
+            pts: 0,
+        })
     }
 
-    let layout = if req.channels == 1 { "mono" } else { "stereo" };
-    let mut tail = format!(
-        "aresample={},aformat=sample_fmts=fltp:channel_layouts={layout}",
-        req.rate
-    );
-    if let Some(f) = req.filter.filter(|f| !f.is_empty()) {
-        tail = format!(
-            "{tail},{f},aformat=sample_fmts=fltp:sample_rates={}:channel_layouts={layout}",
-            req.rate
-        );
-    }
-    let mut graph: Option<ff::filter::Graph> = None;
-    let mut first: Option<f64> = None;
-    let mut out = vec![Vec::new(); req.channels];
-    let want = dur.map(|d| (d * f64::from(req.rate)).ceil() as usize);
-    let mut next_pts = 0i64;
-
-    let mut frame = ff::frame::Audio::empty();
-    let mut sink_frame = ff::frame::Audio::empty();
-    let drain =
-        |graph: &mut ff::filter::Graph, out: &mut Vec<Vec<f32>>, f: &mut ff::frame::Audio| {
-            let Some(mut sink) = graph.get("out") else {
-                return;
-            };
-            while sink.sink().frame(f).is_ok() {
-                for (c, o) in out.iter_mut().enumerate() {
-                    o.extend_from_slice(&f.plane::<f32>(c)[..f.samples()]);
-                }
-            }
+    fn drain(&mut self, out: &mut [Vec<f32>]) {
+        let Some(mut o) = self.graph.as_mut().and_then(|g| g.get("out")) else {
+            return;
         };
-    let enough = |out: &Vec<Vec<f32>>, first: Option<f64>| match (want, first) {
-        (Some(w), Some(f)) => {
-            let skip = ((start - f) * f64::from(req.rate)).round().max(0.0) as usize;
-            out[0].len() >= skip + w
-        }
-        _ => false,
-    };
-    let mut push = |frame: &mut ff::frame::Audio,
-                    graph: &mut Option<ff::filter::Graph>,
-                    first: &mut Option<f64>,
-                    out: &mut Vec<Vec<f32>>|
-     -> Result<()> {
-        if graph.is_none() {
-            let g = build_graph(frame, &tail)?;
-            *graph = Some(g);
-        }
-        if first.is_none() {
-            *first = Some(frame.pts().map_or(0.0, |p| p as f64 * tb - t0));
-        }
-        let g = graph
-            .as_mut()
-            .ok_or(Error::Pipeline("filter graph".into()))?;
-        frame.set_pts(Some(next_pts));
-        next_pts += frame.samples() as i64;
-        g.get("in")
-            .ok_or(Error::Pipeline("filter graph input".into()))?
-            .source()
-            .add(frame)?;
-        drain(g, out, &mut sink_frame);
-        Ok(())
-    };
-
-    for (s, packet) in ictx.packets() {
-        if s.index() != idx {
-            continue;
-        }
-        if dec.send_packet(&packet).is_err() {
-            continue;
-        }
-        while dec.receive_frame(&mut frame).is_ok() {
-            // Skip frames entirely before the range (the seek lands on an earlier keyframe).
-            let t = frame.pts().map_or(0.0, |p| p as f64 * tb - t0);
-            let end = t + frame.samples() as f64 / f64::from(frame.rate().max(1));
-            if first.is_none() && end < start - 0.1 {
-                continue;
+        let mut sink = ffmpeg_next::frame::Audio::empty();
+        while o.sink().frame(&mut sink).is_ok() {
+            for (c, v) in out.iter_mut().enumerate() {
+                v.extend_from_slice(&sink.plane::<f32>(c)[..sink.samples()]);
             }
-            push(&mut frame, &mut graph, &mut first, &mut out)?;
-        }
-        if enough(&out, first) {
-            break;
         }
     }
-    let _ = dec.send_eof();
-    while dec.receive_frame(&mut frame).is_ok() {
-        push(&mut frame, &mut graph, &mut first, &mut out)?;
+
+    /// Feeds `chunk`; returns what the chain has ready.
+    pub fn push(&mut self, chunk: &[Vec<f32>]) -> Result<Vec<Vec<f32>>> {
+        use ffmpeg_next as ff;
+        let layout = if self.channels == 1 {
+            ff::ChannelLayout::MONO
+        } else {
+            ff::ChannelLayout::STEREO
+        };
+        let fmt = ff::format::Sample::F32(ff::format::sample::Type::Planar);
+        let frames = chunk.first().map_or(0, Vec::len);
+        let mut out = vec![Vec::with_capacity(frames); self.channels];
+        let mut pos = 0;
+        while pos < frames {
+            let len = 1024.min(frames - pos);
+            let mut f = ff::frame::Audio::new(fmt, len, layout);
+            f.set_rate(self.rate);
+            f.set_pts(Some(self.pts));
+            self.pts += len as i64;
+            for (c, src) in chunk.iter().enumerate() {
+                f.plane_mut::<f32>(c)[..len].copy_from_slice(&src[pos..pos + len]);
+            }
+            if self.graph.is_none() {
+                self.graph = Some(build_graph(&f, &self.tail)?);
+            }
+            self.graph
+                .as_mut()
+                .and_then(|g| g.get("in"))
+                .ok_or(Error::Pipeline("filter graph input".into()))?
+                .source()
+                .add(&f)?;
+            self.drain(&mut out);
+            pos += len;
+        }
+        Ok(out)
     }
-    if let Some(g) = graph.as_mut() {
-        if let Some(mut src) = g.get("in") {
+
+    /// The input is over: the rest of the output.
+    pub fn finish(&mut self) -> Result<Vec<Vec<f32>>> {
+        let mut out = vec![Vec::new(); self.channels];
+        if let Some(mut src) = self.graph.as_mut().and_then(|g| g.get("in")) {
             src.source().flush()?;
         }
-        let mut f = ff::frame::Audio::empty();
-        drain(g, &mut out, &mut f);
+        self.drain(&mut out);
+        Ok(out)
+    }
+}
+
+#[cfg(not(feature = "ffmpeg"))]
+pub struct FilterChain;
+
+#[cfg(not(feature = "ffmpeg"))]
+impl FilterChain {
+    pub fn new(_spec: &str, _rate: u32, _channels: usize) -> Result<Self> {
+        Err(Error::Unimplemented(
+            "audio filter chains without the ffmpeg feature",
+        ))
     }
 
-    let first = first.unwrap_or(start);
-    let skip = ((start - first) * f64::from(req.rate)).round();
-    let rate = req.rate;
-    let channels = out
-        .into_iter()
-        .map(|mut c| {
-            if skip >= 0.0 {
-                c.drain(..(skip as usize).min(c.len()));
+    pub fn push(&mut self, _chunk: &[Vec<f32>]) -> Result<Vec<Vec<f32>>> {
+        Ok(Vec::new())
+    }
+
+    pub fn finish(&mut self) -> Result<Vec<Vec<f32>>> {
+        Ok(Vec::new())
+    }
+}
+
+/// Without libav*, a WAV in memory, handed out in chunks.
+#[cfg(not(feature = "ffmpeg"))]
+struct Raw {
+    audio: Audio,
+    pos: usize,
+    start: f64,
+}
+
+#[cfg(not(feature = "ffmpeg"))]
+impl Raw {
+    fn open(path: &Path, start: f64, req: &Request<'_>) -> Result<Self> {
+        if req.filter.is_some_and(|f| !f.is_empty()) {
+            return Err(Error::Unimplemented(
+                "audio filter chains without the ffmpeg feature",
+            ));
+        }
+        let a = Audio::read_wav(path)?;
+        let lo = ((start * f64::from(a.rate)).round().max(0.0)) as usize;
+        let channels: Vec<Vec<f32>> = a
+            .channels
+            .iter()
+            .map(|c| crate::dsp::resample(&c[lo.min(c.len())..], a.rate, req.rate))
+            .collect();
+        let a = Audio {
+            rate: req.rate,
+            channels,
+        };
+        Ok(Self {
+            audio: if req.channels == 1 {
+                Audio::mono(req.rate, a.to_mono())
             } else {
-                let pad = (-skip) as usize;
-                c.splice(0..0, std::iter::repeat_n(0.0, pad));
-            }
-            if let Some(w) = want {
-                c.resize(w, 0.0);
-            }
-            c
+                a.to_stereo()
+            },
+            pos: 0,
+            start,
         })
-        .collect();
-    Ok(Audio { rate, channels })
+    }
+
+    fn first(&self) -> f64 {
+        self.start
+    }
+
+    fn next(&mut self) -> Result<Option<Vec<Vec<f32>>>> {
+        let n = crate::spool::CHUNK.min(self.audio.frames() - self.pos);
+        if n == 0 {
+            return Ok(None);
+        }
+        let pos = self.pos;
+        self.pos += n;
+        Ok(Some(
+            self.audio
+                .channels
+                .iter()
+                .map(|c| c[pos..pos + n].to_vec())
+                .collect(),
+        ))
+    }
+}
+
+/// The decoder and resampler (and clean chain) of a [`Stream`], frames as they come.
+#[cfg(feature = "ffmpeg")]
+struct Raw {
+    ictx: ffmpeg_next::format::context::Input,
+    dec: ffmpeg_next::decoder::Audio,
+    stream: usize,
+    time_base: f64,
+    t0: f64,
+    start: f64,
+    tail: String,
+    channels: usize,
+    graph: Option<ffmpeg_next::filter::Graph>,
+    first: Option<f64>,
+    next_pts: i64,
+    eof: bool,
+}
+
+#[cfg(feature = "ffmpeg")]
+impl Raw {
+    fn open(path: &Path, start: f64, req: &Request<'_>) -> Result<Self> {
+        use ffmpeg_next as ff;
+
+        static QUIET: std::sync::Once = std::sync::Once::new();
+        ff::init()?;
+        QUIET.call_once(|| ff::util::log::set_level(ff::util::log::Level::Error));
+        let mut ictx = ff::format::input(path)?;
+        // The first audio stream: the camera's main track (iPhones add a 4-channel APAC one that
+        // `best` would pick).
+        let stream = ictx
+            .streams()
+            .find(|s| s.parameters().medium() == ff::media::Type::Audio)
+            .ok_or_else(|| Error::Import {
+                path: path.to_owned(),
+                msg: "no audio stream".to_owned(),
+            })?;
+        let idx = stream.index();
+        let time_base = f64::from(stream.time_base());
+        let t0 = match stream.start_time() {
+            ff::ffi::AV_NOPTS_VALUE => 0.0,
+            s => s as f64 * time_base,
+        };
+        let dec = ff::codec::context::Context::from_parameters(stream.parameters())?
+            .decoder()
+            .audio()?;
+        if start > 1.0 {
+            let ts = ((t0 + start - 1.0) * 1e6) as i64;
+            ictx.seek(ts, ..ts)?;
+        }
+        let layout = if req.channels == 1 { "mono" } else { "stereo" };
+        let mut tail = format!(
+            "aresample={},aformat=sample_fmts=fltp:channel_layouts={layout}",
+            req.rate
+        );
+        if let Some(f) = req.filter.filter(|f| !f.is_empty()) {
+            tail = format!(
+                "{tail},{f},aformat=sample_fmts=fltp:sample_rates={}:channel_layouts={layout}",
+                req.rate
+            );
+        }
+        Ok(Self {
+            ictx,
+            dec,
+            stream: idx,
+            time_base,
+            t0,
+            start,
+            tail,
+            channels: req.channels,
+            graph: None,
+            first: None,
+            next_pts: 0,
+            eof: false,
+        })
+    }
+
+    /// Media time (s) of the first frame that went in.
+    fn first(&self) -> f64 {
+        self.first.unwrap_or(self.start)
+    }
+
+    /// Takes every frame the decoder has into the filter graph, and what comes out into `out`.
+    fn frames(&mut self, out: &mut [Vec<f32>]) -> Result<()> {
+        use ffmpeg_next as ff;
+        let mut frame = ff::frame::Audio::empty();
+        while self.dec.receive_frame(&mut frame).is_ok() {
+            // Skip frames entirely before the range (the seek lands on an earlier keyframe).
+            let t = frame
+                .pts()
+                .map_or(0.0, |p| p as f64 * self.time_base - self.t0);
+            let end = t + frame.samples() as f64 / f64::from(frame.rate().max(1));
+            if self.first.is_none() && end < self.start - 0.1 {
+                continue;
+            }
+            if self.graph.is_none() {
+                self.graph = Some(build_graph(&frame, &self.tail)?);
+            }
+            if self.first.is_none() {
+                self.first = Some(t);
+            }
+            frame.set_pts(Some(self.next_pts));
+            self.next_pts += frame.samples() as i64;
+            self.graph
+                .as_mut()
+                .and_then(|g| g.get("in"))
+                .ok_or(Error::Pipeline("filter graph input".into()))?
+                .source()
+                .add(&frame)?;
+            self.drain(out);
+        }
+        Ok(())
+    }
+
+    fn drain(&mut self, out: &mut [Vec<f32>]) {
+        let Some(mut sink) = self.graph.as_mut().and_then(|g| g.get("out")) else {
+            return;
+        };
+        let mut f = ffmpeg_next::frame::Audio::empty();
+        while sink.sink().frame(&mut f).is_ok() {
+            for (c, o) in out.iter_mut().enumerate() {
+                o.extend_from_slice(&f.plane::<f32>(c)[..f.samples()]);
+            }
+        }
+    }
+
+    /// The next frames; `None` once the file is done.
+    fn next(&mut self) -> Result<Option<Vec<Vec<f32>>>> {
+        use ffmpeg_next as ff;
+        let mut out = vec![Vec::new(); self.channels];
+        let mut packet = ff::Packet::empty();
+        while !self.eof && out[0].is_empty() {
+            match packet.read(&mut self.ictx) {
+                Err(ff::Error::Eof) => {
+                    self.eof = true;
+                    let _ = self.dec.send_eof();
+                    self.frames(&mut out)?;
+                    if let Some(mut src) = self.graph.as_mut().and_then(|g| g.get("in")) {
+                        src.source().flush()?;
+                    }
+                    self.drain(&mut out);
+                    break;
+                }
+                // A damaged packet: on to the next.
+                Err(_) => continue,
+                Ok(()) => {}
+            }
+            if packet.stream() == self.stream && self.dec.send_packet(&packet).is_ok() {
+                self.frames(&mut out)?;
+            }
+        }
+        Ok((!out[0].is_empty()).then_some(out))
+    }
 }
 
 #[cfg(feature = "ffmpeg")]
