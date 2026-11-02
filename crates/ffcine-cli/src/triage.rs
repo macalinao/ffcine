@@ -16,46 +16,47 @@ pub struct TriageArgs {
     /// Output directory (default: DIR/triage).
     #[bpaf(short('o'), long("out"), argument("DIR"))]
     out: Option<PathBuf>,
-    /// Triage these clips (one path per line) instead of scanning DIR.
+    /// Triage the clips listed in FILE (one path per line) instead of scanning DIR.
     #[bpaf(argument("FILE"))]
     list: Option<PathBuf>,
     /// Scan DIR even if it has an ingest catalog.json.
     no_catalog: bool,
     /// Clips analysed at once.
-    #[bpaf(short('j'), long("jobs"), argument("N"), fallback(4))]
+    #[bpaf(short('j'), long("jobs"), argument("N"), fallback(4), display_fallback)]
     jobs: usize,
     /// Skip transcription.
     no_transcribe: bool,
-    /// Whisper model (faster-whisper name or CTranslate2 directory).
-    #[bpaf(argument("NAME"), fallback("large-v3-turbo".to_owned()))]
+    /// Whisper model: a faster-whisper model name or a CTranslate2 model directory.
+    #[bpaf(argument("NAME"), fallback("large-v3-turbo".to_owned()), display_fallback)]
     model: String,
     /// Python with faster-whisper on CUDA (default: $FFCINE_WHISPER_PYTHON, else python3).
     #[bpaf(argument("PATH"))]
     whisper_python: Option<PathBuf>,
-    /// Transcription language (default: detected per clip).
+    /// Transcription language code, e.g. en or ja (default: detected per clip).
     #[bpaf(argument("LANG"))]
     language: Option<String>,
-    /// Words whisper should prefer, e.g. "konbini, onsen".
+    /// Words whisper should prefer, comma-separated, e.g. "gelato, piazza".
     #[bpaf(argument("WORDS"))]
     hotwords: Option<String>,
     /// Run whisper on the CPU.
     whisper_cpu: bool,
     /// Decode clips without a proxy on the CPU instead of NVDEC.
     cpu_decode: bool,
-    /// Flag takes at least this long as runaway (minutes).
-    #[bpaf(argument("MIN"), fallback(20.0))]
+    /// Flag takes at least this long as runaway, in minutes.
+    #[bpaf(argument("MIN"), fallback(20.0), display_fallback)]
     runaway_minutes: f64,
-    /// Don't transcribe clips with less speech than this (seconds).
-    #[bpaf(argument("SEC"), fallback(1.0))]
+    /// Don't transcribe clips with less speech than this, in seconds.
+    #[bpaf(argument("SEC"), fallback(1.0), display_fallback)]
     min_speech: f64,
-    /// Immich API base for clip locations from phone-photo GPS, e.g. https://photos.example/api.
+    /// Immich API base (plain http://) for clip locations from phone-photo GPS, e.g.
+    /// http://photos.example/api (default: no locations).
     #[bpaf(argument("URL"))]
     immich: Option<String>,
     /// File holding the Immich API key (default: $FFCINE_IMMICH_KEY_FILE, else publish's
     /// $FFCINE_IMMICH_API_KEY_FILE).
     #[bpaf(argument("FILE"))]
     immich_key_file: Option<PathBuf>,
-    /// Zone the camera clock was set to, e.g. +09:00 (default UTC).
+    /// Zone the camera clock was set to, +HH:MM (default: UTC); for --immich.
     #[bpaf(argument::<String>("ZONE"), parse(|s| parse_zone(&s)), fallback(0))]
     camera_tz: i32,
     /// Re-analyse every clip, ignoring the cache.
@@ -63,6 +64,7 @@ pub struct TriageArgs {
     /// Clip page title (default: the directory name).
     #[bpaf(argument("TEXT"))]
     title: Option<String>,
+    /// Card dump or project directory: its ingest catalog.json, else every clip under it.
     #[bpaf(positional("DIR"))]
     dir: PathBuf,
 }
@@ -171,6 +173,7 @@ pub struct SearchArgs {
     index: Option<PathBuf>,
     /// Print the full source path instead of the clip id.
     paths: bool,
+    /// Words to find: case-insensitive word prefixes; several words match as a phrase.
     #[bpaf(positional("QUERY"), some("a query"))]
     query: Vec<String>,
 }
@@ -230,15 +233,18 @@ pub struct SnapArgs {
     /// Triage index (default: $FFCINE_TRIAGE_INDEX, else triage/index.json).
     #[bpaf(argument("FILE"))]
     index: Option<PathBuf>,
-    /// Room kept around words (seconds).
-    #[bpaf(argument("SEC"), fallback(0.12))]
+    /// Room kept around words, in seconds.
+    #[bpaf(argument("SEC"), fallback(0.12), display_fallback)]
     pad: f64,
     /// Always keep a word that the point falls in, instead of moving to its nearer edge.
     keep: bool,
+    /// Clip id in the index (as `ffcine search` prints it).
     #[bpaf(positional("CLIP"))]
     clip: String,
+    /// Proposed in point: seconds or [H:]M:SS[.ss].
     #[bpaf(positional::<String>("IN"), parse(|s| parse_time(&s)))]
     cut_in: f64,
+    /// Proposed out point: seconds or [H:]M:SS[.ss].
     #[bpaf(positional::<String>("OUT"), parse(|s| parse_time(&s)))]
     cut_out: f64,
 }
