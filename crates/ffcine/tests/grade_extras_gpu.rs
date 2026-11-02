@@ -247,7 +247,7 @@ fn temporal_blend_matches_tmix_across_pieces() {
         "-f",
         "lavfi",
         "-i",
-        "testsrc2=size=1920x1080:rate=24000/1001,format=yuv420p",
+        "testsrc2=size=640x360:rate=24000/1001,format=yuv420p",
         "-t",
         "3",
         "-c:v",
