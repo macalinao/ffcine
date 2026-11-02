@@ -19,9 +19,9 @@ pub(crate) struct RenderArgs {
     /// else one made once into the cache).
     #[bpaf(argument("NAME"), fallback("preview".to_owned()), display_fallback)]
     profile: String,
-    /// Output aspect: landscape or 16:9, reel or 9:16, feed or 4:5, square or 1:1, WxH or NAME=WxH.
-    /// Overrides the timeline's project.output.aspect; each clip's reframe and text take their
-    /// profiles.<NAME> overrides.
+    /// Output aspect: landscape or 16:9, hd (16:9), reel or 9:16, feed or 4:5, square or 1:1, WxH
+    /// or NAME=WxH (default: the timeline's project.output.aspect, else landscape). Each clip's
+    /// reframe and text take their profiles.<NAME> overrides.
     #[bpaf(argument("ASPECT"))]
     render_profile: Option<String>,
     /// Segment cache directory (default: .ffcine-cache next to the timeline).

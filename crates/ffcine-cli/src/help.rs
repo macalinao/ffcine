@@ -37,7 +37,7 @@ pub const TOP: &str = concat!(
         "ffcine doctor                                   # is the GPU path complete?",
         "ffcine ingest --to ~/projects/trip /media/CARD  # verified offload + catalog",
         "ffcine triage ~/projects/trip                   # strips, transcripts, clip page",
-        "ffcine grade MVI_2884.MP4 graded.mkv           # one graded shot (C-Log 3 auto)",
+        "ffcine grade DJI_0001_D.MP4 graded.mkv         # one graded shot (D-Log auto)",
         "ffcine import edit.fcpxml -o timeline.otio      # another editor's cut",
         "ffcine render --profile master -o master.mp4 timeline.otio",
     ),
@@ -46,24 +46,28 @@ pub const TOP: &str = concat!(
 
 pub const PROBE: &str = examples!(
     "ffcine probe MVI_2884.MP4                       # Canon EOS R10",
-    "ffcine probe DJI_20260704112401_0001_D.MP4      # DJI Osmo Pocket 4",
+    "ffcine probe DJI_0001_D.MP4                     # DJI Osmo Pocket 4",
     "ffcine probe photo.heic",
 );
 
 pub const GRADE: &str = concat!(
     examples!(
         "# Osmo Pocket 4 D-Log: camera LUT from the probed profile (DJI's after fetch-luts, else analytic)",
-        "ffcine grade DJI_20260704112401_0001_D.MP4 graded.mkv",
-        "# EOS R10 C-Log 3 through a baked show LUT (camera transform included), 4K, light sharpening",
-        "ffcine grade --lut show_clog3.cube --size 3840x2160 --sharpen 0.6 MVI_2884.MP4 graded.mkv",
+        "ffcine grade DJI_0001_D.MP4 graded.mkv",
+        "# EOS R10 HDR PQ clip: tone-mapped to Rec.709 from the probe, 4K, light sharpening",
+        "ffcine grade --size 3840x2160 --sharpen 0.6 MVI_2884.MP4 graded.mkv",
+        "# Pocket 4 D-Log through a baked show LUT (camera transform included)",
+        "ffcine grade --lut show_dlog.cube DJI_0001_D.MP4 graded.mkv",
         "# 5 s from 12.5 s at 23.976 fps, as a small 8-bit preview",
         "ffcine grade --ss 12.5 --frames 120 --preview MVI_2884.MP4 preview.mp4",
         "# Handheld Pocket 4 night shot: stabilized, night denoise, grain, reframed to a 9:16 reel",
         "ffcine grade --stabilize --denoise-preset night --grain 2 --render-profile reel DJI_0001_D.MP4 reel.mkv",
         "# Phone delivery with the timeline's titles over it",
         "ffcine grade --deliver phone --text timeline.otio --text-at 30 MVI_2884.MP4 phone.mp4",
-        "# HDR10 master from C-Log 3 (BT.2020 PQ, 1000 cd/m² mastering metadata); --hdr hlg for HLG",
-        "ffcine grade --hdr pq --camera clog3 MVI_2884.MP4 hdr10.mkv",
+        "# HDR10 master of an R10 HDR PQ clip (BT.2020 PQ, 1000 cd/m² mastering metadata)",
+        "ffcine grade --hdr pq MVI_2884.MP4 hdr10.mkv",
+        "# HLG master of a Pocket 4 D-Log clip, through the analytic HDR camera transform",
+        "ffcine grade --hdr hlg DJI_0001_D.MP4 hlg.mkv",
     ),
     see!(
         "color.md",
@@ -86,7 +90,7 @@ pub const BATCH: &str = concat!(
     examples!(
         "ffcine batch shots.txt",
         "# shots.txt:",
-        "--lut show_clog3.cube --size 3840x2160 MVI_2884.MP4 MVI_2884_graded.mkv",
+        "--lut show_dlog.cube --size 3840x2160 DJI_0001_D.MP4 DJI_0001_graded.mkv",
         "--ss 4 --frames 96 'card 2/MVI_2891.MP4' MVI_2891_graded.mkv   # a 4 s pickup",
         "--preview --camera dlog-vivid DJI_0007_D.MP4 DJI_0007_preview.mp4",
     ),
@@ -119,10 +123,10 @@ pub const BAKE: &str = concat!(
     examples!(
         "# Osmo Pocket 4 D-Log -> Rec.709 with a show LUT and a warmer look, as one 65^3 LUT",
         "ffcine bake --camera dlog --lut show.cube --warmth 0.03 --saturation 1.1 baked.cube",
-        "# EOS R10 C-Log 3 -> Rec.709 with half a stop more exposure, a 33^3 LUT for a camera monitor",
-        "ffcine bake --camera clog3 --exposure 0.5 --size 33 clog3_709.cube",
-        "# The analytic Canon Log 3 -> BT.2020 PQ transform, mastered to 1000 cd/m²",
-        "ffcine bake --camera clog3 --hdr-peak 1000 clog3_pq.cube",
+        "# Pocket 4 D-Log -> Rec.709 with half a stop more exposure, a 33^3 LUT for a monitor",
+        "ffcine bake --camera dlog --exposure 0.5 --size 33 dlog_709.cube",
+        "# The analytic Pocket 4 D-Log -> BT.2020 PQ transform, mastered to 1000 cd/m²",
+        "ffcine bake --camera dlog --hdr-peak 1000 dlog_pq.cube",
     ),
     see!("color.md#lut-baker")
 );
@@ -179,7 +183,7 @@ pub const SNAP: &str = concat!(
     examples!(
         "# Move a rough 2.7 s - 7.3 s cut onto the nearest word edges",
         "ffcine snap MVI_2884 2.7 7.3",
-        "ffcine snap --keep --pad 0.2 DJI_20260704112401_0001_D 1:02.5 1:09",
+        "ffcine snap --keep --pad 0.2 DJI_0001_D 1:02.5 1:09",
     ),
     see!("triage.md")
 );
@@ -235,7 +239,7 @@ pub const LOOKS: &str = concat!(
         "# Named variants on 6 shots spread over the timeline",
         "ffcine looks --sample 6 -v warm:look=day,warmth=0.04 -v neutral:lut=none -v film.cube timeline.otio",
         "# A clip outside the timeline",
-        "ffcine looks --clip MVI_2884.MP4@3.5 -v show_clog3.cube -v cut -o looks/r10",
+        "ffcine looks --clip MVI_2884.MP4@3.5 -v warm.cube -v cut -o looks/r10",
     ),
     see!("delivery.md#look-comparisons", "timeline.md#gradeparams")
 );

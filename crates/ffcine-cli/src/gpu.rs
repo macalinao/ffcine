@@ -106,9 +106,10 @@ pub(crate) enum Cmd {
     ///
     /// Currently DJI's Osmo Pocket 4 D-Log -> Rec.709 LUTs, normal and vivid (`--camera dlog`,
     /// `dlog-vivid`). Each download is checked to be a .cube LUT; files already there are kept.
-    /// `grade --camera`, `bake` and the catalog find them there. Canon Log 3 (EOS R10) and Apple
-    /// Log need none (analytic transform; a vendor .cube put in the directory wins). D-Log M
-    /// (Osmo Pocket 3) LUTs are not downloaded: put them there by hand.
+    /// `grade --camera`, `bake` and the catalog find them there. The Canon EOS R10 needs none (its
+    /// footage is Rec.709 or HDR PQ); Canon Log 3 and Apple Log use an analytic transform (a
+    /// vendor .cube put in the directory wins). D-Log M (older DJI cameras) LUTs are not
+    /// downloaded: put them there by hand.
     #[bpaf(command, footer(crate::help::FETCH_LUTS))]
     FetchLuts {
         /// LUT directory (default: the first of $FFCINE_LUT_DIR, else
@@ -245,8 +246,8 @@ pub(crate) enum Cmd {
         /// (720 px, from proxies).
         #[bpaf(argument("NAME"), fallback("preview".to_owned()), display_fallback)]
         profile: String,
-        /// Output aspect (overrides the timeline's project.output.aspect): landscape (16:9), reel
-        /// (9:16), feed (4:5), square (1:1), WxH or NAME=WxH.
+        /// Output aspect: landscape or 16:9, hd (16:9), reel or 9:16, feed or 4:5, square or 1:1,
+        /// WxH or NAME=WxH (default: the timeline's project.output.aspect, else landscape).
         #[bpaf(argument("ASPECT"))]
         render_profile: Option<String>,
         /// List unchanged segments too.
@@ -409,7 +410,7 @@ pub(crate) struct StabilizeArgs {
     /// Cap on the automatic zoom, e.g. 1.1 (borders may show beyond it; default: no cap).
     #[bpaf(argument("Z"))]
     max_zoom: Option<f64>,
-    /// Fixed zoom instead of the automatic one, e.g. 1.05 (1 = none).
+    /// Fixed zoom instead of the automatic one, e.g. 1.05 (1 = none; default: automatic).
     #[bpaf(argument("Z"))]
     zoom: Option<f64>,
     /// Ignore and overwrite the detect cache.
@@ -595,7 +596,8 @@ pub(crate) struct GradeArgs {
     /// Camera profile: auto (from the probe), rec709, hdr, dlog, dlog-vivid, dlogm, dlogm-vivid,
     /// clog3 or applelog (default: auto without --lut, none with it). Log profiles add their
     /// camera LUT before the grade; a --lut is taken as a baked grade that already includes it.
-    /// Vendor LUTs come from the LUT dir (`ffcine fetch-luts`).
+    /// Vendor LUTs come from the LUT dir (`ffcine fetch-luts`). Osmo Pocket 4 D-Log probes as
+    /// dlog; EOS R10 clips probe as rec709 (8-bit) or hdr (HDR PQ).
     #[bpaf(argument("PROFILE"))]
     camera: Option<ProfileChoice>,
     /// 3D LUT (.cube) to apply after the camera LUT.
@@ -661,7 +663,8 @@ pub(crate) struct GradeArgs {
     adaptive_sharpen: Option<f32>,
     /// Render profile: landscape or 16:9 (3840x2160), hd (1920x1080), reel or 9:16 (1080x1920),
     /// feed or 4:5 (1080x1350), square or 1:1 (1080x1080), WxH or NAME=WxH. Sets the output size
-    /// (--size is ignored, except with --deliver) and picks the reframe's per-profile overrides.
+    /// (--size is ignored, except with --deliver) and picks the reframe's per-profile overrides
+    /// (default: none, the --size or source size).
     #[bpaf(argument("PROFILE"))]
     render_profile: Option<Profile>,
     /// Reframe: ffcine.geo.reframe/1 parameters as a JSON object (zoom, punch, push, crop_x,
@@ -692,7 +695,7 @@ pub(crate) struct GradeArgs {
     /// --stabilize smoothing half-window in frames (vidstab smoothing).
     #[bpaf(argument("FRAMES"), fallback(20), display_fallback)]
     stab_smoothing: u32,
-    /// --stabilize fixed zoom instead of the automatic one, e.g. 1.05.
+    /// --stabilize fixed zoom instead of the automatic one, e.g. 1.05 (default: automatic).
     #[bpaf(argument("Z"))]
     stab_zoom: Option<f64>,
     /// --stabilize cap on the automatic zoom, e.g. 1.1 (default: no cap).
@@ -702,7 +705,8 @@ pub(crate) struct GradeArgs {
     /// The denoise flags below override its values one by one.
     #[bpaf(argument("NAME"))]
     denoise_preset: Option<ffcine::filters::Preset>,
-    /// Temporal denoise: frames on each side (1-5), motion-compensated; 0 = off.
+    /// Temporal denoise: frames on each side (1-5), motion-compensated; 0 = off (default: off,
+    /// or the preset's).
     #[bpaf(argument("N"))]
     temporal_radius: Option<u32>,
     /// Temporal denoise motion: nvof (NVIDIA optical flow, default) or blocks (Vulkan block matching).
@@ -714,7 +718,8 @@ pub(crate) struct GradeArgs {
     /// Temporal denoise chroma strength (default: the luma strength).
     #[bpaf(argument("S"))]
     temporal_chroma: Option<f32>,
-    /// Spatial (NLM) denoise luma strength, after the temporal one; 0 = off.
+    /// Spatial (NLM) denoise luma strength, after the temporal one; 0 = off (default: off, or
+    /// the preset's).
     #[bpaf(argument("S"))]
     denoise: Option<f32>,
     /// Spatial denoise chroma strength (default: 1.5x luma).
@@ -724,7 +729,7 @@ pub(crate) struct GradeArgs {
     #[bpaf(argument("R"))]
     denoise_radius: Option<u32>,
     /// Keep pixels that stand out by more than K strengths from being averaged away (stars,
-    /// point lights); 0 = off.
+    /// point lights); 0 = off (default: off, or the preset's).
     #[bpaf(argument("K"))]
     denoise_protect: Option<f32>,
     /// Film grain sigma at mid-grey (8-bit code values) on the graded output; 0 = off.
@@ -738,7 +743,8 @@ pub(crate) struct GradeArgs {
     grain_chroma: f32,
     /// HDR deliverable: pq (HDR10, with mastering display and content light metadata) or hlg,
     /// BT.2020, 10-bit. HDR sources keep their range; log sources use the analytic HDR camera
-    /// transform; SDR sources sit at BT.2408 reference white.
+    /// transform; SDR sources sit at BT.2408 reference white (default: none, an SDR Rec.709
+    /// output).
     #[bpaf(argument("pq|hlg"))]
     hdr: Option<HdrOut>,
     /// Mastering peak of the HDR deliverable, cd/m².
@@ -772,7 +778,7 @@ pub(crate) struct GradeArgs {
     #[bpaf(argument("N"))]
     gop: Option<u32>,
     /// Delivery profile: master, preview, review (under --budget-mb) or phone (1080p HEVC);
-    /// sets the encoder and size (--size still wins).
+    /// sets the encoder and size (--size still wins; default: none, the encoder flags).
     #[bpaf(argument("PROFILE"))]
     deliver: Option<ffcine::DeliveryProfile>,
     /// Size cap of the review profile in MB (default: 50).
@@ -787,7 +793,7 @@ pub(crate) struct GradeArgs {
     /// CUDA device index; Vulkan is derived from it (default: picked automatically).
     #[bpaf(argument("N"))]
     cuda: Option<u32>,
-    /// Vulkan device index (instead of --cuda).
+    /// Vulkan device index, instead of --cuda (default: picked automatically).
     #[bpaf(argument("N"))]
     vulkan: Option<u32>,
     /// Hardware decode API: vulkan (frames go straight to the renderer) or cuda (NVDEC, one
@@ -1073,7 +1079,8 @@ impl GradeArgs {
 #[allow(clippy::doc_markdown)]
 pub(crate) struct BakeArgs {
     /// Camera profile whose LUT goes first: dlog or dlog-vivid (Osmo Pocket 4), dlogm or
-    /// dlogm-vivid (Osmo Pocket 3), clog3 (EOS R10) or applelog. Vendor LUTs come from the LUT
+    /// dlogm-vivid (D-Log M, older DJI cameras), clog3 (Canon Log 3, on Canon bodies that have
+    /// it; not the EOS R10) or applelog. Vendor LUTs come from the LUT
     /// dir (`ffcine fetch-luts`), else the analytic transform (dlog, clog3, applelog; the vivid
     /// and D-Log M LUTs are vendor files only). rec709 and hdr add no LUT. Default: none.
     #[bpaf(argument("PROFILE"))]
