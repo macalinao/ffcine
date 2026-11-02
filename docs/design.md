@@ -358,8 +358,9 @@ crate that uses them ([Crates](#crates)).
 5. **Reframe**: keyframed crops for punch/push/pan and vertical aspect windows, in the same
    libplacebo pass (the prototype already does this as libplacebo expressions), with
    `ewa_lanczos` scaling for punch-ins and 4K -> 1080p. Done ([reframe.md](reframe.md)):
-   windows per profile, composed with the stabilizer warp in the same pass; a timeline renderer
-   to call it per clip, and contain's blurred fill, are left.
+   windows per profile, composed with the stabilizer warp in the same pass, `ffcine render` calling
+   it per clip (main picture, split-screen panels, picture-in-picture), contain's blurred fill,
+   and the NLE `ffcine.geo.crop/1` / `ffcine.geo.transform/1` on the main picture.
 6. **Audio** as its own track: per-clip clean chain, R128 levelling, music/ambience/SFX buses with
    ducking, master limiter. It needs no GPU and is rendered once per timeline, so it can land in
    parallel with 1-5. Done ([audio.md](audio.md)), with Zoom H2essential auto-sync to the camera
