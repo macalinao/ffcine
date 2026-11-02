@@ -76,26 +76,24 @@ encoder gets the same frames and timestamps.
     neighbours' vectors and zero, keeping the lowest full-resolution MAD. NVOF regularises flat
     dark areas into arbitrary vectors; without the rescoring it lost to block matching
     everywhere (0038: 0.544 vs 0.406 temporal noise), with it it wins on ground truth.
-  - Cost: GPU 4.6 ms/frame at 4K r2 (half of block matching). The synchronous version spent
-    16-25 ms wall/frame at 4K in the NVOF calls and the poll; the asynchronous one only queues.
-    Before/after, `bench/denoise/nvof.sh` (r2, 3 runs each, values in run order) on a 540p
-    10-bit HEVC excerpt of a night clip, 32 frames: the only size that fit, as the shared GPU
-    had under 1 GB free and was 50-90 % busy with other jobs, so wall times swing several-fold
-    between runs:
+  - Cost: GPU 4.6 ms/frame at 4K r2 (half of block matching). Before/after,
+    `bench/denoise/nvof.sh` on the DJI night clip (4K 10-bit HEVC, 96 frames, r2, 3 runs each,
+    values in run order; other jobs came back onto the GPU during the run, so wall fps swing
+    2-4x between runs, even without denoise):
 
     | | render-thread ms/frame in NVOF | steady fps | GPU ms/frame (libplacebo) |
     |---|---|---|---|
-    | before (sync: poll, execute, readback) | 4.78 / 66.85 / 3.87 | 64.9 / 9.3 / 116.9 | 0.22 |
-    | after (queueing only) | 2.33 / 20.12 / 0.79 | 112.1 / 22.6 / 45.8 | 0.23 |
-    | blocks (before / after) | - | 109 / 95 / 161, 422 / 136 / 105 | 0.77-0.83 |
-    | no denoise (before / after) | - | 26 / 29 / 60, 60 / 267 / 219 | - |
+    | before: poll, execute, readback | 39.2 / 17.0 / 58.9 | 23.4 / 47.6 / 14.4 | 3.2-5.6 |
+    | after: queueing only | 5.5 / 7.2 / 6.4 | 32.7 / 10.6 / 27.0 | 3.5-6.5 |
+    | blocks, before / after | - | 16.0 / 26.3 / 43.6, 13.6 / 18.6 / 9.1 | 4.4-17.5 |
+    | no denoise, before / after | - | 10.4 / 27.9 / 41.5, 18.5 / 12.1 / 17.4 | - |
 
-    The render thread spends 2-5x less time in NVOF, and the outputs are bit-identical (same
-    frame md5s at NVENC QP 0 without dither, PSNR inf; an earlier pair of synchronous runs
-    differed from each other, so the old path wasn't always deterministic). At 540p NVOF wasn't
-    the bottleneck, so the fps don't separate from the noise; the 4K run (where the synchronous
-    path cost 16-25 ms/frame) is still to do on a free GPU:
-    `BEFORE=old/ffcine bench/denoise/nvof.sh CLIP SS` (96 frames by default).
+    The render thread spends 3-9x less time in NVOF (17-59 -> 5.5-7 ms/frame; what's left is
+    libplacebo's submissions for the holds and CUDA's queueing), and the outputs are
+    bit-identical (same frame md5s at NVENC QP 0 without dither, PSNR inf, at 4K and at 540p).
+    On this shared GPU the fps are inside the noise, the baseline included; a quiet GPU is
+    needed to see what the overlap buys end to end. Reproduce with
+    `BEFORE=old/ffcine bench/denoise/nvof.sh CLIP SS`.
   - Falls back to block matching (with a log line) when there is no CUDA device, NVOF, or
     exportable timeline semaphore.
 - **Blocks**: Vulkan block matching, one vector per 16x16 block: exhaustive SAD at quarter
@@ -225,8 +223,8 @@ same nlmeans_vulkan pass caps a 4K render near 18 fps.
   most); the strengths here are per-clip choices.
 - `ffcine render` applies `ffcine.fx.denoise/1` and the grade's `denoise` number
   ([assembly.md](assembly.md#per-clip-filters)); `ffcine.fx.grain/1` isn't wired into it yet.
-- Run `bench/denoise/nvof.sh` at 4K (the asynchronous NVOF's before/after numbers; see
-  [Motion](#motion-nvof-default-or-vulkan-block-matching)).
+- Re-run `bench/denoise/nvof.sh` on a quiet GPU for end-to-end fps (the numbers above were
+  measured alongside other jobs).
 - Scene cuts within a shot are handled by the merge's rejection; a ring reset on detected cuts
   would save the work.
 - Dolby Vision metadata is carried over per frame; ICC profiles and AV1 film-grain side data
