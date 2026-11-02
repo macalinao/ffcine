@@ -38,7 +38,7 @@ libplacebo) and exits non-zero if anything is missing.
 
 ```sh
 ffcine probe MVI_2884.MP4                                  # Canon EOS R10
-ffcine grade MVI_2884.MP4 out.mkv                          # HDR PQ -> Rec.709 from the probe
+ffcine grade MVI_2884.MP4 out.mkv                          # Rec.709 from the probe
 ffcine grade --lut show.cube --sharpen 0.6 DJI_0001_D.MP4 out.mkv   # Osmo Pocket 4, a baked LUT
 
 ffcine import project.otio -o timeline.otio     # from Resolve, FCPXML, Kdenlive, ...
