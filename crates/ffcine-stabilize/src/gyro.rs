@@ -4,8 +4,8 @@
 //!
 //! Everything here works in image axes: `x` right, `y` down, `z` forward (right-handed), with an
 //! attitude `q` taking camera rays to the world. The rotation from frame `k` to `k - 1` is then
-//! `q[k-1]^-1 * q[k]`. The readers (`read`, behind [`detect_motion`](crate::detect_motion), and feature
-//! `nvof`) convert to these axes.
+//! `q[k-1]^-1 * q[k]`. The readers (`read`, behind [`detect_motion`](crate::detect_motion), and
+//! feature `nvof`) convert to these axes.
 
 use crate::motion::Motion;
 use crate::{Detection, SourceRange};
