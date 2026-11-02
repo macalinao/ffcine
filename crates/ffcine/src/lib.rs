@@ -40,7 +40,7 @@ pub use ffcine_render::{
     Pipeline, PixelFormat, RateControl, RunStats, Scaler, Scaling, Size, Stage, ToneMapping, Warp,
 };
 pub use ffcine_render::{
-    backend, bake, blend, encode, grade, layer, overlay, pipeline, profile, shaders,
+    backend, bake, blend, encode, extra, grade, layer, overlay, pipeline, profile, shaders,
 };
 pub use ffcine_stabilize as stabilize;
 pub use ffcine_text as text;

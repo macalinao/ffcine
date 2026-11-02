@@ -78,8 +78,8 @@ is ever pruned, and old masters stay where they are.
    - film grain (`ffcine.fx.grain/1` on the timeline's top-level stack, `profiles.<name>`
      overriding per render profile; a clip's own overrides it) is the `ffcine-filters` grain hook
      on the picture and on video layers;
-   - speed changes, ramps and freezes are retimed first with ffmpeg on NVDEC, into a lossless NVENC
-     intermediate (for layers too). Frames stay in VRAM, so a 20x timelapse reads 20x its length
+   - speed changes, ramps, freezes and temporal blends are retimed first with ffmpeg on NVDEC, into
+     a lossless NVENC intermediate (for layers too). Frames stay in VRAM, so a 20x timelapse reads 20x its length
      of 4K quickly;
    - a pass that fails (iPhone HLG with Dolby Vision RPUs) is retried once on stream copies of
      every source with the RPUs stripped (`dovi_rpu=strip=1`).
@@ -114,7 +114,7 @@ it covers:
 - the clip's **filters** (`plan::Filters`), as read for this render profile: stabilize
   parameters plus the inputs the warp derives from (the detect settings and the motion cache's
   `FORMAT_VERSION`, and the clip frames analysed), denoise, the reframe after its
-  `profiles.<aspect>` override, and the ramp. Whole-clip filters (stabilize, reframe, ramp) also
+  `profiles.<aspect>` override, the ramp and the temporal blend. Whole-clip filters (stabilize, reframe, ramp) also
   key the clip's start and length and the piece's offset in it, since a piece's pixels depend on
   the rest of the clip;
 - the clip's **other `ffcine.*` effects** (vignette, fade, ...), so
@@ -126,8 +126,8 @@ it covers:
 - the **render profile** (size, aspect name, punch cap and the full encoder config), the ffcine
   version and `RENDER_REVISION`. Bump `RENDER_REVISION` whenever the render path changes its
   output (4: per-clip filters and exposure; 5: denoiser context across pieces, ramp pieces
-  seek; 6: overlay rotation, anchor, blend modes and HDR layers). A temporally denoised piece
-  also keys its context frames.
+  seek; 6: `rgb_gain`, `extra` and temporal blend; 7: overlay rotation, anchor, blend modes and
+  HDR layers). A temporally denoised piece also keys its context frames.
 
 Changing one filter re-renders that clip's segments (and a dissolve it is part of) only, and an
 unchanged timeline renders nothing (`plan::tests::filter_edits_rerender_only_their_clip`). A
@@ -167,7 +167,14 @@ does, with no CPU fallback:
 | `ffcine.fx.denoise/1` | temporal (NVOF or block motion) and spatial NLM denoise on the decoded planes ([denoise.md](denoise.md)). Without the effect the grade's `denoise` number `d` (edit.yaml) maps to temporal strength `d`, radius 2, NVOF, plus spatial `0.2 d`. A piece of a clip decodes `radius` frames of the clip on each side as history and lookahead (`Pipeline::context`; none past the clip's ends), so cuts inside a clip don't show |
 | `ffcine.geo.reframe/1` | per-frame source windows (zoom, punch, push, pan, `crop_x`/`crop_y`, keyframes) evaluated over the whole clip, with the `profiles.<aspect>` override and the profile's punch cap |
 | `ffcine.time.ramp/1` | the ramp itself (`render.py`'s `ramp_setpts`), not the average speed: NVDEC, `setpts`, `fps`, this piece's frames, lossless NVENC. Source time is read from the clip's start on the source's clock (`-copyts`), so a piece seeks to just before its first source frame and gets the frames the whole clip has there |
+| `ffcine.time.blend/1` | `frames` N: each frame is the mean of the last N at the timeline rate (the prototype's `tmix`), a running mean of `blend_vulkan` steps in the retime prep (NVDEC, Vulkan, lossless NVENC). It reads N - 1 frames from before the piece and its denoiser context (the source's first frame stands in at its start), so split pieces match an unsplit render. Freeze frames aren't blended |
 | `ffcine.color.grade/1` `exposure` | stops, a gain in display-linear light (2.4) ahead of the look hook |
+| `ffcine.color.grade/1` `rgb_gain` | per-channel gain on the decoded source ahead of the LUT (`colorchannelmixer` before `lut3d`), folded into the first LUT (an identity one without) |
+| `ffcine.color.grade/1` `extra` | ffmpeg filter strings after the look (`extra_light` under the light rule), parsed (`name=k=v:k=v`, positional arguments, comma chains) and run as `PREOUTPUT` hooks in order (`ffcine_render::extra`): `eq`, `hue`, `colorbalance`, `curves` (presets and point lists), `unsharp`, `vignette` (angle). Other filters, options and non-constant expressions are warned and skipped |
+
+Each shot's GPU grade is built with the same code as `ffcine grade --clip` (`looks::grade_for`,
+passed in as `Renderer::grader`): `rgb_gain`, the LUT with `lut_strength`, the post-LUT look hook
+(exposure, warmth, tint, contrast, gamma, lift, gain, saturation), `extra`, and sharpen.
 
 ## Aspects
 
@@ -260,11 +267,6 @@ exact rationals (`24000/1001`, `60000/1001`).
 - Overlay layers render at their largest size in the segment and are scaled down by the
   compositor when they shrink. `flip_x`/`flip_y` aren't applied; Resolve's key composite modes
   (27-31) render as `normal`.
-- **Grade**: `ffcine render` builds each shot's GPU grade with the same code as
-  `ffcine grade --clip` (`looks::grade_for`, passed in as `Renderer::grader`): LUT with
-  `lut_strength`, the post-LUT look hook (exposure, warmth, tint, contrast, gamma, lift, gain,
-  saturation), and sharpen. `rgb_gain` and `extra` are in the key but not applied yet (warned).
-  Temporal blend (`ffcine.time.blend/1`) isn't applied yet.
 - **Audio**: the mix is held in RAM and written as a float WAV to `<cache>/tmp` before the AAC
   encode (about 350 MB per bus for 15 min). Stems aren't kept; `ffcine audio --stems` writes
   them.

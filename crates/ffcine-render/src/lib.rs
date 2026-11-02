@@ -6,6 +6,7 @@ pub mod backend;
 pub mod bake;
 pub mod blend;
 pub mod encode;
+pub mod extra;
 pub mod grade;
 pub mod layer;
 pub mod overlay;

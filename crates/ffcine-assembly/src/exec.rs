@@ -128,6 +128,41 @@ fn secs(frames: i64, rate: f64) -> f64 {
     frames as f64 / rate
 }
 
+/// The prototype's `tmix=frames=n` on CUDA frames at rate `fr`, as `blend_vulkan` steps (a
+/// running mean over `n` copies of the stream, copy `j` starting `j` frames later). The input
+/// starts `hist` frames before the piece (`hist < n - 1` near the source's start: the first
+/// frame is held for the rest), so the output's first frame averages the `n` frames ending at
+/// the piece's first. Ends on CUDA frames for NVENC.
+fn blend_filter(n: u32, hist: i64, fr: &str) -> String {
+    let pad = i64::from(n) - 1 - hist;
+    let mut f = String::new();
+    if pad > 0 {
+        let _ = write!(f, "tpad=start={pad}:start_mode=clone,");
+    }
+    let _ = write!(f, "settb=1/({fr}),setpts=N,hwupload,split={n}");
+    for j in 0..n {
+        let _ = write!(f, "[b{j}]");
+    }
+    f.push(';');
+    for j in 1..n {
+        let _ = write!(f, "[b{j}]trim=start_frame={j},setpts=PTS-STARTPTS[t{j}];");
+    }
+    let mut prev = "b0".to_owned();
+    for j in 1..n {
+        let _ = write!(
+            f,
+            "[t{j}][{prev}]blend_vulkan=all_mode=normal:all_opacity={:.7}",
+            1.0 / f64::from(j + 1)
+        );
+        if j + 1 < n {
+            prev = format!("m{j}");
+            let _ = write!(f, "[{prev}];");
+        }
+    }
+    f.push_str(",hwupload=derive_device=cuda");
+    f
+}
+
 /// A ramped piece's retime: where to seek (source seconds after the clip's start), how much to
 /// read, and the filter giving output frames `from..from + n` of the whole clip.
 #[derive(Debug, Clone, PartialEq)]
@@ -781,8 +816,8 @@ impl Renderer<'_> {
         Ok(black)
     }
 
-    /// A shot's source for the GPU pass: its media at its start, or, with a speed change or a
-    /// freeze, a lossless retimed intermediate (ffmpeg on NVDEC/NVENC) from 0.
+    /// A shot's source for the GPU pass: its media at its start, or, with a speed change, a
+    /// freeze or a temporal blend, a lossless retimed intermediate (ffmpeg on NVDEC/NVENC) from 0.
     fn input(
         &self,
         plan: &Plan,
@@ -796,7 +831,7 @@ impl Renderer<'_> {
 
     /// [`Renderer::input`] with `ctx` (before, after) frames of the clip around the piece for
     /// the denoiser ([`Pipeline::context`]): a retimed intermediate holds them too.
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines, clippy::many_single_char_names)]
     fn input_ctx(
         &self,
         plan: &Plan,
@@ -806,7 +841,9 @@ impl Renderer<'_> {
         tag: &str,
         temps: &mut Vec<PathBuf>,
     ) -> Result<(PathBuf, f64)> {
-        if (s.speed - 1.0).abs() < 1e-9 && s.filters.ramp.is_none() {
+        // A freeze blends identical frames.
+        let blend = s.filters.blend.filter(|_| s.speed.abs() > 1e-9);
+        if (s.speed - 1.0).abs() < 1e-9 && s.filters.ramp.is_none() && blend.is_none() {
             return Ok((s.media.clone(), s.start));
         }
         let r = rational(plan.rate);
@@ -818,9 +855,25 @@ impl Renderer<'_> {
         let total = before + s.frames + after;
         let n = total.to_string();
         let mut v = Vec::new();
+        if blend.is_some() {
+            v.extend(args(&[
+                "-init_hw_device",
+                "cuda=cu",
+                "-init_hw_device",
+                "vulkan=vk@cu",
+                "-filter_hw_device",
+                "vk",
+                "-hwaccel_device",
+                "cu",
+            ]));
+        }
+        // Frames before the piece a blend averages in.
+        let want = blend.map_or(0, |b| i64::from(b) - 1);
+        let mut hist = 0;
         let filter = if let Some(ramp) = &s.filters.ramp {
-            let from = s.clip_at.max(0);
-            let cut = ramp_cut(ramp, s.clip_start, from - before, total, plan.rate);
+            let from = s.clip_at.max(0) - before;
+            hist = want.min(from);
+            let cut = ramp_cut(ramp, s.clip_start, from - hist, hist + total, plan.rate);
             v.extend(args(&[
                 "-hwaccel",
                 "cuda",
@@ -841,7 +894,11 @@ impl Renderer<'_> {
             v.push(s.media.clone().into());
             format!("trim=end_frame=1,loop=loop=-1:size=1:start=0,setpts=N/({fr})/TB,format=p010le")
         } else {
-            let src = secs(before + s.frames + after + 2, plan.rate) * s.speed;
+            #[allow(clippy::cast_possible_truncation)]
+            let room =
+                (s.shifted(-before, plan.rate).start * plan.rate / s.speed + 1e-6).floor() as i64;
+            hist = want.min(room.max(0));
+            let src = secs(hist + before + s.frames + after + 2, plan.rate) * s.speed;
             // Frames stay in VRAM from NVDEC to the lossless NVENC intermediate: a timelapse
             // reads 20x its length of source.
             v.extend(args(&[
@@ -850,7 +907,7 @@ impl Renderer<'_> {
                 "-hwaccel_output_format",
                 "cuda",
                 "-ss",
-                &s.shifted(-before, plan.rate).start.to_string(),
+                &s.shifted(-before - hist, plan.rate).start.to_string(),
                 "-t",
                 &src.to_string(),
                 "-i",
@@ -860,6 +917,10 @@ impl Renderer<'_> {
                 "setpts=(PTS-STARTPTS)/{},fps={fr},scale_cuda=format=p010le",
                 s.speed
             )
+        };
+        let filter = match blend {
+            Some(b) => format!("{filter},{}", blend_filter(b, hist, &fr)),
+            None => filter,
         };
         v.extend(args(&[
             "-map",
@@ -1486,6 +1547,23 @@ mod tests {
             assert_eq!(piece, whole[a..b], "piece {from}+{n}");
         }
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn blend_chain() {
+        assert_eq!(
+            blend_filter(3, 2, "24000/1001"),
+            "settb=1/(24000/1001),setpts=N,hwupload,split=3[b0][b1][b2];\
+             [b1]trim=start_frame=1,setpts=PTS-STARTPTS[t1];\
+             [b2]trim=start_frame=2,setpts=PTS-STARTPTS[t2];\
+             [t1][b0]blend_vulkan=all_mode=normal:all_opacity=0.5000000[m1];\
+             [t2][m1]blend_vulkan=all_mode=normal:all_opacity=0.3333333,\
+             hwupload=derive_device=cuda"
+        );
+        // Near the source's start the first frame stands in for the missing history.
+        let f = blend_filter(2, 0, "24");
+        assert!(f.starts_with("tpad=start=1:start_mode=clone,settb=1/(24),"));
+        assert!(f.contains("[t1][b0]blend_vulkan=all_mode=normal:all_opacity=0.5000000,hwupload"));
     }
 
     #[test]
