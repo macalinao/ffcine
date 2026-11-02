@@ -25,6 +25,8 @@ mod assemble;
 mod deliver;
 #[path = "looks.rs"]
 mod looks;
+#[path = "title.rs"]
+mod title;
 
 /// `--dither`: a method or `none`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -210,6 +212,16 @@ pub(crate) enum Cmd {
         #[bpaf(positional("SUBS"))]
         subs: PathBuf,
     },
+    /// Add a title sequence or end screen to a timeline as an ffcine.title clip.
+    ///
+    /// The clip goes on a new Titles track. The title's words slide up one after another, a rule draws out from the middle, then the
+    /// subtitle and credit lines follow; everything fades out together. --end makes an end
+    /// screen instead: a dimmed backdrop, the title fading in word by word and the lines after
+    /// it, at the end of the timeline. Fonts and colours come from the project's base style (or
+    /// --style); sizes, timings and every piece's look can be changed with --set (docs/text.md,
+    /// "Titles and end screens"). Render it with `ffcine render`, check a frame with `ffcine still`.
+    #[bpaf(command, footer(crate::help::TITLE))]
+    Title(#[bpaf(external(title::title_args))] title::TitleArgs),
     /// Render a whole timeline into one master, with a segment cache.
     ///
     /// Applies each clip's grade, stabilize, denoise, reframe and speed ramp from the timeline,
@@ -1192,6 +1204,7 @@ pub(crate) fn run(cmd: Cmd) -> anyhow::Result<()> {
         | Cmd::Tag(_)
         | Cmd::Credits { .. }
         | Cmd::Subs { .. }
+        | Cmd::Title(_)
         | Cmd::Triage(_)
         | Cmd::Breakdown(_) => (false, None),
     };
@@ -1227,6 +1240,7 @@ pub(crate) fn run(cmd: Cmd) -> anyhow::Result<()> {
             output,
             subs,
         } => deliver::subs(&subs, &into, output.as_deref(), offset)?,
+        Cmd::Title(args) => title::title(&args)?,
         Cmd::Batch { file, .. } => {
             let text = std::fs::read_to_string(&file)
                 .with_context(|| format!("reading {}", file.display()))?;

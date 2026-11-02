@@ -864,32 +864,32 @@ fn overlays_at(
         if fade <= 0.0 {
             continue;
         }
-        #[allow(clippy::cast_precision_loss)]
-        let (mw, mh) = (o.mask.width as f32, o.mask.height as f32);
         let p: Vec<pl::pl_overlay_part> = o
-            .parts
+            .parts_at(index)
             .iter()
             .map(|part| {
-                let [width, height] = part.size.unwrap_or([mw, mh]);
-                let [left, top] = part.pos;
+                let ([sx0, sy0, sx1, sy1], [dx0, dy0, dx1, dy1]) = part.rects(&o.mask);
                 let [red, green, blue, alpha] = part.colour;
                 pl::pl_overlay_part {
                     src: pl::pl_rect2df {
-                        x0: 0.0,
-                        y0: 0.0,
-                        x1: mw,
-                        y1: mh,
+                        x0: sx0,
+                        y0: sy0,
+                        x1: sx1,
+                        y1: sy1,
                     },
                     dst: pl::pl_rect2df {
-                        x0: left,
-                        y0: top,
-                        x1: left + width,
-                        y1: top + height,
+                        x0: dx0,
+                        y0: dy0,
+                        x1: dx1,
+                        y1: dy1,
                     },
                     color: [red, green, blue, alpha * fade],
                 }
             })
             .collect();
+        if p.is_empty() {
+            continue;
+        }
         texs.push(tex.tex);
         parts.push(p);
     }

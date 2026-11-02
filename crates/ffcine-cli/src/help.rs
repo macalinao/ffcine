@@ -215,6 +215,13 @@ pub const SUBS: &str = examples!(
     "ffcine subs --offset=-1.5 --into timeline.otio -o captioned.otio captions.ass",
 );
 
+pub const TITLE: &str = examples!(
+    "ffcine title --into edit.otio \"The Long Road\" --subtitle \"A short film\"",
+    "ffcine title --into edit.otio --end \"Thanks for watching\" --line \"Music: Example Artist (CC BY 4.0)\" --line \"Made with ffcine\"",
+    "ffcine title --into edit.otio \"Day one\" --at 12.5 --duration 4 --no-rule --set 'title_style={\"font\":\"DejaVu Serif\",\"face\":\"Light\"}' -o titled.otio",
+    "ffcine still --at 2 -o title.png titled.otio",
+);
+
 pub const RENDER: &str = concat!(
     reference!(
         "Timeline keys (OTIO JSON, under metadata.ffcine):",

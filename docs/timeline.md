@@ -194,12 +194,20 @@ overrides the `style`.
 | `position` | `[x, y]` middle of the text box as an offset from the frame's middle, fractions of the frame, y down |
 | `alignment` | `left`, `center`, `right` |
 | `bold`, `italic` | booleans |
-| `animation` | `{in: {kind, duration}, out: {kind, duration}}`, `kind` `fade`, `slide`, `typewriter`, `pop`, or the source's name; seconds. Not rendered yet except `fade`; unknown kinds are kept |
+| `animation` | `{in: {kind, duration, ...}, out: {...}}`, `kind` `fade`, `slide`, `pop`, `typewriter`, `wipe`, `none`, or the source's name (rendered as a fade, kept); seconds. Options: [text.md](text.md#animation) |
+| `keyframes` | `{position, scale, opacity, colour}`: `[{t, v, interp}]` per parameter ([text.md](text.md#keyframes)) |
 | `profiles` | `{name: {parameters}}`: overrides for one output aspect (`reel`, `feed`, `square`, ...), merged over the rest when rendering it; also allowed in `project.styles` |
 
 Rendering, the style cascade (`base` <- `style` <- `based_on` chain <- clip) and the additive
 style keys (`anchor`, `font_file`, `shadow`, `outline`, `box`, `highlight`, `fade_in`, ...):
 [text.md](text.md).
+
+### `ffcine.title`
+
+A title sequence or end screen: `kind` (`title`, `end`), `title`, `subtitle`, `lines`, `style`,
+`title_style` / `subtitle_style` / `lines_style`, `rule`, `background`, `stagger`, `duration`,
+`fade_out`, `position`, `alignment`, `gap`. Rendered as `ffcine.text` pieces:
+[text.md](text.md#titles-and-end-screens). `ffcine title` adds one.
 
 ### `ffcine.solid`
 

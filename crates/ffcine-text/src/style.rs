@@ -187,11 +187,11 @@ fn length(v: Option<&Value>, height: f32, fractions: bool) -> Option<f32> {
     })
 }
 
-/// Fade seconds from `animation.{in,out}` (`kind: fade`) or the flat `fade_in`/`fade_out`.
+/// Fade seconds from `animation.{in,out}` or the flat `fade_in`/`fade_out`.
 fn fade(m: &Map<String, Value>, dir: &str, flat: &str) -> Option<f64> {
     let a = m.get("animation").and_then(|a| a.get(dir));
     if let Some(a) = a {
-        // Kinds not drawn yet (slide, pop, typewriter) fade over their duration.
+        // The plain fade path; other kinds are drawn by `anim` from the same keys.
         return a.get("duration").and_then(Value::as_f64);
     }
     m.get(flat).and_then(Value::as_f64)

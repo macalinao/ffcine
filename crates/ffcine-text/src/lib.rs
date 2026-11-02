@@ -6,7 +6,9 @@
 //! segment with `cosmic-text` and returns [`Overlay`]s that the render pipeline composites in its
 //! libplacebo pass ([`ffcine_render::Pipeline::overlays`]). Segment renderers split at
 //! [`TextLayer::cuts`] and key their cache on [`TextLayer::fingerprint`], so a card edit
-//! re-renders only the seconds it covers. [`ass`] imports `.ass` subtitles as text clips.
+//! re-renders only the seconds it covers. [`ass`] imports `.ass` subtitles as text clips;
+//! [`anim`] animates text (slide, pop, typewriter, wipe, keyframes) and [`title`] expands
+//! `ffcine.title` clips (title sequences, end screens) into text pieces.
 //!
 //! ```no_run
 //! use ffcine_render::{Pipeline, Size};
@@ -22,9 +24,11 @@
 //! # Ok::<(), ffcine_core::Error>(())
 //! ```
 
+pub mod anim;
 pub mod ass;
 pub mod layout;
 pub mod style;
+pub mod title;
 
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
@@ -34,7 +38,8 @@ use ffcine_render::{Overlay, Size};
 use ffcine_timeline::{HasMetadata, Item, MediaReference, Timeline};
 use serde_json::{Map, Value};
 
-pub use layout::{Layer, Rendered, Typesetter};
+pub use anim::Animation;
+pub use layout::{Layer, Rendered, Role, Typesetter};
 pub use style::{Align, TextStyle};
 
 /// `generator_kind` of text clips.
@@ -98,28 +103,44 @@ impl TextLayer {
             Some(Item::Track(t)) => t.enabled,
             _ => true,
         };
+        let frame_h = frame_size.map_or(1080.0, |f| f64::from(f[1]));
         let mut clips: Vec<TextClip> = timeline
             .placed_clips()
             .into_iter()
             .filter(|p| p.clip.enabled && enabled(p.track))
-            .filter_map(|p| {
-                let MediaReference::Generator(g) = p.clip.media_reference()? else {
-                    return None;
+            .flat_map(|p| {
+                let Some(MediaReference::Generator(g)) = p.clip.media_reference() else {
+                    return Vec::new();
                 };
-                (g.generator_kind == GENERATOR).then(|| TextClip {
-                    id: p.clip.ffcine_id().map(str::to_owned),
+                let id = p.clip.ffcine_id().map(str::to_owned);
+                let clip = |text: String, params, suffix: Option<&str>| TextClip {
+                    id: match suffix {
+                        Some(s) => Some(format!("{}:{s}", id.as_deref().unwrap_or(&p.clip.name))),
+                        None => id.clone(),
+                    },
                     name: p.clip.name.clone(),
-                    text: g
-                        .parameters
-                        .get("text")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_owned(),
+                    text,
                     start: p.start,
                     end: p.end(),
                     track: p.track,
-                    params: style::cascade(&styles, &g.parameters),
-                })
+                    params,
+                };
+                match g.generator_kind.as_str() {
+                    GENERATOR => vec![clip(
+                        g.parameters
+                            .get("text")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
+                        style::cascade(&styles, &g.parameters),
+                        None,
+                    )],
+                    title::GENERATOR => title::expand(&styles, &g.parameters, frame_h)
+                        .into_iter()
+                        .map(|piece| clip(piece.text, piece.params, Some(piece.role)))
+                        .collect(),
+                    _ => Vec::new(),
+                }
             })
             .collect();
         clips.sort_by(|a, b| a.track.cmp(&b.track).then(a.start.total_cmp(&b.start)));
@@ -214,17 +235,62 @@ impl TextLayer {
             if to <= from || to <= 0 || from >= i64::try_from(frames).unwrap_or(i64::MAX) {
                 continue;
             }
-            let Some(r) = ts.render(&c.text, &s, scale, [out.width, out.height])? else {
-                continue;
+            let params = match &self.profile {
+                Some((name, _)) => for_profile(&c.params, name),
+                None => c.params.clone(),
+            };
+            let anim = Animation::parse(&params);
+            let rect = params.get("rect").and_then(Value::as_array).and_then(|a| {
+                #[allow(clippy::cast_possible_truncation)]
+                let g = |i: usize| a.get(i).and_then(Value::as_f64).map(|v| v as f32);
+                Some([g(0)? * ow, g(1)? * oh])
+            });
+            let raster = if rect.is_some() {
+                1.0
+            } else {
+                anim.raster_scale()
+            };
+            let r = match rect {
+                Some(size) => anim::rect(size, s.position, s.anchor, [ow, oh], s.colour),
+                None => match ts.render(&c.text, &s, scale * raster, [out.width, out.height])? {
+                    Some(r) => r,
+                    None => continue,
+                },
             };
             let shift = match &self.profile {
                 Some((_, safe)) if reshaped => into_safe(&r, *safe, [ow, oh]),
                 _ => [0.0, 0.0],
             };
-            for mut l in r.layers {
+            let mut r = r;
+            r.origin = [r.origin[0] + shift[0], r.origin[1] + shift[1]];
+            for l in &mut r.layers {
                 for p in &mut l.parts {
                     p.pos = [p.pos[0] + shift[0], p.pos[1] + shift[1]];
                 }
+            }
+            if !anim.is_plain_fade() {
+                let a = [
+                    (s.position[0] + 0.5) * ow + shift[0],
+                    (s.position[1] + 0.5) * oh + shift[1],
+                ];
+                v.extend(anim::animate(
+                    &r,
+                    &anim,
+                    raster,
+                    a,
+                    s.position,
+                    [ow, oh],
+                    anim::Span {
+                        from,
+                        to,
+                        frames: i64::try_from(frames).unwrap_or(i64::MAX),
+                        rate,
+                        delay: s.delay,
+                    },
+                ));
+                continue;
+            }
+            for l in r.layers {
                 v.push(Overlay {
                     mask: l.mask,
                     parts: l.parts,
@@ -232,6 +298,7 @@ impl TextLayer {
                     to,
                     fade_in: s.fade_in * rate,
                     fade_out: s.fade_out * rate,
+                    motion: None,
                 });
             }
         }
@@ -344,6 +411,73 @@ mod tests {
     }
 
     #[test]
+    fn titles_and_animated_text_render_with_motion() {
+        let mut t = Timeline::default();
+        title::insert(
+            &mut t,
+            json!({"title": "Hello there world", "subtitle": "A test pattern"})
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+            0.0,
+            4.0,
+        )
+        .expect("insert");
+        let mut tr = Track::new("Captions", track_kind::VIDEO);
+        let p = json!({"text": "typed out", "animation": {"in": {"kind": "typewriter", "duration": 1}}});
+        tr.children.push(Item::Clip(Clip::new(
+            "typed",
+            MediaReference::Generator(GeneratorReference::new(
+                GENERATOR,
+                p.as_object().cloned().unwrap_or_default(),
+            )),
+            Some(TimeRange::from_frames(0.0, 48.0, 24.0)),
+        )));
+        t.tracks.children.push(Item::Track(tr));
+        let mut layer = TextLayer::from_timeline(&t, ".").expect("layer");
+        let ids: Vec<_> = layer.clips().iter().filter_map(|c| c.id.clone()).collect();
+        assert_eq!(ids, ["title1:title", "title1:rule", "title1:subtitle"]);
+        if !Typesetter::new(".").has_fonts() {
+            eprintln!("no system fonts; skipped");
+            return;
+        }
+        let out = Size {
+            width: 640,
+            height: 360,
+        };
+        let ov = layer.overlays(0.0, 96, 24.0, out).expect("ov");
+        assert!(ov.iter().all(|o| o.motion.is_some()));
+        // Mid-stagger the title's words are separate pieces; settled, one again.
+        let title_fill = ov
+            .iter()
+            .filter(|o| o.mask.width > 1)
+            .max_by_key(|o| o.mask.height)
+            .expect("title");
+        assert!(
+            title_fill.parts_at(8).len() >= 2,
+            "{:?}",
+            title_fill.parts_at(8)
+        );
+        assert_eq!(title_fill.parts_at(60).len(), 1);
+        // Half way through typing, part of the caption shows.
+        let typed = ov.last().expect("caption");
+        let w = |f: i64| {
+            typed
+                .parts_at(f)
+                .iter()
+                .map(|p| p.size.unwrap()[0])
+                .sum::<f32>()
+        };
+        assert!(
+            w(0) < w(12) && w(12) < w(30),
+            "{} {} {}",
+            w(0),
+            w(12),
+            w(30)
+        );
+    }
+
+    #[test]
     fn profile_overrides_and_safe_area() {
         let p = json!({"size": 40, "position": [0.0, 0.4],
                        "profiles": {"reel": {"position": [0.0, 0.2]}}});
@@ -360,6 +494,9 @@ mod tests {
             layers: Vec::new(),
             origin,
             size,
+            pad: 0.0,
+            lines: Vec::new(),
+            glyphs: Vec::new(),
         };
         let safe = [0.115, 0.11, 0.22, 0.055];
         let [dx, dy] = into_safe(&r([100.0, 1700.0], [300.0, 80.0]), safe, [1080.0, 1920.0]);
