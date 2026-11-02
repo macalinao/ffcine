@@ -37,31 +37,42 @@ pub const TOP: &str = concat!(
         "ffcine doctor                                   # is the GPU path complete?",
         "ffcine ingest --to ~/projects/trip /media/CARD  # verified offload + catalog",
         "ffcine triage ~/projects/trip                   # strips, transcripts, clip page",
-        "ffcine grade --lut look.cube clip.mov out.mkv   # one graded shot",
+        "ffcine grade MVI_2884.MP4 graded.mkv           # one graded shot (C-Log 3 auto)",
         "ffcine import edit.fcpxml -o timeline.otio      # another editor's cut",
         "ffcine render --profile master -o master.mp4 timeline.otio",
     ),
     see!("")
 );
 
-pub const PROBE: &str = examples!("ffcine probe clip.mov", "ffcine probe photo.heic");
+pub const PROBE: &str = examples!(
+    "ffcine probe MVI_2884.MP4                       # Canon EOS R10",
+    "ffcine probe DJI_20260704112401_0001_D.MP4      # DJI Osmo Pocket 4",
+    "ffcine probe photo.heic",
+);
 
 pub const GRADE: &str = concat!(
     examples!(
-        "# Log clip: camera LUT from the probed profile, 10-bit HEVC master",
-        "ffcine grade clip.mov graded.mkv",
-        "# A baked grade LUT, 4K out, light sharpening",
-        "ffcine grade --lut look.cube --size 3840x2160 --sharpen 0.6 clip.mov graded.mkv",
-        "# 5 s from 12.5 s, as a small 8-bit preview",
-        "ffcine grade --ss 12.5 --frames 120 --preview clip.mov preview.mp4",
-        "# Stabilized, denoised and with grain, reframed to a 9:16 reel",
-        "ffcine grade --stabilize --temporal-radius 2 --grain 2 --render-profile reel clip.mov reel.mkv",
+        "# Osmo Pocket 4 D-Log: DJI's Rec.709 LUT from the probed profile, 10-bit HEVC master",
+        "ffcine grade DJI_20260704112401_0001_D.MP4 graded.mkv",
+        "# EOS R10 C-Log 3 through a baked show LUT (camera transform included), 4K, light sharpening",
+        "ffcine grade --lut show_clog3.cube --size 3840x2160 --sharpen 0.6 MVI_2884.MP4 graded.mkv",
+        "# 5 s from 12.5 s at 23.976 fps, as a small 8-bit preview",
+        "ffcine grade --ss 12.5 --frames 120 --preview MVI_2884.MP4 preview.mp4",
+        "# Handheld Pocket 4 night shot: stabilized, night denoise, grain, reframed to a 9:16 reel",
+        "ffcine grade --stabilize --denoise-preset night --grain 2 --render-profile reel DJI_0001_D.MP4 reel.mkv",
         "# Phone delivery with the timeline's titles over it",
-        "ffcine grade --deliver phone --text timeline.otio --text-at 30 clip.mov phone.mp4",
-        "# HDR10 master (BT.2020 PQ, 1000 cd/m² mastering metadata); --hdr hlg for HLG",
-        "ffcine grade --hdr pq clip.mov hdr10.mkv",
+        "ffcine grade --deliver phone --text timeline.otio --text-at 30 MVI_2884.MP4 phone.mp4",
+        "# HDR10 master from C-Log 3 (BT.2020 PQ, 1000 cd/m² mastering metadata); --hdr hlg for HLG",
+        "ffcine grade --hdr pq --camera clog3 MVI_2884.MP4 hdr10.mkv",
     ),
-    see!("color.md", "denoise.md", "delivery.md")
+    see!(
+        "color.md",
+        "denoise.md",
+        "stabilize.md",
+        "reframe.md",
+        "hooks.md",
+        "delivery.md#render-profiles"
+    )
 );
 
 pub const BATCH: &str = concat!(
@@ -75,20 +86,20 @@ pub const BATCH: &str = concat!(
     examples!(
         "ffcine batch shots.txt",
         "# shots.txt:",
-        "--lut look.cube --size 3840x2160 a001.mov a001_graded.mkv",
-        "--ss 4 --frames 96 'card 2/b014.mov' b014_graded.mkv   # a 4 s pickup",
-        "--preview --camera dlogm c007.mp4 c007_preview.mp4",
+        "--lut show_clog3.cube --size 3840x2160 MVI_2884.MP4 MVI_2884_graded.mkv",
+        "--ss 4 --frames 96 'card 2/MVI_2891.MP4' MVI_2891_graded.mkv   # a 4 s pickup",
+        "--preview --camera dlog-vivid DJI_0007_D.MP4 DJI_0007_preview.mp4",
     ),
 );
 
 pub const STABILIZE: &str = concat!(
     examples!(
         "# 10 s at 23.976 fps: the warps as a shader for ffmpeg's libplacebo filter",
-        "ffcine stabilize --frames 240 --hook warp.hook clip.mov",
+        "ffcine stabilize --frames 240 --hook warp.hook MVI_2884.MP4",
         "# Stabilize while grading instead",
-        "ffcine grade --stabilize --frames 240 clip.mov stable.mkv",
-        "# Stronger smoothing, zoom capped at 1.1, warps as text",
-        "ffcine stabilize --start 30 --frames 480 --smoothing 40 --max-zoom 1.1 --transforms warps.txt clip.mov",
+        "ffcine grade --stabilize --frames 240 MVI_2884.MP4 stable.mkv",
+        "# Pocket 4 walking shot: stronger smoothing, zoom capped at 1.1, warps as text",
+        "ffcine stabilize --start 30 --frames 480 --smoothing 40 --max-zoom 1.1 --transforms warps.txt DJI_0001_D.MP4",
     ),
     see!("stabilize.md")
 );
@@ -96,7 +107,7 @@ pub const STABILIZE: &str = concat!(
 pub const JITTER: &str = examples!(
     "ffcine jitter --frames 240 stable.mkv",
     "# Skip the pair across a cut at frame 120",
-    "ffcine jitter --frames 240 --exclude 120 --rate 30 stable.mp4",
+    "ffcine jitter --frames 240 --exclude 120 --rate 30000/1001 stable.mp4",
 );
 
 pub const FETCH_LUTS: &str = examples!(
@@ -106,12 +117,14 @@ pub const FETCH_LUTS: &str = examples!(
 
 pub const BAKE: &str = concat!(
     examples!(
-        "# DJI D-Log -> Rec.709 with a show LUT and a warmer look, as one 65^3 LUT",
+        "# Osmo Pocket 4 D-Log -> Rec.709 with a show LUT and a warmer look, as one 65^3 LUT",
         "ffcine bake --camera dlog --lut show.cube --warmth 0.03 --saturation 1.1 baked.cube",
+        "# EOS R10 C-Log 3 -> Rec.709 with half a stop more exposure, a 33^3 LUT for a camera monitor",
+        "ffcine bake --camera clog3 --exposure 0.5 --size 33 clog3_709.cube",
         "# The analytic Canon Log 3 -> BT.2020 PQ transform, mastered to 1000 cd/m²",
         "ffcine bake --camera clog3 --hdr-peak 1000 clog3_pq.cube",
     ),
-    see!("color.md")
+    see!("color.md#lut-baker")
 );
 
 pub const IMPORT: &str = concat!(
@@ -119,6 +132,7 @@ pub const IMPORT: &str = concat!(
         "ffcine import edit.fcpxml -o timeline.otio",
         "ffcine import --format resolve --size 3840x2160 resolve_export.otio -o timeline.otio",
         "ffcine import --rate 24000/1001 --strict cut.edl -o timeline.otio",
+        "ffcine import ~/CapCut/draft/0601 -o timeline.otio   # a CapCut draft folder",
     ),
     see!("import.md")
 );
@@ -152,21 +166,30 @@ pub const BREAKDOWN: &str = concat!(
     see!("breakdown.md")
 );
 
-pub const SEARCH: &str = examples!(
-    "ffcine search sunset",
-    "ffcine search --paths 'over there'",
-    "ffcine search --index ~/projects/trip/triage/index.json gelato",
+pub const SEARCH: &str = concat!(
+    examples!(
+        "ffcine search sunset",
+        "ffcine search --paths 'over there'",
+        "ffcine search --index ~/projects/trip/triage/index.json gelato",
+    ),
+    see!("triage.md")
 );
 
-pub const SNAP: &str = examples!(
-    "# Move a rough 2.7 s - 7.3 s cut onto the nearest word edges",
-    "ffcine snap A001_C003 2.7 7.3",
-    "ffcine snap --keep --pad 0.2 A001_C003 1:02.5 1:09",
+pub const SNAP: &str = concat!(
+    examples!(
+        "# Move a rough 2.7 s - 7.3 s cut onto the nearest word edges",
+        "ffcine snap MVI_2884 2.7 7.3",
+        "ffcine snap --keep --pad 0.2 DJI_20260704112401_0001_D 1:02.5 1:09",
+    ),
+    see!("triage.md")
 );
 
-pub const CHAPTERS: &str = examples!(
-    "ffcine chapters timeline.otio",
-    "ffcine chapters --intro Welcome -o chapters.txt timeline.otio",
+pub const CHAPTERS: &str = concat!(
+    examples!(
+        "ffcine chapters timeline.otio",
+        "ffcine chapters --intro Welcome -o chapters.txt timeline.otio",
+    ),
+    see!("delivery.md#youtube-chapters")
 );
 
 pub const TAG: &str = concat!(
@@ -178,15 +201,21 @@ pub const TAG: &str = concat!(
     see!("delivery.md")
 );
 
-pub const CREDITS: &str = examples!(
-    "ffcine credits timeline.otio",
-    "ffcine credits --public -o credits.txt timeline.otio",
+pub const CREDITS: &str = concat!(
+    examples!(
+        "ffcine credits timeline.otio",
+        "ffcine credits --public -o credits.txt timeline.otio",
+    ),
+    see!("delivery.md#music-credits")
 );
 
-pub const STILL: &str = examples!(
-    "ffcine still --at 1:23 timeline.otio",
-    "ffcine still --at 95.5 --size 1280x720 -o thumb.png timeline.otio",
-    "ffcine still --at 0:42 --no-text -o frame.png timeline.otio",
+pub const STILL: &str = concat!(
+    examples!(
+        "ffcine still --at 1:23 timeline.otio",
+        "ffcine still --at 95.5 --size 1280x720 -o thumb.png timeline.otio",
+        "ffcine still --at 0:42 --no-text -o frame.png timeline.otio",
+    ),
+    see!("delivery.md#stills")
 );
 
 pub const LOOKS: &str = concat!(
@@ -194,10 +223,11 @@ pub const LOOKS: &str = concat!(
         "Variants (-v [NAME:]SPEC):",
         "SPEC is a project look name, a .cube file or LUT alias, `cut` (the clip's own grade),",
         "or comma-separated look=NAME, lut=ALIAS|FILE|none and grade fields:",
-        "warmth, tint, contrast, gamma, lift, gain, saturation, lut_strength, sharpen.",
+        "exposure, warmth, tint, contrast, gamma, lift, gain, saturation, lut_strength, sharpen.",
         "Each variant layers like a clip grade:",
         "project grade <- look <- source-kind rule <- the clip's override <- the variant's fields.",
-        "denoise is not applied yet, nor extra filters outside ffcine_render::extra (warned).",
+        "rgb_gain and extra filters apply; denoise and extra filters with no GPU equivalent are",
+        "skipped with a warning.",
     ),
     examples!(
         "# The cut against every project look, at two times",
@@ -205,39 +235,80 @@ pub const LOOKS: &str = concat!(
         "# Named variants on 6 shots spread over the timeline",
         "ffcine looks --sample 6 -v warm:look=day,warmth=0.04 -v neutral:lut=none -v film.cube timeline.otio",
         "# A clip outside the timeline",
-        "ffcine looks --clip clip.mov@3.5 -v look.cube -v cut -o looks/clip",
+        "ffcine looks --clip MVI_2884.MP4@3.5 -v show_clog3.cube -v cut -o looks/r10",
     ),
-    see!("delivery.md", "timeline.md#gradeparams")
+    see!("delivery.md#look-comparisons", "timeline.md#gradeparams")
 );
 
-pub const SUBS: &str = examples!(
-    "ffcine subs --into timeline.otio captions.ass",
-    "ffcine subs --offset=-1.5 --into timeline.otio -o captioned.otio captions.ass",
+pub const SUBS: &str = concat!(
+    examples!(
+        "ffcine subs --into timeline.otio captions.ass",
+        "ffcine subs --offset=-1.5 --into timeline.otio -o captioned.otio captions.ass",
+    ),
+    see!("text.md#subtitles-from-ass")
 );
 
-pub const TITLE: &str = examples!(
-    "ffcine title --into edit.otio \"The Long Road\" --subtitle \"A short film\"",
-    "ffcine title --into edit.otio --end \"Thanks for watching\" --line \"Music: Example Artist (CC BY 4.0)\" --line \"Made with ffcine\"",
-    "ffcine title --into edit.otio \"Day one\" --at 12.5 --duration 4 --no-rule --set 'title_style={\"font\":\"DejaVu Serif\",\"face\":\"Light\"}' -o titled.otio",
-    "ffcine still --at 2 -o title.png titled.otio",
+pub const TITLE: &str = concat!(
+    reference!(
+        "--set keys (ffcine.title parameters, values as JSON):",
+        "title_style, subtitle_style, lines_style   style overrides per piece (font, face, size,",
+        "                                           colour, highlight, shadow, ...)",
+        "rule, background, stagger, duration, fade_out, position, alignment, gap",
+    ),
+    examples!(
+        "ffcine title --into edit.otio \"The Long Road\" --subtitle \"A short film\"",
+        "ffcine title --into edit.otio --end \"Thanks for watching\" --line \"Music: Example Artist (CC BY 4.0)\" --line \"Made with ffcine\"",
+        "ffcine title --into edit.otio \"Day one\" --at 12.5 --duration 4 --no-rule --set 'title_style={\"font\":\"DejaVu Serif\",\"face\":\"Light\"}' -o titled.otio",
+        "ffcine still --at 2 -o title.png titled.otio",
+    ),
+    see!("text.md#titles-and-end-screens", "timeline.md#ffcinetitle")
 );
 
 pub const RENDER: &str = concat!(
     reference!(
-        "Timeline keys (OTIO JSON, under metadata.ffcine):",
+        "Timeline keys (OTIO JSON, under metadata.ffcine; docs/timeline.md):",
         "project      ffcine.project/1 on the timeline: rate, grade, default_look, looks, luts,",
-        "             rules, styles, output, mix",
+        "             shaders, rules, styles, output, mix",
         "output       aspect (landscape, reel, feed, square, WxH, NAME=WxH);",
         "             preview / master: size [w, h], max_punch",
         "mix          lufs, true_peak, headroom, normalize, fade_out, dialogue_lufs, nat_lufs,",
-        "             duck_db, sidechain, clean, highpass, ...",
+        "             gain_range, xfade, duck_db, nat_duck_db, duck_attack, duck_release,",
+        "             sidechain, duck_threshold, clean, clean_nat, highpass, buses (docs/audio.md)",
         "grade        camera, lut, lut_strength, rgb_gain, warmth, tint, exposure, contrast,",
-        "             gamma, lift, gain, saturation, denoise, sharpen, extra",
-        "clips        id, label, source, music, attribution, private, public_alt",
+        "             gamma, lift, gain, saturation, denoise, sharpen, extra, extra_light",
+        "clips        id, label, source, ai, hold_of, music, attribution, private, public_alt",
         "markers      chapter",
-        "effects      ffcine.<domain>.<name> with their parameters, e.g. ffcine.geo.reframe/1,",
-        "             ffcine.fx.denoise/1, ffcine.audio.level/1; ffcine.text generators",
         "Grades layer: project.grade <- look <- light rule <- clip override.",
+    ),
+    reference!(
+        "Effects (schema + parameters on a clip or stack):",
+        "ffcine.color.grade/1   look + any grade field (the clip override)",
+        "ffcine.color.cdl/1     ASC CDL slope, offset, power, saturation",
+        "ffcine.fx.denoise/1    preset (night, snow), luma, chroma, protect, temporal {radius,",
+        "                       motion (nvof, blocks), strength, chroma} (docs/denoise.md)",
+        "ffcine.fx.grain/1      strength, size, chroma, profiles",
+        "ffcine.fx.stabilize/1  smoothing, zoom (auto or a factor), max_zoom (docs/stabilize.md)",
+        "ffcine.fx.shader/1     shader, params: an mpv/libplacebo hook (docs/hooks.md)",
+        "ffcine.fx.fade/1, ffcine.fx.flash/1, ffcine.fx.vignette/1, ffcine.fx.darken/1",
+        "ffcine.geo.reframe/1   zoom, punch, push, pan, fit, crop_x, crop_y, focus, profiles",
+        "                       (docs/reframe.md)",
+        "ffcine.geo.crop/1, ffcine.geo.transform/1   picture-in-picture: crop, anchor,",
+        "                       translate, scale, rotate_deg",
+        "ffcine.comp.blend/1    opacity, radius, mode: normal, add, subtract, difference, multiply,",
+        "                       screen, overlay, hardlight, softlight, ... (Resolve's 27 modes)",
+        "ffcine.comp.layout/1   split screens: layout (split, row, column, 1+2), gap, margin, ...",
+        "ffcine.time.ramp/1     speed ramp points [[u, speed]]; ffcine.time.blend/1 frames",
+        "ffcine.audio.level/1, .clean/1, .pan/1, .loop/1   per-clip audio (docs/audio.md)",
+        "Transitions: dissolve, cross_fade, wipe, dip, flash, whip.",
+    ),
+    reference!(
+        "Generators (text and colour clips; docs/text.md):",
+        "ffcine.text    text, style, font, face, size, colour, position, alignment, profiles,",
+        "               animation {in, out}: fade, slide, pop, typewriter, wipe, none;",
+        "               keyframes {position, scale, opacity, colour}: [{t, v, interp}]",
+        "ffcine.title   title sequence or end screen (`ffcine title`)",
+        "ffcine.solid   a colour fill",
+        "HDR output is a `grade --hdr` option; render writes BT.709 SDR (docs/color.md).",
     ),
     examples!(
         "ffcine render -o preview.mp4 timeline.otio",
@@ -247,12 +318,15 @@ pub const RENDER: &str = concat!(
         "ffcine render --profile review --cover 0:42 -o review.mp4 timeline.otio",
         "ffcine render --lufs=-16 --sidechain --json -o master.mp4 timeline.otio",
     ),
-    see!("timeline.md", "assembly.md")
+    see!("timeline.md", "assembly.md", "text.md", "color.md")
 );
 
-pub const DIFF: &str = examples!(
-    "ffcine diff timeline.v1.otio timeline.v2.otio",
-    "ffcine diff --profile master --render-profile reel --all v1.otio v2.otio",
+pub const DIFF: &str = concat!(
+    examples!(
+        "ffcine diff timeline.v1.otio timeline.v2.otio",
+        "ffcine diff --profile master --render-profile reel --all v1.otio v2.otio",
+    ),
+    see!("assembly.md")
 );
 
 pub const PUBLISH: &str = examples!(
@@ -264,7 +338,8 @@ pub const INGEST: &str = concat!(
     examples!(
         "ffcine ingest --to ~/projects/trip /media/CARD",
         "ffcine ingest --to ~/projects/trip --backup /media/backup/trip /media/CARD",
-        "ffcine ingest --dry-run --to ~/projects/trip --camera cam2 --clock cam2=-2m /media/CARD/DCIM",
+        "# The R10's clock ran 2 min fast: fix it while copying",
+        "ffcine ingest --dry-run --to ~/projects/trip --camera r10 --clock r10=-2m /media/CARD/DCIM",
     ),
     see!("ingest.md")
 );
@@ -273,7 +348,7 @@ pub const CATALOG: &str = concat!(
     examples!(
         "ffcine catalog ~/projects/trip",
         "ffcine catalog --full --histogram always ~/projects/trip",
-        "ffcine catalog --zone +02:00 --clock cam1=+1h ~/projects/trip",
+        "ffcine catalog --zone +02:00 --clock pocket4=+1h ~/projects/trip",
     ),
     see!("ingest.md")
 );
@@ -283,7 +358,7 @@ pub const DOCTOR: &str = examples!("ffcine doctor");
 pub const SYNC: &str = concat!(
     examples!(
         "ffcine sync --audio recorder/ --video footage/ -o synced.otio",
-        "ffcine sync --audio rec.wav --video clip.mov --timeline timeline.otio --wind -o timeline.otio",
+        "ffcine sync --audio rec.wav --video MVI_2884.MP4 --timeline timeline.otio --wind -o timeline.otio",
         "ffcine sync --audio recorder/ --video footage/ --lead 0.5 --tail 1 --min-confidence 0.3 -o synced.otio",
     ),
     see!("audio.md")
@@ -397,6 +472,63 @@ mod tests {
                 problems.push(format!("{name}: --help says no more than -h"));
             }
         }
+        assert!(problems.is_empty(), "\n{}", problems.join("\n"));
+    }
+
+    /// GitHub's anchor for a markdown heading.
+    fn slug(heading: &str) -> String {
+        heading
+            .trim_start_matches('#')
+            .trim()
+            .to_lowercase()
+            .chars()
+            .filter_map(|c| match c {
+                ' ' => Some('-'),
+                c if c.is_alphanumeric() || c == '-' || c == '_' => Some(c),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Every `docs/PAGE.md[#anchor]` the help points to exists, and no help says something is
+    /// not done yet.
+    #[test]
+    fn help_links_resolve() {
+        let docs = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs");
+        let mut pages = vec![help(&[], true)];
+        pages.extend(commands().iter().map(|(name, _)| help(&[name], true)));
+        let mut problems = Vec::new();
+        for md in &pages {
+            for (i, _) in md.match_indices("docs/") {
+                let link: String = md[i + 5..]
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || "-_.#".contains(*c))
+                    .collect();
+                let link = link.trim_end_matches('.');
+                let (page, anchor) = link.split_once('#').unwrap_or((link, ""));
+                if page.is_empty() {
+                    continue;
+                }
+                let Ok(text) = std::fs::read_to_string(docs.join(page)) else {
+                    problems.push(format!("no docs/{page}"));
+                    continue;
+                };
+                if !anchor.is_empty()
+                    && !text
+                        .lines()
+                        .any(|l| l.starts_with('#') && slug(l) == anchor)
+                {
+                    problems.push(format!("no #{anchor} in docs/{page}"));
+                }
+            }
+            for stale in ["not applied yet", "not implemented", "TODO"] {
+                if md.contains(stale) {
+                    problems.push(format!("help says {stale:?}"));
+                }
+            }
+        }
+        problems.sort();
+        problems.dedup();
         assert!(problems.is_empty(), "\n{}", problems.join("\n"));
     }
 }

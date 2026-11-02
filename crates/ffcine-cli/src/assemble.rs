@@ -14,11 +14,12 @@ use ffcine::{Decode, Device, backend};
 // Doc comments are --help text, not rustdoc.
 #[allow(clippy::doc_markdown, clippy::struct_excessive_bools)]
 pub(crate) struct RenderArgs {
-    /// Render profile: preview (1080 px short side), master (2160 px) or review (720 px, decoded
-    /// from proxies: the camera's .LRF, else one made once into the cache).
+    /// Render profile: preview (1080 px short side, 10-bit HEVC), master or final (2160 px,
+    /// 10-bit HEVC master) or review (720 px 8-bit HEVC, decoded from proxies: the camera's .LRF,
+    /// else one made once into the cache).
     #[bpaf(argument("NAME"), fallback("preview".to_owned()), display_fallback)]
     profile: String,
-    /// Output aspect: landscape (16:9), reel (9:16), feed (4:5), square (1:1), WxH or NAME=WxH.
+    /// Output aspect: landscape or 16:9, reel or 9:16, feed or 4:5, square or 1:1, WxH or NAME=WxH.
     /// Overrides the timeline's project.output.aspect; each clip's reframe and text take their
     /// profiles.<NAME> overrides.
     #[bpaf(argument("ASPECT"))]
