@@ -22,7 +22,9 @@ use super::placebo::{
 };
 use super::retime::{Q, Retimer};
 use crate::pipeline::RunStats;
-use crate::{Decode, Device, Grade, Layer, LayerSource, Overlay, Pipeline, Result, Stage};
+use crate::{
+    Decode, Device, Grade, Layer, LayerSource, LutStage, LutType, Overlay, Pipeline, Result, Stage,
+};
 
 /// Persistent GPU state. Field order is drop order: renderer and libplacebo before the cache
 /// and the devices they use.
@@ -439,24 +441,44 @@ fn layer_color() -> pl::pl_color_space {
 
 /// A grade's render state: its LUTs and render params (hooks parsed).
 struct Pass {
-    lut: Option<Box<CustomLut>>,
-    input_lut: Option<Box<CustomLut>>,
+    lut: Option<(Box<CustomLut>, LutType)>,
+    input_lut: Option<(Box<CustomLut>, LutType)>,
     params: Box<RenderParams>,
+}
+
+/// The grade's LUTs with `rgb_gain` folded into the first one applied (an identity one without):
+/// `(input, grade)`.
+type LutPair = (Option<LutStage>, Option<LutStage>);
+fn gained_luts(grade: &Grade) -> Result<LutPair> {
+    let (mut input, mut lut) = (grade.input_lut.clone(), grade.lut.clone());
+    let Some(g) = grade
+        .rgb_gain
+        .filter(|g| g.iter().any(|c| (c - 1.0).abs() > 1e-6))
+    else {
+        return Ok((input, lut));
+    };
+    let first = match (&mut input, &mut lut) {
+        (Some(s), _) | (None, Some(s)) => s,
+        (None, None) => lut.insert(LutStage {
+            lut: crate::Lut::identity(33),
+            kind: LutType::Normalized,
+        }),
+    };
+    if first.kind != LutType::Normalized {
+        return Err(gpu_err("rgb_gain needs a normalized first LUT"));
+    }
+    first.lut = first.lut.with_input_gain(g);
+    Ok((input, lut))
 }
 
 impl Pass {
     /// For `grade` on a `width x height` source.
     fn new(vk: &Vulkan, grade: &Grade, width: u32, height: u32) -> Result<Self> {
-        let lut = grade
-            .lut
-            .as_ref()
-            .map(|l| CustomLut::new(&l.lut))
-            .transpose()?;
-        let input_lut = grade
-            .input_lut
-            .as_ref()
-            .map(|l| CustomLut::new(&l.lut))
-            .transpose()?;
+        let (input_lut, lut) = gained_luts(grade)?;
+        let up = |l: Option<LutStage>| -> Result<Option<(Box<CustomLut>, LutType)>> {
+            l.map(|l| Ok((CustomLut::new(&l.lut)?, l.kind))).transpose()
+        };
+        let (input_lut, lut) = (up(input_lut)?, up(lut)?);
         let hooks = Hooks::parse(vk, &hook_sources(grade, width, height)?)?;
         // Static //!PARAMs, and frame 0 of the tracks so unknown names fail before decoding.
         for (k, h) in grade.hooks.iter().enumerate() {
@@ -479,8 +501,8 @@ impl Pass {
 
     fn luts(&self) -> Luts<'_> {
         Luts {
-            input: self.input_lut.as_deref(),
-            grade: self.lut.as_deref(),
+            input: self.input_lut.as_ref().map(|(l, k)| (&**l, *k)),
+            grade: self.lut.as_ref().map(|(l, k)| (&**l, *k)),
         }
     }
 }
@@ -512,16 +534,16 @@ unsafe fn apply_grade(
     // The camera LUT on the source; the grade LUT on the source too, or, after a camera
     // LUT, on the target (applied to the converted picture before encoding). Normalized pairs
     // arrive baked into one (`Grade::merge_luts`).
-    if let (Some(l), Some(stage)) = (luts.input, &grade.input_lut) {
+    if let Some((l, kind)) = luts.input {
         image.lut = &raw const l.lut;
-        image.lut_type = placebo::lut_type(stage.kind);
-        if let (Some(g), Some(gs)) = (luts.grade, &grade.lut) {
+        image.lut_type = placebo::lut_type(kind);
+        if let Some((g, gk)) = luts.grade {
             target.lut = &raw const g.lut;
-            target.lut_type = placebo::lut_type(gs.kind);
+            target.lut_type = placebo::lut_type(gk);
         }
-    } else if let (Some(l), Some(stage)) = (luts.grade, &grade.lut) {
+    } else if let Some((l, kind)) = luts.grade {
         image.lut = &raw const l.lut;
-        image.lut_type = placebo::lut_type(stage.kind);
+        image.lut_type = placebo::lut_type(kind);
     }
     // With a warp the crops are folded into its matrices (the hook only sees the crop).
     if let Some(c) = grade.crop_at(index).filter(|_| grade.warp.is_none()) {
@@ -563,8 +585,8 @@ fn cuda_ctx(cuda: &BufferRef) -> ffcine_stabilize::cuda::CuContext {
 
 /// The grade's uploaded LUTs.
 struct Luts<'a> {
-    input: Option<&'a CustomLut>,
-    grade: Option<&'a CustomLut>,
+    input: Option<(&'a CustomLut, LutType)>,
+    grade: Option<(&'a CustomLut, LutType)>,
 }
 
 /// The render's source: a decoded frame, or a denoised image with its frame's props.

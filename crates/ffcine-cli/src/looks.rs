@@ -73,9 +73,10 @@ impl Luts {
     }
 }
 
-/// The GPU grade for resolved `params`: the LUT (alias or path, relative to `dir`, mixed by
-/// `lut_strength`) and the post-LUT look hook (warmth, tint, contrast, gamma, lift, gain,
-/// saturation), plus `sharpen`. Returns what isn't applied yet as warnings.
+/// The GPU grade for resolved `params`: `rgb_gain` ahead of the LUT (alias or path, relative to
+/// `dir`, mixed by `lut_strength`), the post-LUT look hook (warmth, tint, contrast, gamma, lift,
+/// gain, saturation), `extra` filters as hooks ([`ffcine::extra`]), plus `sharpen`. Returns what
+/// isn't applied as warnings.
 #[allow(clippy::cast_possible_truncation)]
 pub fn grade_for(
     project: &Project,
@@ -103,20 +104,10 @@ pub fn grade_for(
         saturation: f(g.saturation, 1.0),
     };
     let mut skipped = Vec::new();
-    for (k, set) in [
-        (
-            "rgb_gain",
-            g.rgb_gain
-                .is_some_and(|v| v.iter().any(|c| (c - 1.0).abs() > 1e-9)),
-        ),
-        ("denoise", g.denoise.is_some_and(|v| v != 0.0)),
-        ("extra", g.extra.as_ref().is_some_and(|v| !v.is_empty())),
-    ] {
-        if set {
-            skipped.push(format!("{k} not applied yet"));
-        }
+    if g.denoise.is_some_and(|v| v != 0.0) {
+        skipped.push("denoise not applied yet".to_owned());
     }
-    let hooks = if look.is_identity() {
+    let mut hooks = if look.is_identity() {
         Vec::new()
     } else {
         vec![Hook {
@@ -126,9 +117,13 @@ pub fn grade_for(
             tracks: Vec::new(),
         }]
     };
+    let (extra, warn) = ffcine::extra::hooks(g.extra.as_deref().unwrap_or_default());
+    hooks.extend(extra);
+    skipped.extend(warn);
     Ok((
         Grade {
             lut,
+            rgb_gain: g.rgb_gain.map(|v| v.map(|c| c as f32)),
             hooks,
             sharpen: f(g.sharpen, 0.0),
             ..Grade::default()
@@ -616,5 +611,19 @@ mod tests {
         )
         .expect("grade");
         assert_eq!(grade.hooks, []);
+        assert_eq!(grade.rgb_gain, None);
+        // rgb_gain goes to the GPU grade; extra filters follow the look as hooks.
+        let g = GradeParams {
+            warmth: Some(0.02),
+            rgb_gain: Some([1.1, 1.0, 0.9]),
+            extra: Some(vec!["eq=saturation=1.2,hqdn3d".into()]),
+            ..GradeParams::default()
+        };
+        let (grade, skipped) =
+            grade_for(&p, Path::new("."), &g, &mut Luts::default()).expect("grade");
+        assert_eq!(grade.rgb_gain, Some([1.1, 1.0, 0.9]));
+        let names: Vec<_> = grade.hooks.iter().map(|h| h.name.as_str()).collect();
+        assert_eq!(names, ["look", "extra eq"]);
+        assert_eq!(skipped, ["extra filter hqdn3d not supported"]);
     }
 }
