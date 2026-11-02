@@ -11,7 +11,7 @@ use super::av::{BufferRef, CodecCtx, Dict, Frame, check, cstr, gpu_err};
 use super::retime::Q;
 use crate::Result;
 use crate::encode::{Codec, EncoderSettings, PixelFormat, RateControl};
-use ffcine_core::color::{ColorSpace, Matrix, Primaries, Range, Transfer};
+use ffcine_core::color::{ColorSpace, HdrMetadata, Matrix, Primaries, Range, Transfer};
 
 const AVERROR_EOF: c_int = -0x2046_4F45; // FFERRTAG('E','O','F',' ')
 const EAGAIN: c_int = -11;
@@ -323,6 +323,94 @@ pub(crate) fn tag_frame(f: &mut ff::AVFrame, c: ColorSpace) {
     f.color_range = av_range(c.range);
 }
 
+/// libavutil's `AVMasteringDisplayMetadata` (`mastering_display_metadata.h`, not in the
+/// bindings).
+#[repr(C)]
+struct MasteringDisplay {
+    display_primaries: [[ff::AVRational; 2]; 3],
+    white_point: [ff::AVRational; 2],
+    min_luminance: ff::AVRational,
+    max_luminance: ff::AVRational,
+    has_primaries: c_int,
+    has_luminance: c_int,
+}
+
+/// libavutil's `AVContentLightMetadata`.
+#[repr(C)]
+struct ContentLight {
+    max_cll: std::os::raw::c_uint,
+    max_fall: std::os::raw::c_uint,
+}
+
+/// `v` as a fraction over `den` (the units HEVC's SEI uses: 0.00002 for xy, 0.0001 cd/m²).
+#[allow(clippy::cast_possible_truncation)]
+fn q(v: f64, den: i32) -> ff::AVRational {
+    ff::AVRational {
+        num: (v * f64::from(den)).round() as i32,
+        den,
+    }
+}
+
+impl MasteringDisplay {
+    #[allow(clippy::many_single_char_names)]
+    fn new(m: &HdrMetadata) -> Self {
+        let xy = |[x, y]: [f64; 2]| [q(x, 50_000), q(y, 50_000)];
+        let [r, g, b, w] = m.primaries;
+        Self {
+            display_primaries: [xy(r), xy(g), xy(b)],
+            white_point: xy(w),
+            min_luminance: q(m.min_luminance, 10_000),
+            max_luminance: q(m.max_luminance, 10_000),
+            has_primaries: 1,
+            has_luminance: 1,
+        }
+    }
+}
+
+/// `m`'s two side data entries as `(frame type, packet type, bytes)`.
+fn hdr_side_data(
+    m: &HdrMetadata,
+) -> [(ff::AVFrameSideDataType, ff::AVPacketSideDataType, Vec<u8>); 2] {
+    fn bytes<T>(v: &T) -> Vec<u8> {
+        // SAFETY: plain-old-data repr(C) structs.
+        unsafe { std::slice::from_raw_parts(ptr::from_ref(v).cast::<u8>(), size_of::<T>()) }
+            .to_vec()
+    }
+    use ff::AVFrameSideDataType as F;
+    use ff::AVPacketSideDataType as P;
+    [
+        (
+            F::AV_FRAME_DATA_MASTERING_DISPLAY_METADATA,
+            P::AV_PKT_DATA_MASTERING_DISPLAY_METADATA,
+            bytes(&MasteringDisplay::new(m)),
+        ),
+        (
+            F::AV_FRAME_DATA_CONTENT_LIGHT_LEVEL,
+            P::AV_PKT_DATA_CONTENT_LIGHT_LEVEL,
+            bytes(&ContentLight {
+                max_cll: m.max_cll,
+                max_fall: m.max_fall,
+            }),
+        ),
+    ]
+}
+
+/// Attaches `m` to `f` as mastering display and content light side data (read by libplacebo
+/// for the target's peak, and by encoders that write the SEI per frame).
+pub(crate) fn attach_hdr(f: *mut ff::AVFrame, m: &HdrMetadata) -> Result<()> {
+    for (t, _, data) in hdr_side_data(m) {
+        // SAFETY: a valid frame; the new entry has `data.len()` bytes.
+        unsafe {
+            let sd = ff::av_frame_new_side_data(f, t, data.len());
+            if sd.is_null() {
+                return Err(gpu_err("av_frame_new_side_data"));
+            }
+            ptr::copy_nonoverlapping(data.as_ptr(), (*sd).data, data.len());
+        }
+    }
+    Ok(())
+}
+
 /// An encoder writing one video stream into a container.
 #[derive(Debug)]
 pub(crate) struct Output {
@@ -339,7 +427,8 @@ unsafe impl Send for Output {}
 
 impl Output {
     /// `frames`: a CUDA or Vulkan frames context for hardware encoders (frames are sent as hw frames);
-    /// `None` sends software frames in `settings.pixel_format`.
+    /// `None` sends software frames in `settings.pixel_format`. `hdr`: static HDR metadata.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn open(
         path: &Path,
         settings: &EncoderSettings,
@@ -348,6 +437,7 @@ impl Output {
         rate: Q,
         chroma: ff::AVChromaLocation,
         frames: Option<&BufferRef>,
+        hdr: Option<&HdrMetadata>,
     ) -> Result<Self> {
         let p = path_cstr(path)?;
         let name = cstr(settings.codec.as_str())?;
@@ -440,6 +530,20 @@ impl Output {
             for (k, v) in &settings.extra {
                 opts.set(k, v)?;
             }
+            // Static HDR metadata for encoders that write it from the context (libx265, NVENC).
+            for (t, _, data) in hdr.map(hdr_side_data).into_iter().flatten() {
+                let sd = ff::av_frame_side_data_new(
+                    &raw mut e.decoded_side_data,
+                    &raw mut e.nb_decoded_side_data,
+                    t,
+                    data.len(),
+                    0,
+                );
+                if sd.is_null() {
+                    return Err(gpu_err("av_frame_side_data_new"));
+                }
+                ptr::copy_nonoverlapping(data.as_ptr(), (*sd).data, data.len());
+            }
             check(
                 ff::avcodec_open2(e, codec, opts.as_mut_ptr()),
                 "open encoder",
@@ -460,6 +564,21 @@ impl Output {
                 ff::avcodec_parameters_from_context((*this.st).codecpar, e),
                 "stream params",
             )?;
+            // ... and for the container (`mdcv` / `clli` boxes in MP4 and MOV).
+            let par = (*this.st).codecpar;
+            for (_, t, data) in hdr.map(hdr_side_data).into_iter().flatten() {
+                let sd = ff::av_packet_side_data_new(
+                    &raw mut (*par).coded_side_data,
+                    &raw mut (*par).nb_coded_side_data,
+                    t,
+                    data.len(),
+                    0,
+                );
+                if sd.is_null() {
+                    return Err(gpu_err("av_packet_side_data_new"));
+                }
+                ptr::copy_nonoverlapping(data.as_ptr(), (*sd).data, data.len());
+            }
             // Apple players only take HEVC in MP4/MOV tagged `hvc1` (ffmpeg writes `hev1`).
             if matches!(
                 settings.codec,

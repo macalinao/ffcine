@@ -58,6 +58,8 @@ pub const GRADE: &str = concat!(
         "ffcine grade --stabilize --temporal-radius 2 --grain 2 --render-profile reel clip.mov reel.mkv",
         "# Phone delivery with the timeline's titles over it",
         "ffcine grade --deliver phone --text timeline.otio --text-at 30 clip.mov phone.mp4",
+        "# HDR10 master (BT.2020 PQ, 1000 cd/m² mastering metadata); --hdr hlg for HLG",
+        "ffcine grade --hdr pq clip.mov hdr10.mkv",
     ),
     see!("color.md", "denoise.md", "delivery.md")
 );
@@ -100,6 +102,16 @@ pub const JITTER: &str = examples!(
 pub const FETCH_LUTS: &str = examples!(
     "ffcine fetch-luts",
     "ffcine fetch-luts --dir ~/luts --force",
+);
+
+pub const BAKE: &str = concat!(
+    examples!(
+        "# DJI D-Log -> Rec.709 with a show LUT and a warmer look, as one 65^3 LUT",
+        "ffcine bake --camera dlog --lut show.cube --warmth 0.03 --saturation 1.1 baked.cube",
+        "# The analytic Canon Log 3 -> BT.2020 PQ transform, mastered to 1000 cd/m²",
+        "ffcine bake --camera clog3 --hdr-peak 1000 clog3_pq.cube",
+    ),
+    see!("color.md")
 );
 
 pub const IMPORT: &str = concat!(
