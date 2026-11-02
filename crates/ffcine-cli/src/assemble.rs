@@ -22,18 +22,18 @@ pub(crate) struct RenderArgs {
     /// profiles.<NAME> overrides.
     #[bpaf(argument("ASPECT"))]
     render_profile: Option<String>,
-    /// Segment cache (default: .ffcine-cache next to the timeline).
+    /// Segment cache directory (default: .ffcine-cache next to the timeline).
     #[bpaf(argument("DIR"))]
     cache: Option<PathBuf>,
-    /// Print the plan and what would render, render nothing.
+    /// Print the plan and what would render; render nothing.
     dry_run: bool,
     /// Leave out ffcine.text clips (titles, cards, captions).
     no_text: bool,
     #[bpaf(external(crate::audio::mix_flags))]
     mix: crate::audio::MixFlags,
-    /// Progress as JSON lines on stdout.
+    /// Progress as JSON lines on stdout instead of text on stderr.
     json: bool,
-    /// CUDA device; Vulkan is derived from it.
+    /// CUDA device index; Vulkan is derived from it (default: picked automatically).
     #[bpaf(argument("N"))]
     cuda: Option<u32>,
     /// Hardware decode API: vulkan or cuda.
@@ -42,6 +42,7 @@ pub(crate) struct RenderArgs {
     /// Output master (.mp4).
     #[bpaf(short('o'), long("output"), argument("FILE"))]
     output: PathBuf,
+    /// Timeline to render (.otio).
     #[bpaf(positional("TIMELINE"))]
     timeline: PathBuf,
 }

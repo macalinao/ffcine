@@ -177,22 +177,23 @@ pub fn grade(mut args: GradeArgs, ff: &dyn Backend) -> anyhow::Result<()> {
 
 #[derive(Debug, Clone, Bpaf)]
 pub struct StillArgs {
-    /// Timeline time: seconds, M:SS or H:MM:SS.
+    /// Timeline time: seconds, M:SS or H:MM:SS (required).
     #[bpaf(argument("TIME"))]
     at: String,
-    /// Output size (default: the timeline's `frame_size`, else the source's).
+    /// Output size in px, e.g. 1280x720 (default: the timeline's `frame_size`, else the source's).
     #[bpaf(argument("WxH"))]
     size: Option<Size>,
     /// Leave the text out.
     no_text: bool,
-    /// Output PNG (default: still-<TIME>.png).
+    /// Output PNG (default: still-<TIME>.png, `:` written as `.`).
     #[bpaf(short('o'), argument("FILE"))]
     output: Option<PathBuf>,
-    /// CUDA device.
+    /// CUDA device index (default: picked automatically).
     #[bpaf(argument("N"))]
     cuda: Option<u32>,
     /// Don't use an on-disk shader cache.
     pub no_cache: bool,
+    /// Timeline (.otio).
     #[bpaf(positional("TIMELINE"))]
     timeline: PathBuf,
 }
