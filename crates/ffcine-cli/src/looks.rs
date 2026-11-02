@@ -140,35 +140,35 @@ pub fn grade_for(
 #[derive(Debug, Clone, Bpaf)]
 #[allow(clippy::doc_markdown)]
 pub struct LooksArgs {
-    /// Timeline time to compare (repeatable): seconds, M:SS or H:MM:SS.
+    /// Timeline time of a shot to compare: seconds, M:SS or H:MM:SS. Repeatable.
     #[bpaf(argument("TIME"), many)]
     at: Vec<String>,
     /// Also compare N shots spread evenly over the timeline.
     #[bpaf(argument("N"))]
     sample: Option<usize>,
-    /// A clip outside the timeline, FILE@SECONDS (repeatable).
+    /// A clip outside the timeline at a time, FILE@SECONDS (photos: any time). Repeatable.
     #[bpaf(argument("FILE@SECONDS"), many)]
     clip: Vec<String>,
-    /// A variant, [NAME:]SPEC (repeatable). SPEC: a look name, a .cube file, or comma-separated
-    /// look=NAME, lut=ALIAS|FILE|none and grade fields (warmth=0, exposure=0.3, saturation=1.1).
-    /// Default: the cut's own grade and every project look.
+    /// A variant, [NAME:]SPEC; see the variant format below (default: the cut's own grade and
+    /// every project look). Repeatable.
     #[bpaf(short('v'), argument("VARIANT"), many)]
     variant: Vec<String>,
-    /// Output directory.
+    /// Output directory (default: looks).
     #[bpaf(short('o'), argument("DIR"), fallback(PathBuf::from("looks")))]
     output: PathBuf,
     /// Contact sheet width in px.
-    #[bpaf(argument("PX"), fallback(2400))]
+    #[bpaf(argument("PX"), fallback(2400), display_fallback)]
     sheet_width: u32,
-    /// Still size (default: the source's).
+    /// Still size in px, e.g. 1920x1080 (default: the source's).
     #[bpaf(argument("WxH"))]
     size: Option<Size>,
-    /// CUDA device.
+    /// CUDA device index (default: picked automatically).
     #[bpaf(argument("N"))]
     cuda: Option<u32>,
     /// Don't use an on-disk shader cache.
     pub no_cache: bool,
-    /// Timeline: shots by time, looks, LUT aliases and each clip's own grade.
+    /// Timeline (.otio): shots by time, looks, LUT aliases and each clip's own grade; optional
+    /// with --clip.
     #[bpaf(positional("TIMELINE"))]
     timeline: Option<PathBuf>,
 }
