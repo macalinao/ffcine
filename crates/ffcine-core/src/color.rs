@@ -129,6 +129,67 @@ impl ColorSpace {
     }
 }
 
+impl ColorSpace {
+    /// HDR10: BT.2020 primaries and matrix, PQ (SMPTE ST 2084), limited range.
+    pub const BT2020_PQ: Self = Self {
+        primaries: Primaries::Bt2020,
+        transfer: Transfer::Pq,
+        matrix: Matrix::Bt2020Ncl,
+        range: Range::Limited,
+    };
+
+    /// HLG (ARIB STD-B67 / BT.2100), BT.2020, limited range.
+    pub const BT2020_HLG: Self = Self {
+        primaries: Primaries::Bt2020,
+        transfer: Transfer::Hlg,
+        ..Self::BT2020_PQ
+    };
+}
+
+/// Static HDR metadata written with an HDR deliverable: the SMPTE ST 2086 mastering display and
+/// the CTA-861.3 content light levels (HEVC SEI, and `mdcv` / `clli` in MP4 and MOV).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HdrMetadata {
+    /// Mastering display red, green, blue and white (CIE 1931 xy).
+    pub primaries: [[f64; 2]; 4],
+    /// Mastering display peak and black, cd/m².
+    pub max_luminance: f64,
+    pub min_luminance: f64,
+    /// `MaxCLL` and `MaxFALL`, cd/m² (0: unknown).
+    pub max_cll: u32,
+    pub max_fall: u32,
+}
+
+impl HdrMetadata {
+    /// The common HDR10 grading target: a P3-D65 display, 1000 cd/m² peak, 0.0001 black,
+    /// `MaxCLL` 1000 (the encoder can't measure the content first), `MaxFALL` 400.
+    pub const P3_D65_1000: Self = Self {
+        primaries: [
+            [0.680, 0.320],
+            [0.265, 0.690],
+            [0.150, 0.060],
+            [0.3127, 0.3290],
+        ],
+        max_luminance: 1000.0,
+        min_luminance: 0.0001,
+        max_cll: 1000,
+        max_fall: 400,
+    };
+
+    /// With a different peak (and `MaxCLL` capped to it).
+    #[must_use]
+    pub fn with_peak(self, nits: f64) -> Self {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let cap = nits.round().max(0.0) as u32;
+        Self {
+            max_luminance: nits,
+            max_cll: self.max_cll.min(cap),
+            max_fall: self.max_fall.min(cap),
+            ..self
+        }
+    }
+}
+
 impl Default for ColorSpace {
     fn default() -> Self {
         Self::BT709_TV
@@ -164,6 +225,13 @@ mod tests {
             ..ColorSpace::BT709_TV
         };
         assert!(hlg.is_hdr());
+        assert!(ColorSpace::BT2020_PQ.is_hdr() && ColorSpace::BT2020_HLG.is_hdr());
+        assert_eq!(
+            ColorSpace::BT2020_HLG.to_string(),
+            "bt2020nc/bt2020/arib-std-b67/tv"
+        );
+        let m = HdrMetadata::P3_D65_1000.with_peak(600.0);
+        assert_eq!((m.max_cll, m.max_fall), (600, 400));
         assert!(!ColorSpace::BT709_RGB.is_hdr());
     }
 }

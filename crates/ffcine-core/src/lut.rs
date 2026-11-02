@@ -88,6 +88,70 @@ impl Lut {
         self.data[r + g * self.size + b * self.size * self.size]
     }
 
+    /// Trilinear lookup of `rgb` (in the LUT's domain, clamped to it): how libplacebo samples a
+    /// `pl_custom_lut` (a linearly filtered 3D texture), so baked LUTs agree with the GPU.
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::many_single_char_names
+    )]
+    pub fn sample(&self, rgb: [f32; 3]) -> [f32; 3] {
+        let n = self.size - 1;
+        let (mut i0, mut t) = ([0usize; 3], [0f32; 3]);
+        for c in 0..3 {
+            let span = self.domain_max[c] - self.domain_min[c];
+            let u = ((rgb[c] - self.domain_min[c]) / span).clamp(0.0, 1.0) * n as f32;
+            let i = (u.floor() as usize).min(n.saturating_sub(1));
+            i0[c] = i;
+            t[c] = u - i as f32;
+        }
+        let mut out = [0f32; 3];
+        for corner in 0..8 {
+            let d = [corner & 1, (corner >> 1) & 1, (corner >> 2) & 1];
+            let w: f32 = (0..3)
+                .map(|c| if d[c] == 1 { t[c] } else { 1.0 - t[c] })
+                .product();
+            if w == 0.0 {
+                continue;
+            }
+            let v = self.at(i0[0] + d[0], i0[1] + d[1], i0[2] + d[2]);
+            for c in 0..3 {
+                out[c] += w * v[c];
+            }
+        }
+        out
+    }
+
+    /// The LUT as `.cube` text (`TITLE`, `LUT_3D_SIZE`, the domain if not 0..1, then entries).
+    #[allow(clippy::float_cmp)] // exact defaults
+    pub fn to_cube(&self) -> String {
+        use std::fmt::Write as _;
+        let mut s = String::new();
+        if let Some(t) = &self.title {
+            let _ = writeln!(s, "TITLE \"{t}\"");
+        }
+        let _ = writeln!(s, "LUT_3D_SIZE {}", self.size);
+        if self.domain_min != [0.0; 3] || self.domain_max != [1.0; 3] {
+            let [a, b, c] = self.domain_min;
+            let _ = writeln!(s, "DOMAIN_MIN {a} {b} {c}");
+            let [a, b, c] = self.domain_max;
+            let _ = writeln!(s, "DOMAIN_MAX {a} {b} {c}");
+        }
+        for [r, g, b] in &self.data {
+            let _ = writeln!(s, "{r:.6} {g:.6} {b:.6}");
+        }
+        s
+    }
+
+    /// Writes the LUT as a `.cube` file.
+    pub fn write_cube(&self, path: &Path) -> Result<()> {
+        std::fs::write(path, self.to_cube()).map_err(|source| Error::Io {
+            path: path.to_owned(),
+            source,
+        })
+    }
+
     fn parse_cube(text: &str) -> Result<Self, (usize, String)> {
         let mut title = None;
         let mut size = None;
@@ -172,6 +236,29 @@ mod tests {
             }
         );
         assert_eq!(lut.at(1, 0, 1), [1.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn samples_trilinear() {
+        let id = Lut::identity(5);
+        for v in [[0.0, 0.5, 1.0], [0.13, 0.77, 0.4], [1.2, -0.1, 0.99]] {
+            let s = id.sample(v);
+            for c in 0..3 {
+                assert!((s[c] - v[c].clamp(0.0, 1.0)).abs() < 1e-6, "{v:?} -> {s:?}");
+            }
+        }
+        // Halfway between two entries is their mean.
+        let mut l = Lut::identity(2);
+        l.data[1] = [0.5, 0.0, 0.0];
+        assert!((l.sample([0.5, 0.0, 0.0])[0] - 0.25).abs() < 1e-6);
+    }
+
+    #[test]
+    fn cube_round_trip() {
+        let mut l = Lut::identity(3);
+        l.title = Some("t".into());
+        l.data[4] = [0.25, 0.5, 0.125];
+        assert_eq!(Lut::parse_cube(&l.to_cube()).unwrap(), l);
     }
 
     #[test]

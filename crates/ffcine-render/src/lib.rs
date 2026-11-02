@@ -3,6 +3,7 @@
 //! kept in VRAM end to end.
 
 pub mod backend;
+pub mod bake;
 pub mod encode;
 pub mod grade;
 pub mod layer;
@@ -11,7 +12,9 @@ pub mod pipeline;
 pub mod profile;
 pub mod shaders;
 
+pub use bake::Bake;
 pub use encode::{Codec, EncoderSettings, PixelFormat, RateControl};
+pub use ffcine_core::color::HdrMetadata;
 pub use ffcine_core::{ColorSpace, Error, Lut, LutType, MediaInfo, Rational, Result};
 pub use grade::{
     Border, ColorMapTuning, ColorOverride, Crop, Deband, Dither, DitherMethod, GamutMapping, Grade,

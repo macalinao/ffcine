@@ -34,12 +34,12 @@ pub use ffcine_import as import;
 pub use ffcine_ingest as ingest;
 pub use ffcine_reframe as reframe;
 pub use ffcine_render::{
-    Backend, Codec, ColorMapTuning, ColorOverride, Crop, Deband, Decode, DeliveryProfile, Device,
-    Dither, DitherMethod, EncoderSettings, GamutMapping, Grade, Hook, Image, Layer, LayerSource,
-    LutStage, Mask, Overlay, OverlayPart, ParamTrack, Pipeline, PixelFormat, RateControl, RunStats,
-    Scaler, Scaling, Size, Stage, ToneMapping, Warp,
+    Backend, Bake, Codec, ColorMapTuning, ColorOverride, Crop, Deband, Decode, DeliveryProfile,
+    Device, Dither, DitherMethod, EncoderSettings, GamutMapping, Grade, HdrMetadata, Hook, Image,
+    Layer, LayerSource, LutStage, Mask, Overlay, OverlayPart, ParamTrack, Pipeline, PixelFormat,
+    RateControl, RunStats, Scaler, Scaling, Size, Stage, ToneMapping, Warp,
 };
-pub use ffcine_render::{backend, encode, grade, layer, overlay, pipeline, profile, shaders};
+pub use ffcine_render::{backend, bake, encode, grade, layer, overlay, pipeline, profile, shaders};
 pub use ffcine_stabilize as stabilize;
 pub use ffcine_text as text;
 pub use ffcine_timeline as timeline;
