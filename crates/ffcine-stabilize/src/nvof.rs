@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 
 use libloading::Library;
 
-use super::cuda::{CuContext, CuDevicePtr, Cuda, Mem, open_driver_lib, sym};
+use super::cuda::{CuContext, CuDevicePtr, Cuda, Mem, Stream, open_driver_lib, sym};
 use ffcine_core::{Error, Result};
 
 type Status = c_int;
@@ -444,29 +444,59 @@ impl OpticalFlow {
         }
     }
 
-    /// Flow from input slot `input` to slot `reference`: for the block at `p` in `input`, the
-    /// vector `f` with `input(p) ~ reference(p + f)`, in S10.5 pixels. Temporal hints stay on
-    /// (consecutive video frames). Then copies flow (`[x, y]` per block, row-major) and the 8-bit
-    /// cost (lower is better) back to the host.
-    pub fn run(
-        &self,
-        input: usize,
-        reference: usize,
-        flow: &mut Vec<[i16; 2]>,
-        cost: &mut Vec<u8>,
-    ) -> Result<()> {
-        self.run_with(input, reference, true, flow, cost)
+    /// Runs the session's copies and executions on `stream` instead of the default stream, so
+    /// [`Self::upload_async`] and [`Self::execute`] queue work without waiting for it.
+    pub fn set_stream(&self, stream: &Stream) -> Result<()> {
+        let cuda = Cuda::get()?;
+        let _ctx = cuda.push(self.ctx)?;
+        let f = self.api.set_streams.ok_or_else(|| Error::Gpu {
+            api: "NVOF",
+            msg: "no nvOFSetIOCudaStreams".into(),
+        })?;
+        // SAFETY: a live stream in the session's context.
+        status(
+            unsafe { f(self.of, stream.raw, stream.raw) },
+            "nvOFSetIOCudaStreams",
+            Some((&self.api, self.of)),
+        )
     }
 
-    /// [`Self::run`], with temporal hints off when the pairs aren't consecutive frames.
-    pub fn run_with(
+    /// [`Self::upload`], queued on `stream`.
+    ///
+    /// # Safety
+    /// As [`Self::upload`], and `src` must stay valid until the stream gets there.
+    pub unsafe fn upload_async(
         &self,
-        input: usize,
-        reference: usize,
-        hints: bool,
-        flow: &mut Vec<[i16; 2]>,
-        cost: &mut Vec<u8>,
+        slot: usize,
+        src: Mem,
+        pitch: usize,
+        stream: &Stream,
     ) -> Result<()> {
+        let cuda = Cuda::get()?;
+        let _ctx = cuda.push(self.ctx)?;
+        let dst = &self.frames[slot];
+        // SAFETY: the caller guarantees `src`; `dst` is our buffer of `width x height`.
+        unsafe {
+            cuda.copy_2d_async(
+                (src, pitch),
+                (Mem::Device(dst.ptr), dst.pitch),
+                self.width as usize,
+                self.height as usize,
+                stream,
+            )
+        }
+    }
+
+    /// The flow output buffer (`grid_w x grid_h` S10.5 `[x, y]` shorts) and its pitch: what
+    /// [`Self::execute`] writes.
+    pub fn flow_output(&self) -> (CuDevicePtr, usize) {
+        (self.flow.ptr, self.flow.pitch)
+    }
+
+    /// Queues the flow from slot `input` to slot `reference` into [`Self::flow_output`] (and the
+    /// cost buffer), without reading it back: on the session's stream (see
+    /// [`Self::set_stream`]), ordered after the uploads and before later copies on it.
+    pub fn execute(&self, input: usize, reference: usize, hints: bool) -> Result<()> {
         let cuda = Cuda::get()?;
         let _ctx = cuda.push(self.ctx)?;
         let exec = self.api.execute.ok_or_else(|| Error::Gpu {
@@ -494,7 +524,35 @@ impl OpticalFlow {
             unsafe { exec(self.of, &raw const inp, &raw mut out) },
             "nvOFExecute",
             Some((&self.api, self.of)),
-        )?;
+        )
+    }
+
+    /// Flow from input slot `input` to slot `reference`: for the block at `p` in `input`, the
+    /// vector `f` with `input(p) ~ reference(p + f)`, in S10.5 pixels. Temporal hints stay on
+    /// (consecutive video frames). Then copies flow (`[x, y]` per block, row-major) and the 8-bit
+    /// cost (lower is better) back to the host.
+    pub fn run(
+        &self,
+        input: usize,
+        reference: usize,
+        flow: &mut Vec<[i16; 2]>,
+        cost: &mut Vec<u8>,
+    ) -> Result<()> {
+        self.run_with(input, reference, true, flow, cost)
+    }
+
+    /// [`Self::run`], with temporal hints off when the pairs aren't consecutive frames.
+    pub fn run_with(
+        &self,
+        input: usize,
+        reference: usize,
+        hints: bool,
+        flow: &mut Vec<[i16; 2]>,
+        cost: &mut Vec<u8>,
+    ) -> Result<()> {
+        self.execute(input, reference, hints)?;
+        let cuda = Cuda::get()?;
+        let _ctx = cuda.push(self.ctx)?;
         let (gw, gh) = (self.grid_w as usize, self.grid_h as usize);
         flow.resize(gw * gh, [0; 2]);
         cost.resize(gw * gh, 0);
@@ -600,5 +658,82 @@ mod tests {
             cost.iter().map(|&c| f64::from(c)).sum::<f64>() / cost.len() as f64
         );
         assert!((mx + 3.25).abs() < 0.2 && (my - 2.5).abs() < 0.2);
+    }
+
+    /// The stream path (async uploads, executes, a device-side copy of the flow) gives the same
+    /// flow as the synchronous one. Skips (passes) without the driver libraries or a GPU.
+    #[test]
+    fn nvof_stream_matches_sync() {
+        let cuda = match Cuda::get() {
+            Ok(c) => c,
+            Err(e) => return eprintln!("skipping: {e}"),
+        };
+        let Ok(primary) = cuda.primary_context(0) else {
+            return eprintln!("skipping: no CUDA device");
+        };
+        if let Err(e) = lib() {
+            return eprintln!("skipping: {e}");
+        }
+        let (w, h) = (640_usize, 360_usize);
+        let frames: Vec<Vec<u8>> = (0..3)
+            .map(|i| texture(w, h, 1.5 * f64::from(i), -0.75 * f64::from(i)))
+            .collect();
+        let pairs = [(1, 0), (1, 2), (0, 2)];
+        let mk = || {
+            // SAFETY: `primary` outlives the session.
+            unsafe {
+                OpticalFlow::with_slots(primary.ctx, w as u32, h as u32, 4, PerfLevel::Medium, 3)
+            }
+            .unwrap()
+        };
+        let sync = mk();
+        let mut want = Vec::new();
+        for (i, f) in frames.iter().enumerate() {
+            // SAFETY: host images are w x h, pitch w.
+            unsafe { sync.upload(i, Mem::Host(f.as_ptr()), w).unwrap() };
+        }
+        for &(a, b) in &pairs {
+            let (mut flow, mut cost) = (Vec::new(), Vec::new());
+            sync.run_with(a, b, false, &mut flow, &mut cost).unwrap();
+            want.push(flow);
+        }
+        drop(sync);
+
+        let of = mk();
+        let stream = cuda.stream(primary.ctx).unwrap();
+        of.set_stream(&stream).unwrap();
+        let (gw, gh) = (of.grid_w as usize, of.grid_h as usize);
+        let mut got = vec![[0_i16; 2]; gw * gh * pairs.len()];
+        for (i, f) in frames.iter().enumerate() {
+            // SAFETY: as above; the host frames outlive the synchronize below.
+            unsafe {
+                of.upload_async(i, Mem::Host(f.as_ptr()), w, &stream)
+                    .unwrap()
+            };
+        }
+        let (fp, pitch) = of.flow_output();
+        for (k, &(a, b)) in pairs.iter().enumerate() {
+            of.execute(a, b, false).unwrap();
+            let _g = cuda.push(primary.ctx).unwrap();
+            // SAFETY: `got` holds pairs x gw x gh vectors and outlives the synchronize.
+            unsafe {
+                cuda.copy_2d_async(
+                    (Mem::Device(fp), pitch),
+                    (Mem::HostMut(got[k * gw * gh..].as_mut_ptr().cast()), gw * 4),
+                    gw * 4,
+                    gh,
+                    &stream,
+                )
+                .unwrap();
+            }
+        }
+        stream.synchronize().unwrap();
+        for (k, w) in want.iter().enumerate() {
+            assert_eq!(
+                &got[k * gw * gh..(k + 1) * gw * gh],
+                w.as_slice(),
+                "pair {k}"
+            );
+        }
     }
 }
