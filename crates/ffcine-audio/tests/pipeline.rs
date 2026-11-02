@@ -515,7 +515,7 @@ fn key_bus_ducks_its_target() {
         }),
     );
     let mix = render_audio(&tl, &opts).expect("render");
-    assert!(mix.aux.is_empty());
+    assert_eq!(mix.aux.len(), 0);
     let m = &stem(&mix, Bus::Music).channels[0];
     let open = rms_db(&m[secs(1.0)..secs(2.0)]);
     let ducked = rms_db(&m[secs(5.0)..secs(6.0)]);

@@ -212,7 +212,7 @@ pub struct MixParams {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct BusParams {
-    /// Fader, dB [0]: after the bus's `filter`, before its ducking.
+    /// Fader, dB (default 0): after the bus's `filter`, before its ducking.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gain_db: Option<f64>,
     /// libavfilter chain over the bus (on an aux, after its `reverb`).
@@ -235,7 +235,7 @@ pub struct BusParams {
 pub struct BusSend {
     /// The aux bus.
     pub to: String,
-    /// Send level, dB [0].
+    /// Send level, dB (default 0).
     pub gain_db: f64,
     /// Tap before the bus's fader and ducking, not after [false].
     #[serde(skip_serializing_if = "std::ops::Not::not")]
