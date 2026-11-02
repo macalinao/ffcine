@@ -5,13 +5,14 @@
 //! image) and its own [`Grade`]. The backend renders the layer's frame into an RGBA texture of
 //! the grade's `size` (its hooks can write alpha: [`crate::shaders::alpha`] for opacity and
 //! rounded corners), then draws it over the main picture at the frame's placement, under the
-//! text [`Overlay`](crate::Overlay)s.
+//! text [`Overlay`](crate::Overlay)s. A layer that is turned or not [`BlendMode::Normal`] is
+//! composited by a shader pass that reads the picture under it.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::{Crop, Grade};
+use crate::{BlendMode, Crop, Grade};
 
 /// An RGBA image, 8 bits per channel, not premultiplied, row-major.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,7 +29,8 @@ pub enum LayerSource {
     /// end the last frame holds.
     Video { input: PathBuf, start: Duration },
     /// A still picture, drawn on every frame. Its values are taken as the output's colour
-    /// space (no conversion), so a logo keeps its colours.
+    /// space (no conversion) for an SDR output, so a logo keeps its colours, and as sRGB with
+    /// white at the HDR reference white (203 nits, BT.2408) for a PQ or HLG one.
     Image(Arc<Image>),
 }
 
@@ -43,6 +45,11 @@ pub struct Layer {
     pub to: i64,
     /// Placement in output pixels per layer frame (the last one holds); empty fills the frame.
     pub rects: Vec<Crop>,
+    /// Rotation in degrees per layer frame, counter-clockwise on screen about the rectangle's
+    /// middle (the last one holds); empty is unrotated. Corners outside the picture stay
+    /// transparent.
+    pub rotation: Vec<f32>,
+    pub blend: BlendMode,
 }
 
 impl Layer {
@@ -65,6 +72,24 @@ impl Layer {
                     height: height as f32,
                 }),
         )
+    }
+
+    /// The rotation at output frame `frame` (0 outside `from..to`).
+    pub fn rotation_at(&self, frame: i64) -> f32 {
+        if frame < self.from || frame >= self.to {
+            return 0.0;
+        }
+        let i = usize::try_from(frame - self.from).unwrap_or(0);
+        self.rotation
+            .get(i)
+            .or(self.rotation.last())
+            .copied()
+            .unwrap_or(0.0)
+    }
+
+    /// Whether frame `frame` needs the composite pass (turned, or blended other than normal).
+    pub fn needs_composite(&self, frame: i64) -> bool {
+        self.blend != BlendMode::Normal || self.rotation_at(frame) % 360.0 != 0.0
     }
 }
 
@@ -90,6 +115,8 @@ mod tests {
             from: 5,
             to: 10,
             rects: vec![r(0.0), r(1.0)],
+            rotation: vec![0.0, 30.0],
+            blend: BlendMode::Normal,
         };
         assert_eq!(l.rect_at(4, 100, 50), None);
         assert_eq!(l.rect_at(5, 100, 50), Some(r(0.0)));
@@ -100,5 +127,15 @@ mod tests {
             ..l
         };
         assert_eq!(full.rect_at(5, 100, 50).map(|c| c.width), Some(100.0));
+        assert!(!full.needs_composite(5));
+        assert!(full.needs_composite(7));
+        assert!((full.rotation_at(9) - 30.0).abs() < f32::EPSILON);
+        assert!(full.rotation_at(10).abs() < f32::EPSILON);
+        let multiply = Layer {
+            rotation: Vec::new(),
+            blend: BlendMode::Multiply,
+            ..full
+        };
+        assert!(multiply.needs_composite(5));
     }
 }

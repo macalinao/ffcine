@@ -18,11 +18,14 @@ use super::denoise::Denoiser;
 use super::hw::{self, Devices};
 use super::io::{self, Input, Output};
 use super::placebo::{
-    self, Cache, CustomLut, Hooks, Log, OverlayTex, RenderParams, Renderer, RgbaTex, Vulkan,
+    self, Cache, CompositeLayer, Compositor, CustomLut, Hooks, Log, OverlayTex, RenderParams,
+    Renderer, RgbaTex, Vulkan,
 };
 use super::retime::{Q, Retimer};
 use crate::pipeline::RunStats;
-use crate::{Decode, Device, Grade, Layer, LayerSource, Overlay, Pipeline, Result, Stage};
+use crate::{
+    ColorSpace, Decode, Device, Grade, Layer, LayerSource, Overlay, Pipeline, Result, Stage,
+};
 
 /// Persistent GPU state. Field order is drop order: renderer and libplacebo before the cache
 /// and the devices they use.
@@ -180,6 +183,20 @@ impl Gpu {
                 renderer: Renderer::new(&self.log, &self.vk)?,
             });
         }
+        // Layers that are turned or blended (all of them on an HDR output) go through the
+        // composite pass; the others are `pl_overlay`s on the grade pass.
+        let hdr = grade.output.is_hdr();
+        let out_color = grade.output;
+        let composites = |l: &Layer, at: i64| hdr || l.needs_composite(at);
+        let mut composite = if p
+            .layers
+            .iter()
+            .any(|l| (l.from..l.to).any(|at| composites(l, at)))
+        {
+            Some(Composite::new(&self.log, &self.vk, w, h, &grade)?)
+        } else {
+            None
+        };
         let setup = t0.elapsed();
 
         let want = p.frames.unwrap_or(u64::MAX);
@@ -213,12 +230,37 @@ impl Gpu {
                 for lr in &mut layers {
                     if let Some(rect) = lr.layer.rect_at(at, w, h) {
                         let local = usize::try_from(at - lr.layer.from).unwrap_or(0);
-                        t_render.time(|| gpu.render_layer(lr, local))?;
+                        t_render.time(|| gpu.render_layer(lr, local, out_color))?;
                         shown.push((&*lr, rect));
                     }
                 }
-                let ov = overlays_at(&shown, &overlays, at);
-                let out = t_render.time(|| gpu.render(src, index, &vk_out, grade, &pass, &ov))?;
+                let k = shown
+                    .iter()
+                    .position(|(lr, _)| composites(lr.layer, at))
+                    .unwrap_or(shown.len());
+                let color = layer_color(out_color);
+                let out = if let (true, Some(c)) = (k < shown.len(), composite.as_mut()) {
+                    let below = overlays_at(&shown[..k], &[], at, color);
+                    let text = overlays_at(&[], &overlays, at, color);
+                    let above: Vec<_> = shown[k..]
+                        .iter()
+                        .filter_map(|(lr, r)| composite_layer(lr, *r, at))
+                        .collect();
+                    t_render.time(|| {
+                        gpu.render(
+                            src,
+                            index,
+                            &vk_out,
+                            grade,
+                            &pass,
+                            &below,
+                            Some((c, &above, &text)),
+                        )
+                    })?
+                } else {
+                    let ov = overlays_at(&shown, &overlays, at, color);
+                    t_render.time(|| gpu.render(src, index, &vk_out, grade, &pass, &ov, None))?
+                };
                 index += 1;
                 Ok(enc_tx.send(out).is_ok())
             };
@@ -284,6 +326,7 @@ impl Gpu {
         grade: &Grade,
         pass: &Pass,
         overlays: &Overlays,
+        composite: Option<(&mut Composite, &[CompositeLayer], &Overlays)>,
     ) -> Result<Frame> {
         let (luts, params) = (pass.luts(), &*pass.params);
         let up = match src {
@@ -336,32 +379,49 @@ impl Gpu {
                 }
                 return Err(gpu_err("pl_map_avframe_ex (target) failed"));
             }
-            apply_grade(&mut image, &mut target, grade, &luts, index);
-            if !overlays.list.is_empty() {
-                target.overlays = overlays.list.as_ptr();
-                target.num_overlays = i32::try_from(overlays.list.len()).unwrap_or(i32::MAX);
-            }
-            let ok = pl::pl_render_image(
-                self.renderer.0,
-                &raw const image,
-                &raw const target,
-                &raw const params.params,
-            );
+            let res = if let Some((c, above, text)) = composite {
+                c.render(
+                    &self.renderer,
+                    &mut image,
+                    &mut target,
+                    (grade, &luts, index, params),
+                    overlays,
+                    above,
+                    text,
+                )
+            } else {
+                apply_grade(&mut image, &mut target, grade, &luts, index);
+                overlays.set(&mut target);
+                if pl::pl_render_image(
+                    self.renderer.0,
+                    &raw const image,
+                    &raw const target,
+                    &raw const params.params,
+                ) {
+                    Ok(())
+                } else {
+                    Err(gpu_err("pl_render_image failed"))
+                }
+            };
             pl_unmap_avframe(gpu, &raw mut target);
             if mapped {
                 pl_unmap_avframe(gpu, &raw mut image);
             }
-            if !ok {
-                return Err(gpu_err("pl_render_image failed"));
-            }
+            res?;
         }
         Ok(out)
     }
 }
 
 impl Gpu {
-    /// Renders layer frame `local` of `lr` into its RGBA target.
-    fn render_layer(&mut self, lr: &mut LayerRun<'_>, local: usize) -> Result<()> {
+    /// Renders layer frame `local` of `lr` into its RGBA target, in the colour space layers
+    /// are composited in for an `output`.
+    fn render_layer(
+        &mut self,
+        lr: &mut LayerRun<'_>,
+        local: usize,
+        output: ColorSpace,
+    ) -> Result<()> {
         if let LayerSrc::Video { rx, last } = &mut lr.src
             && let Ok(f) = rx.recv()
         {
@@ -371,8 +431,7 @@ impl Gpu {
         let params = &*lr.pass.params;
         set_tracks(params, grade, local)?;
         let luts = lr.pass.luts();
-        let color = layer_color();
-        let mut target = lr.tex.frame(color);
+        let mut target = lr.tex.frame(layer_color(output));
         let gpu = self.vk.gpu;
         // SAFETY: a mapped Vulkan AVFrame (unmapped before returning) or our own texture, and
         // our own target texture, on the gpu libplacebo imported.
@@ -388,7 +447,7 @@ impl Gpu {
                 LayerSrc::Video { last: None, .. } => {
                     return Err(gpu_err("layer video has no frames in range"));
                 }
-                LayerSrc::Image(t) => (t.frame(color), false),
+                LayerSrc::Image(t) => (t.frame(still_color(output)), false),
             };
             apply_grade(&mut image, &mut target, grade, &luts, local);
             let ok = pl::pl_render_image(
@@ -408,13 +467,138 @@ impl Gpu {
     }
 }
 
-/// The colour space layers are rendered in and composited from: the output's (BT.709, BT.1886).
-fn layer_color() -> pl::pl_color_space {
+/// The colour space layers are rendered in and composited from for an `output`: BT.709 and
+/// BT.1886 for SDR, the output's primaries with PQ or HLG for HDR.
+fn layer_color(output: ColorSpace) -> pl::pl_color_space {
+    use ffcine_core::color::{Primaries, Transfer};
+    use pl::pl_color_primaries as P;
+    use pl::pl_color_transfer as T;
+    if !output.is_hdr() {
+        return pl::pl_color_space {
+            primaries: P::PL_COLOR_PRIM_BT_709,
+            transfer: T::PL_COLOR_TRC_BT_1886,
+            ..Default::default()
+        };
+    }
     pl::pl_color_space {
-        primaries: pl::pl_color_primaries::PL_COLOR_PRIM_BT_709,
-        transfer: pl::pl_color_transfer::PL_COLOR_TRC_BT_1886,
+        primaries: match output.primaries {
+            Primaries::Bt709 => P::PL_COLOR_PRIM_BT_709,
+            Primaries::DisplayP3 => P::PL_COLOR_PRIM_DISPLAY_P3,
+            Primaries::DciP3 => P::PL_COLOR_PRIM_DCI_P3,
+            Primaries::Bt601 => P::PL_COLOR_PRIM_BT_601_525,
+            _ => P::PL_COLOR_PRIM_BT_2020,
+        },
+        transfer: if output.transfer == Transfer::Hlg {
+            T::PL_COLOR_TRC_HLG
+        } else {
+            T::PL_COLOR_TRC_PQ
+        },
         ..Default::default()
     }
+}
+
+/// The colour space of a still layer's pixels: as the layers' for SDR (no conversion), sRGB on
+/// an HDR output, which libplacebo puts at its SDR reference white (`PL_COLOR_SDR_WHITE`,
+/// 203 nits as BT.2408), so logos aren't blown out or dim.
+fn still_color(output: ColorSpace) -> pl::pl_color_space {
+    if output.is_hdr() {
+        // SAFETY: reading libplacebo's exported constant.
+        unsafe { pl::pl_color_space_srgb }
+    } else {
+        layer_color(output)
+    }
+}
+
+/// The composite pass's state: two output-sized RGBA textures (ping-pong), the dispatch, and
+/// the renderer and params for the final pass to the output frame.
+struct Composite {
+    tex: [RgbaTex; 2],
+    compositor: Compositor,
+    renderer: Renderer,
+    params: Box<RenderParams>,
+}
+
+impl Composite {
+    fn new(log: &Log, vk: &Vulkan, w: u32, h: u32, grade: &Grade) -> Result<Self> {
+        let out = Grade {
+            dither: grade.dither,
+            peak_detect: false,
+            ..Grade::default()
+        };
+        Ok(Self {
+            tex: [RgbaTex::target(vk, w, h)?, RgbaTex::target(vk, w, h)?],
+            compositor: Compositor::new(log, vk)?,
+            renderer: Renderer::new(log, vk)?,
+            params: RenderParams::new(&out, Hooks::default())?,
+        })
+    }
+
+    /// The grade pass into a texture in the target's colour space (with the `below` layers as
+    /// overlays), each `above` layer composited over it in turn, then the result and the text
+    /// overlays onto `target`.
+    ///
+    /// # Safety
+    /// As for the grade pass: mapped frames, LUTs alive for the call.
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn render(
+        &mut self,
+        renderer: &Renderer,
+        image: &mut pl::pl_frame,
+        target: &mut pl::pl_frame,
+        (grade, luts, index, params): (&Grade, &Luts<'_>, usize, &RenderParams),
+        below: &Overlays,
+        above: &[CompositeLayer],
+        text: &Overlays,
+    ) -> Result<()> {
+        let color = target.color;
+        let mut cur = 0;
+        let mut pic = self.tex[cur].frame_opaque(color);
+        // SAFETY: the caller's frames and LUTs; our own textures.
+        unsafe {
+            apply_grade(image, &mut pic, grade, luts, index);
+            below.set(&mut pic);
+            if !pl::pl_render_image(renderer.0, image, &raw const pic, &raw const params.params) {
+                return Err(gpu_err("pl_render_image (composite) failed"));
+            }
+        }
+        self.compositor.reset_frame();
+        for l in above {
+            self.compositor
+                .run(self.tex[cur].tex, l, self.tex[1 - cur].tex)?;
+            cur = 1 - cur;
+        }
+        let pic = self.tex[cur].frame_opaque(color);
+        text.set(target);
+        // SAFETY: our texture into the caller's mapped target.
+        let ok = unsafe {
+            pl::pl_render_image(
+                self.renderer.0,
+                &raw const pic,
+                target,
+                &raw const self.params.params,
+            )
+        };
+        if ok {
+            Ok(())
+        } else {
+            Err(gpu_err("pl_render_image (composite output) failed"))
+        }
+    }
+}
+
+/// A shown layer as a composite pass input, `None` if it has no area.
+fn composite_layer(lr: &LayerRun<'_>, r: crate::Crop, at: i64) -> Option<CompositeLayer> {
+    if r.width < 1e-3 || r.height < 1e-3 {
+        return None;
+    }
+    let (sin, cos) = lr.layer.rotation_at(at).to_radians().sin_cos();
+    Some(CompositeLayer {
+        tex: lr.tex.tex,
+        centre: [r.x + r.width / 2.0, r.y + r.height / 2.0],
+        half: [r.width / 2.0, r.height / 2.0],
+        rot: [cos, sin],
+        mode: lr.layer.blend.index(),
+    })
 }
 
 /// A grade's render state: its LUTs and render params (hooks parsed).
@@ -559,12 +743,23 @@ struct Overlays {
     _parts: Vec<Vec<pl::pl_overlay_part>>,
 }
 
-/// The rendered `layers` at their placements, then the overlays visible on output frame `index`
-/// with their fade applied to the part colours.
+impl Overlays {
+    /// Draws them on `target` (which must not outlive `self`).
+    fn set(&self, target: &mut pl::pl_frame) {
+        if !self.list.is_empty() {
+            target.overlays = self.list.as_ptr();
+            target.num_overlays = i32::try_from(self.list.len()).unwrap_or(i32::MAX);
+        }
+    }
+}
+
+/// The rendered `layers` (in `color`) at their placements, then the overlays visible on output
+/// frame `index` with their fade applied to the part colours.
 fn overlays_at(
     layers: &[(&LayerRun<'_>, crate::Crop)],
     all: &[(&Overlay, OverlayTex)],
     index: i64,
+    color: pl::pl_color_space,
 ) -> Overlays {
     let mut parts = Vec::new();
     let mut texs = Vec::new();
@@ -582,7 +777,7 @@ fn overlays_at(
             dst: rect(*r),
             color: [1.0; 4],
         }]);
-        let f = lr.tex.frame(layer_color());
+        let f = lr.tex.frame(color);
         list.push((
             lr.tex.tex,
             pl::pl_overlay_mode::PL_OVERLAY_NORMAL,
@@ -975,4 +1170,45 @@ pub(crate) fn default_cache_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
         .map(|d| d.join("ffcine").join("placebo"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ffcine_core::color::{Matrix, Primaries, Range, Transfer};
+
+    #[test]
+    fn layer_colour_follows_the_output() {
+        use pl::pl_color_primaries as P;
+        use pl::pl_color_transfer as T;
+        let sdr = layer_color(ColorSpace::BT709_TV);
+        assert_eq!(
+            (sdr.primaries, sdr.transfer),
+            (P::PL_COLOR_PRIM_BT_709, T::PL_COLOR_TRC_BT_1886)
+        );
+        let s = still_color(ColorSpace::BT709_TV);
+        assert_eq!((s.primaries, s.transfer), (sdr.primaries, sdr.transfer));
+        let hdr = |transfer| ColorSpace {
+            primaries: Primaries::Bt2020,
+            transfer,
+            matrix: Matrix::Bt2020Ncl,
+            range: Range::Limited,
+        };
+        let pq = layer_color(hdr(Transfer::Pq));
+        assert_eq!(
+            (pq.primaries, pq.transfer),
+            (P::PL_COLOR_PRIM_BT_2020, T::PL_COLOR_TRC_PQ)
+        );
+        let hlg = layer_color(hdr(Transfer::Hlg));
+        assert_eq!(
+            (hlg.primaries, hlg.transfer),
+            (P::PL_COLOR_PRIM_BT_2020, T::PL_COLOR_TRC_HLG)
+        );
+        // Stills on an HDR output are SDR (sRGB), mapped to the reference white.
+        let st = still_color(hdr(Transfer::Pq));
+        assert_eq!(
+            (st.primaries, st.transfer),
+            (P::PL_COLOR_PRIM_BT_709, T::PL_COLOR_TRC_SRGB)
+        );
+    }
 }

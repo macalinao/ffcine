@@ -3,6 +3,7 @@
 //! kept in VRAM end to end.
 
 pub mod backend;
+pub mod blend;
 pub mod encode;
 pub mod grade;
 pub mod layer;
@@ -11,6 +12,7 @@ pub mod pipeline;
 pub mod profile;
 pub mod shaders;
 
+pub use blend::BlendMode;
 pub use encode::{Codec, EncoderSettings, PixelFormat, RateControl};
 pub use ffcine_core::{ColorSpace, Error, Lut, LutType, MediaInfo, Rational, Result};
 pub use grade::{
