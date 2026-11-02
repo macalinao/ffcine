@@ -708,8 +708,8 @@ mod tests {
             // SAFETY: as above; the host frames outlive the synchronize below.
             unsafe {
                 of.upload_async(i, Mem::Host(f.as_ptr()), w, &stream)
-                    .unwrap()
-            };
+                    .unwrap();
+            }
         }
         let (fp, pitch) = of.flow_output();
         for (k, &(a, b)) in pairs.iter().enumerate() {

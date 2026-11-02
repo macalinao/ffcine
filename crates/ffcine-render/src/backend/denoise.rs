@@ -11,6 +11,7 @@
 
 use std::collections::VecDeque;
 use std::ffi::{CStr, CString, c_void};
+use std::fmt::Write as _;
 use std::ptr;
 
 use ffcine_filters::denoise::{self as k, Compute, Plane};
@@ -314,7 +315,8 @@ fn flow_kernel(count: usize, gw: u32, gh: u32) -> Compute {
     );
     for m in 0..count {
         let off = m * gw as usize * gh as usize;
-        body += &format!(
+        let _ = write!(
+            body,
             "        {{
             uint v = fl[{off}u + i];
             vec2 f = vec2(ivec2(int(v << 16) >> 16, int(v) >> 16)) / 16.0;
@@ -753,18 +755,18 @@ impl Denoiser {
         }
         let gpu = self.gpu;
         let nv = self.nvof.as_mut().ok_or_else(|| gpu_err("nvof"))?;
-        let (layout, v) = nv.hold(gpu, luma8)?;
+        let (layout, held) = nv.hold(gpu, luma8)?;
         let cuda = Cuda::get()?;
         let _g = cuda.push(nv.ctx)?;
-        cuda.wait_async(&nv.vk_ext, v, &nv.stream)?;
+        cuda.wait_async(&nv.vk_ext, held, &nv.stream)?;
         // SAFETY: the mapped buffer holds h rows of `pitch` bytes; `luma8` stays held (so `buf`
         // unwritten) until the copy is done, by the release below.
         unsafe {
             nv.of
-                .upload_async(slot, Mem::Device(nv.ext.ptr), pitch, &nv.stream)?
+                .upload_async(slot, Mem::Device(nv.ext.ptr), pitch, &nv.stream)?;
         };
-        let c = nv.signal()?;
-        nv.release(gpu, luma8, layout, c);
+        let copied = nv.signal()?;
+        nv.release(gpu, luma8, layout, copied);
         nv.wall_ns += u64::try_from(t0.elapsed().as_nanos()).unwrap_or(0);
         Ok(())
     }
@@ -815,10 +817,15 @@ impl Denoiser {
         self.nvof_queue(c + 1)?;
         let gpu = self.gpu;
         let nv = self.nvof.as_mut().ok_or_else(|| gpu_err("nvof"))?;
-        let p = usize::from(c % 2 == 1);
-        nv.release(gpu, nv.flow_tex[p][0], nv.flow_layout[p], nv.set_ready[p]);
+        let set = usize::from(c % 2 == 1);
+        nv.release(
+            gpu,
+            nv.flow_tex[set][0],
+            nv.flow_layout[set],
+            nv.set_ready[set],
+        );
         let (gw, gh) = (nv.of.grid_w, nv.of.grid_h);
-        let count = nv.flow_tex[p].len();
+        let count = nv.flow_tex[set].len();
         let var = pl::pl_var {
             name: c"fl".as_ptr(),
             type_: pl::pl_var_type::PL_VAR_UINT,
@@ -831,7 +838,7 @@ impl Denoiser {
             // SAFETY: plain computation on a valid var.
             layout: unsafe { pl::pl_std430_layout(0, &raw const var) },
         };
-        let mut d = vec![pl::pl_shader_desc {
+        let mut descs = vec![pl::pl_shader_desc {
             desc: pl::pl_desc {
                 name: c"flowbuf".as_ptr(),
                 type_: pl::pl_desc_type::PL_DESC_BUF_STORAGE,
@@ -839,25 +846,25 @@ impl Denoiser {
                 ..Default::default()
             },
             binding: pl::pl_desc_binding {
-                object: nv.flow_buf[p].cast::<c_void>(),
+                object: nv.flow_buf[set].cast::<c_void>(),
                 ..Default::default()
             },
             buffer_vars: &raw mut bv,
             num_buffer_vars: 1,
             ..Default::default()
         }];
-        for (m, &t) in nv.flow_tex[p].iter().enumerate() {
+        for (m, &t) in nv.flow_tex[set].iter().enumerate() {
             let mut sd = storage(t);
             sd.desc.name = F[m].as_ptr();
-            d.push(sd);
+            descs.push(sd);
         }
         let kern = flow_kernel(count, gw, gh);
-        let (w, h) = (
+        let grid = groups(
             i32::try_from(gw).unwrap_or(0),
             i32::try_from(gh).unwrap_or(0),
         );
-        self.dispatch(n, "flow", &kern, &d, groups(w, h))?;
-        Ok(p)
+        self.dispatch(n, "flow", &kern, &descs, grid)?;
+        Ok(set)
     }
 
     /// Frame `c`'s flows (set `p`) are read: CUDA may rewrite the set once Vulkan gets here.
@@ -1235,15 +1242,16 @@ mod tests {
     /// NVOF pipeline's invariants: every frame's flows are queued once, after all its neighbours
     /// are in and before it renders; a flow set isn't rewritten before the frame that last used it
     /// has rendered; and no ring slot a rendering frame reads has been overwritten.
+    type Sets = [Option<(u64, Vec<(u64, usize)>)>; 2];
+
     fn simulate(radius: u64, lag: u64, frames: u64) {
         let s = Schedule { radius, lag };
         let slots = usize::try_from(s.slots()).unwrap();
         let mut ring: Vec<Option<u64>> = vec![None; slots];
         let (mut pushed, mut queued, mut next) = (0, 0, 0);
         // Per flow set: the frame whose flows it holds (and their neighbours), until it renders.
-        let mut sets: [Option<(u64, Vec<(u64, usize)>)>; 2] = [None, None];
+        let mut sets: Sets = [None, None];
         let mut rendered = Vec::new();
-        type Sets = [Option<(u64, Vec<(u64, usize)>)>; 2];
         let queue = |upto: u64, pushed: u64, queued: &mut u64, sets: &mut Sets| {
             while *queued < upto.min(pushed) {
                 let c = *queued;
@@ -1269,7 +1277,7 @@ mod tests {
                     Some(f),
                     "frame {c}: neighbour {f} overwritten"
                 );
-                assert!(m < 2 * radius as usize && c.abs_diff(f) <= radius);
+                assert!((m as u64) < 2 * radius && c.abs_diff(f) <= radius);
             }
             rendered.push(c);
         };
