@@ -61,13 +61,14 @@ impl Gpu {
     /// Renders one pipeline (one shot).
     pub(crate) fn run(&mut self, p: &Pipeline) -> Result<RunStats> {
         let t0 = Instant::now();
-        let grade = p
+        let mut grade = p
             .stages
             .iter()
             .map(|Stage::Grade(g)| g)
             .next()
             .cloned()
             .unwrap_or_default();
+        grade.merge_luts();
 
         let dec_device = match p.decode {
             Decode::Cuda => &self.devices.cuda,
@@ -125,6 +126,7 @@ impl Gpu {
             out_rate,
             chroma,
             enc_frames.as_ref(),
+            grade.output_hdr.as_ref().filter(|_| grade.output.is_hdr()),
         )?;
 
         let pass = Pass::new(&self.vk, &grade, in_w, in_h)?;
@@ -298,18 +300,19 @@ impl Gpu {
             )?
         };
         // The source's Dolby Vision RPU and HDR metadata describe the source, not the output:
-        // libplacebo would try to re-apply them to the target.
-        if !grade.output.is_hdr() {
-            for t in [
-                ff::AVFrameSideDataType::AV_FRAME_DATA_DOVI_RPU_BUFFER,
-                ff::AVFrameSideDataType::AV_FRAME_DATA_DOVI_METADATA,
-                ff::AVFrameSideDataType::AV_FRAME_DATA_MASTERING_DISPLAY_METADATA,
-                ff::AVFrameSideDataType::AV_FRAME_DATA_CONTENT_LIGHT_LEVEL,
-                ff::AVFrameSideDataType::AV_FRAME_DATA_DYNAMIC_HDR_PLUS,
-            ] {
-                // SAFETY: a valid frame we own.
-                unsafe { ff::av_frame_remove_side_data(out.as_ptr(), t) };
-            }
+        // libplacebo would try to re-apply them to the target. An HDR output gets its own.
+        for t in [
+            ff::AVFrameSideDataType::AV_FRAME_DATA_DOVI_RPU_BUFFER,
+            ff::AVFrameSideDataType::AV_FRAME_DATA_DOVI_METADATA,
+            ff::AVFrameSideDataType::AV_FRAME_DATA_MASTERING_DISPLAY_METADATA,
+            ff::AVFrameSideDataType::AV_FRAME_DATA_CONTENT_LIGHT_LEVEL,
+            ff::AVFrameSideDataType::AV_FRAME_DATA_DYNAMIC_HDR_PLUS,
+        ] {
+            // SAFETY: a valid frame we own.
+            unsafe { ff::av_frame_remove_side_data(out.as_ptr(), t) };
+        }
+        if let Some(m) = grade.output_hdr.as_ref().filter(|_| grade.output.is_hdr()) {
+            io::attach_hdr(out.as_ptr(), m)?;
         }
         io::tag_frame(out.get_mut(), grade.output);
         out.get_mut().sample_aspect_ratio = ff::AVRational { num: 1, den: 1 };
@@ -490,7 +493,8 @@ unsafe fn apply_grade(
     index: usize,
 ) {
     // The camera LUT on the source; the grade LUT on the source too, or, after a camera
-    // LUT, on the target (applied to the converted picture before encoding).
+    // LUT, on the target (applied to the converted picture before encoding). Normalized pairs
+    // arrive baked into one (`Grade::merge_luts`).
     if let (Some(l), Some(stage)) = (luts.input, &grade.input_lut) {
         image.lut = &raw const l.lut;
         image.lut_type = placebo::lut_type(stage.kind);

@@ -6,7 +6,7 @@ use std::str::FromStr;
 
 use crate::{ColorSpace, Error};
 use ffcine_core::color::named_enum;
-use ffcine_core::color::{Matrix, Primaries, Range, Transfer};
+use ffcine_core::color::{HdrMetadata, Matrix, Primaries, Range, Transfer};
 use ffcine_core::geom::Mat3;
 use ffcine_core::lut::{Lut, LutType};
 pub use ffcine_filters::{Denoise, Grain, Spatial, Temporal};
@@ -307,6 +307,30 @@ impl ParamTrack {
 }
 
 impl Grade {
+    /// Bakes a camera LUT and a normalized grade LUT into one source LUT ([`crate::bake`]), so
+    /// the grade LUT runs before the look hooks, as it does without a camera LUT, instead of on
+    /// the target after them. The lattice is the larger of the two, at least 33.
+    pub fn merge_luts(&mut self) {
+        let (Some(cam), Some(lut)) = (&self.input_lut, &self.lut) else {
+            return;
+        };
+        if cam.kind != LutType::Normalized || lut.kind != LutType::Normalized {
+            return;
+        }
+        let size = cam.lut.size.max(lut.lut.size).max(33);
+        let baked = crate::bake::Bake {
+            camera: Some(&cam.lut),
+            lut: Some(&lut.lut),
+            look: crate::shaders::LookParams::default(),
+        }
+        .bake(size);
+        self.input_lut = Some(LutStage {
+            lut: baked,
+            kind: LutType::Normalized,
+        });
+        self.lut = None;
+    }
+
     /// The source crop for output frame `i`: `crops[i]` (the last one past the end), else `crop`.
     pub fn crop_at(&self, i: usize) -> Option<Crop> {
         self.crops
@@ -361,6 +385,10 @@ pub struct Grade {
     /// Film grain on the graded output (`ffcine-filters`).
     pub grain: Option<Grain>,
     pub output: ColorSpace,
+    /// HDR deliverable metadata, with a PQ or HLG `output`: libplacebo maps to its peak, and it
+    /// goes out as the stream's mastering display and content light levels. The source's own HDR
+    /// side data and Dolby Vision RPU never reach the output.
+    pub output_hdr: Option<HdrMetadata>,
 }
 
 impl Default for Grade {
@@ -387,6 +415,7 @@ impl Default for Grade {
             denoise: None,
             grain: None,
             output: ColorSpace::BT709_TV,
+            output_hdr: None,
         }
     }
 }
@@ -394,6 +423,28 @@ impl Default for Grade {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn merges_camera_and_grade_luts() {
+        let mut half = Lut::identity(5);
+        for e in &mut half.data {
+            *e = e.map(|v| v * 0.5);
+        }
+        let stage = |lut| LutStage {
+            lut,
+            kind: LutType::Normalized,
+        };
+        let mut g = Grade {
+            input_lut: Some(stage(half.clone())),
+            lut: Some(stage(half)),
+            ..Grade::default()
+        };
+        g.merge_luts();
+        assert!(g.lut.is_none());
+        let m = g.input_lut.unwrap().lut;
+        assert_eq!(m.size, 33);
+        assert!((m.sample([1.0, 0.5, 0.0])[0] - 0.25).abs() < 1e-5);
+    }
 
     #[test]
     fn parse_size_and_crop() {
