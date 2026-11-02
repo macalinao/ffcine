@@ -28,6 +28,7 @@ pub fn dir() -> Option<PathBuf> {
 }
 
 /// Where entries were written before the US spelling; still read.
+#[cfg(feature = "nvof")]
 fn legacy_dir() -> Option<PathBuf> {
     Some(cache_base()?.join("stabilise"))
 }
