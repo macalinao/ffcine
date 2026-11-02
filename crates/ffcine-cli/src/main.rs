@@ -4,10 +4,14 @@
 #[cfg(feature = "audio")]
 mod audio;
 #[cfg(feature = "gpu")]
+mod breakdown;
+#[cfg(feature = "gpu")]
 mod gpu;
+mod help;
 mod publish;
 mod triage;
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
@@ -18,83 +22,105 @@ use ffcine::ingest::{
 };
 
 #[derive(Debug, Clone, Bpaf)]
-#[bpaf(options, version)]
+#[bpaf(options, version, footer(help::TOP))]
 #[allow(clippy::large_enum_variant, clippy::doc_markdown)] // parsed once; help text
 /// GPU video finishing: decode, grade and encode with frames kept in VRAM.
+///
+/// `ffcine COMMAND -h` is a command's brief help; `ffcine COMMAND --help` adds details, defaults,
+/// examples and file formats.
 enum Cmd {
     #[cfg(feature = "gpu")]
     Gpu(#[bpaf(external(gpu::cmd))] gpu::Cmd),
-    /// Upload renders to an Immich album (created if missing), e.g. review copies for a phone.
-    /// Server and API key file: ~/.config/ffcine/config.json `{"immich": {"url", "api_key_file"}}`
-    /// or FFCINE_IMMICH_URL / FFCINE_IMMICH_API_KEY_FILE.
-    #[bpaf(command)]
+    /// Upload files to an Immich album, e.g. review copies for a phone.
+    ///
+    /// Creates the album if missing and adds each upload to it; prints each asset as it goes.
+    /// Server and API key file come from the config file (`{"immich": {"url": ..., "api_key_file":
+    /// ...}}`) or $FFCINE_IMMICH_URL and $FFCINE_IMMICH_API_KEY_FILE.
+    #[bpaf(command, footer(help::PUBLISH))]
     Publish {
-        /// Album name.
+        /// Album name (created if missing).
         #[bpaf(argument("ALBUM"))]
         immich: String,
-        /// Config file (default: $XDG_CONFIG_HOME/ffcine/config.json).
+        /// Config file (default: $XDG_CONFIG_HOME/ffcine/config.json, else
+        /// ~/.config/ffcine/config.json).
         #[bpaf(argument("FILE"))]
         config: Option<PathBuf>,
+        /// Files to upload (one or more).
         #[bpaf(positional("FILE"), some("a file to upload"))]
         files: Vec<PathBuf>,
     },
     /// Offload a camera card with verified copies, a manifest and an optional backup.
     ///
-    /// Copies into DEST/01_footage/<camera>/<day>/ (audio into 02_audio/), checks each copy
-    /// against the card with BLAKE3, logs it in DEST/.ffcine/ingest.jsonl, then catalogs DEST.
-    /// Never writes to the card; re-running skips what is already copied.
-    #[bpaf(command)]
+    /// Copies into DEST/01_footage/<camera>/<day>/ (audio into DEST/02_audio/), checks each copy
+    /// against the card with BLAKE3, logs it in DEST/.ffcine/ingest.jsonl, then catalogs DEST
+    /// (DEST/catalog.json, as `ffcine catalog`). Never writes to the card; re-running skips what
+    /// is already copied. Exits non-zero if any file failed.
+    #[bpaf(command, footer(help::INGEST))]
     Ingest(#[bpaf(external(ingest_args))] IngestArgs),
-    /// Index clips under DIR into DIR/catalog.json, with picture profile and fixed clocks.
+    /// Index the clips under DIR into DIR/catalog.json, with profiles and clocks.
     ///
     /// Per clip: codec, resolution, exact frame rate, bit depth, chroma, colour tags, picture
     /// profile (DJI D-Log / D-Log M / D-Log2, HLG, PQ, C-Log3, Apple Log, Rec.709) with its
-    /// confidence and camera LUT, and the clock after the per-camera fixes. Flags mixed frame
-    /// rates and cameras whose clocks disagree.
-    #[bpaf(command)]
+    /// confidence and camera LUT, and the clock after the per-camera fixes. Prints a summary per
+    /// camera and flags mixed frame rates and cameras whose clocks disagree.
+    #[bpaf(command, footer(help::CATALOG))]
     Catalog(#[bpaf(external(catalog_args))] CatalogArgs),
-    /// Check the GPU path; exits non-zero if anything the render needs is missing.
+    /// Check the GPU path; exits non-zero if anything a render needs is missing.
     ///
     /// Opens CUDA and Vulkan devices, an NVENC session, NVDEC configs and NVOF, and checks the
-    /// linked libav and the `ffmpeg` on PATH for libplacebo and nlmeans_vulkan.
-    #[bpaf(command)]
+    /// linked libav and the `ffmpeg` on PATH for libplacebo and nlmeans_vulkan. Prints one line
+    /// per check: `ok`, `FAIL` (with what needs it) or `info` (not needed by this build).
+    #[bpaf(command, footer(help::DOCTOR))]
     Doctor,
     /// Find words in the triage transcripts: clip and timecode per hit.
-    #[bpaf(command)]
+    ///
+    /// Prints `CLIP  TIMECODE  CONTEXT` per hit, then the hit count on stderr. Reads the index
+    /// `ffcine triage` wrote.
+    #[bpaf(command, footer(help::SEARCH))]
     Search(#[bpaf(external(triage::search_args))] triage::SearchArgs),
     /// Move a proposed in/out onto word boundaries and silence.
-    #[bpaf(command)]
+    ///
+    /// Uses the word times of the triage transcripts. Prints the snapped in and out in seconds
+    /// and as timecode.
+    #[bpaf(command, footer(help::SNAP))]
     Snap(#[bpaf(external(triage::snap_args))] triage::SnapArgs),
     /// Line up recorder WAVs with the camera clips by their scratch audio.
     ///
-    /// Writes the recorder audio as clips on its own track, with offset, drift and confidence
-    /// per clip. Needs no GPU.
+    /// Prints offset, drift and confidence per clip, and writes the recorder audio as clips on its
+    /// own track of a timeline (.otio). Needs no GPU.
     #[cfg(feature = "audio")]
-    #[bpaf(command)]
+    #[bpaf(command, footer(help::SYNC))]
     Sync(#[bpaf(external(audio::sync_args))] audio::SyncArgs),
-    /// Render the timeline's audio mix to a WAV, without touching the video.
+    /// Render a timeline's audio mix to a WAV, without touching the video.
     ///
     /// Clean chain, R128 levelling, dialogue/music/ambience/SFX buses with ducking, master at
-    /// -14 LUFS under a true-peak limiter.
+    /// -14 LUFS under a true-peak limiter. Settings come from the timeline's project.mix and clip
+    /// effects; the flags override them. Prints the length, loudness and true peak.
     #[cfg(feature = "audio")]
-    #[bpaf(command)]
+    #[bpaf(command, footer(help::AUDIO))]
     Audio(#[bpaf(external(audio::audio_args))] audio::AudioArgs),
     /// Tempo and beat times of a music file (librosa's beat tracker), cached.
+    ///
+    /// Prints `FILE: BPM, N beats over S s` and one beat time in seconds per line, or JSON with
+    /// --json.
     #[cfg(feature = "audio")]
-    #[bpaf(command)]
+    #[bpaf(command, footer(help::BEATS))]
     Beats(#[bpaf(external(audio::beats_args))] audio::BeatsArgs),
 }
 
 #[derive(Debug, Clone, Bpaf)]
 #[allow(clippy::doc_markdown)]
 struct ClockArgs {
-    /// Clock config (YAML: zone, cameras.<id>.shift/zone, sync); default DEST/clocks.yaml.
+    /// Clock config, YAML with zone, reference and cameras.<id>.shift / .zone (default:
+    /// clocks.yaml in the project root, if there).
     #[bpaf(argument("FILE"))]
     clocks: Option<PathBuf>,
-    /// Per-camera fix, CAMERA=SHIFT[@ZONE], e.g. r10=-2m, pocket=+0h@+00:00. Repeatable.
+    /// Per-camera clock fix, CAMERA=SHIFT[@ZONE]; SHIFT like +1h20m, -90s or +9497d, e.g.
+    /// cam1=-2m or cam2=+0h@+08:00. Repeatable.
     #[bpaf(argument("CAM=SHIFT"), many)]
     clock: Vec<String>,
-    /// Zone for cameras whose files don't record one (+HH:MM, e.g. +00:00 for UTC).
+    /// Zone for cameras whose files don't record one, a fixed offset +HH:MM (default:
+    /// the clock config's).
     #[bpaf(argument("ZONE"))]
     zone: Option<String>,
 }
@@ -120,24 +146,24 @@ impl ClockArgs {
 #[derive(Debug, Clone, Bpaf)]
 #[allow(clippy::struct_excessive_bools, clippy::doc_markdown)]
 struct IngestArgs {
-    /// Destination project root.
+    /// Destination project root (created if missing).
     #[bpaf(argument("DEST"))]
     to: PathBuf,
-    /// Second verified copy, same layout (e.g. /media/backup/projects/trip).
+    /// Second verified copy in the same layout, e.g. on a backup drive.
     #[bpaf(argument("DIR"))]
     backup: Option<PathBuf>,
-    /// Force the camera id for every file on this card (default: from the files' metadata).
+    /// Camera id for every file on this card (default: from each file's metadata).
     #[bpaf(argument("ID"))]
     camera: Option<String>,
     #[bpaf(external(clock_args))]
     clocks: ClockArgs,
-    /// Show what would be copied; copy nothing.
+    /// Print what would be copied (SOURCE -> DEST path); copy nothing.
     dry_run: bool,
     /// Re-hash already-ingested copies instead of trusting name, size and mtime.
     verify_existing: bool,
     /// Don't rebuild DEST/catalog.json afterwards.
     no_catalog: bool,
-    /// Card root (the mounted volume or its DCIM folder).
+    /// Card root: the mounted volume or its DCIM folder.
     #[bpaf(positional("CARD_DIR"))]
     card: PathBuf,
 }
@@ -146,12 +172,13 @@ struct IngestArgs {
 struct CatalogArgs {
     #[bpaf(external(clock_args))]
     clocks: ClockArgs,
-    /// Frame-statistics profile check via the ffmpeg CLI: auto (when metadata isn't
-    /// conclusive), always, never.
+    /// Frame-statistics profile check through the ffmpeg CLI: auto (when the metadata isn't
+    /// conclusive), always or never (default: auto).
     #[bpaf(argument("WHEN"), fallback(Histogram::Auto))]
     histogram: Histogram,
     /// Re-probe every file (default: reuse unchanged entries).
     full: bool,
+    /// Project root to index (searched recursively).
     #[bpaf(positional("DIR"))]
     dir: PathBuf,
 }
@@ -386,8 +413,31 @@ fn gpu_doctor(_: &mut Vec<String>) {
     );
 }
 
+/// `args` with `--help` given twice, which makes bpaf print the full help (details, examples,
+/// formats); `-h` stays the brief one.
+fn long_help(args: impl IntoIterator<Item = OsString>) -> Vec<OsString> {
+    let mut out = Vec::new();
+    let mut positional = false;
+    for a in args {
+        let help = !positional && a == "--help";
+        positional |= a == "--";
+        out.push(a);
+        if help {
+            out.push("--help".into());
+        }
+    }
+    out
+}
+
 fn main() -> anyhow::Result<()> {
-    match cmd().run() {
+    let args = long_help(std::env::args_os().skip(1));
+    let cmd = cmd()
+        .run_inner(bpaf::Args::from(&args[..]).set_name("ffcine"))
+        .unwrap_or_else(|e| {
+            e.print_message(100);
+            std::process::exit(e.exit_code())
+        });
+    match cmd {
         #[cfg(feature = "gpu")]
         Cmd::Gpu(c) => gpu::run(c),
         Cmd::Ingest(a) => run_ingest(a),

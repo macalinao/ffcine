@@ -129,7 +129,8 @@ uses it.
 | `ffcine-delivery` | YouTube chapters from markers, music credits, the frame under a timeline time ([delivery.md](delivery.md)) | core, timeline |
 | `ffcine-hooks` | step 9: vendored adaptive-sharpen, `ffcine.fx.shader/1` with `//!PARAM`s, hook order ([hooks.md](hooks.md)) | core, timeline, render, reframe |
 | `ffcine-triage` | `ffcine triage`/`search`/`snap`: clip index from proxies (strips, scene cuts, speech map, batched GPU whisper, flags, Immich locations), clip page, word-boundary snapping ([triage.md](triage.md)); feature `ffmpeg` decodes | ingest |
-| `ffcine` | facade: re-exports core, timeline, import, ingest, stabilize, render, reframe, hooks, text, delivery, filters, triage, audio, assembly; features `ffmpeg`, `audio` (libav* only), `placebo`, `nvof` forward to them | all of the above but the skeletons |
+| `ffcine-breakdown` | `ffcine breakdown`: shot list of a reference video (cuts, keyframes, global camera motion, beat alignment, colour, speech, OCR), contact sheet, `shotlist.md` ([breakdown.md](breakdown.md)); feature `ffmpeg` decodes | triage, audio, text |
+| `ffcine` | facade: re-exports core, timeline, import, ingest, stabilize, render, reframe, hooks, text, delivery, filters, triage, breakdown, audio, assembly; features `ffmpeg`, `audio` (libav* only), `placebo`, `nvof` forward to them | all of the above but the skeletons |
 | `ffcine-cli` | the `ffcine` binary (bpaf); feature `gpu` (default) adds the GPU commands, without it only ingest/catalog/doctor/search/snap build; feature `audio` adds `sync` and `audio` (libav*, no GPU, so the Mac build can have them) | ffcine |
 | `libplacebo-sys` | bindgen FFI over libplacebo | - |
 
@@ -141,6 +142,7 @@ ffcine-cli -> ffcine -> ffcine-assembly -> ffcine-text, ffcine-render, ffcine-ti
                      -> ffcine-audio -> ffcine-timeline
                      -> ffcine-render -> libplacebo-sys
                                       -> ffcine-filters
+                     -> ffcine-breakdown -> ffcine-triage, ffcine-audio, ffcine-text
                      -> ffcine-triage -> ffcine-ingest
                                       -----------------> ffcine-core
 ```
@@ -357,8 +359,9 @@ crate that uses them ([Crates](#crates)).
 5. **Reframe**: keyframed crops for punch/push/pan and vertical aspect windows, in the same
    libplacebo pass (the prototype already does this as libplacebo expressions), with
    `ewa_lanczos` scaling for punch-ins and 4K -> 1080p. Done ([reframe.md](reframe.md)):
-   windows per profile, composed with the stabilizer warp in the same pass; a timeline renderer
-   to call it per clip, and contain's blurred fill, are left.
+   windows per profile, composed with the stabilizer warp in the same pass, `ffcine render` calling
+   it per clip (main picture, split-screen panels, picture-in-picture), contain's blurred fill,
+   and the NLE `ffcine.geo.crop/1` / `ffcine.geo.transform/1` on the main picture.
 6. **Audio** as its own track: per-clip clean chain, R128 levelling, music/ambience/SFX buses with
    ducking, master limiter. It needs no GPU and is rendered once per timeline, so it can land in
    parallel with 1-5. Done ([audio.md](audio.md)), with Zoom H2essential auto-sync to the camera
@@ -373,8 +376,9 @@ crate that uses them ([Crates](#crates)).
    `mp4-atom`, replacing the prototype's final ffmpeg pass.
    `ffcine render` assembles a whole timeline from a content-keyed segment cache: only changed
    segments render, the master joins them by stream copy, an audio-only change is a remux, and
-   renders resume ([assembly.md](assembly.md)). Still to come: text, chapters, cover, split-screen
-   compositing, the full audio graph (step 6).
+   renders resume ([assembly.md](assembly.md)). Chapters and cover are written with `mp4-atom`
+   ([delivery.md](delivery.md)). Still to come: text, split-screen compositing, the full audio
+   graph (step 6).
 9. **`.hook` shaders**: vendored `adaptive-sharpen` (replacing the unsharp hook as default),
    KrigBilateral chroma for 4:2:0 sources, FSRCNNX/ArtCNN for 1080p clips in a 4K timeline,
    `filmgrain.glsl`, all through `pl_mpv_user_shader_parse` in the grade pass. adaptive-sharpen

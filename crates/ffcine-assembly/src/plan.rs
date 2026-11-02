@@ -16,7 +16,7 @@ use ffcine_timeline::{
 use serde_json::{Map, Value, json};
 
 use ffcine_filters::{Denoise, Motion, Spatial, Temporal};
-use ffcine_reframe::Reframe;
+use ffcine_reframe::{Geo, Reframe};
 use ffcine_stabilize::{DetectParams, StabilizeParams};
 
 use crate::comp::{Finish, TransitionKind};
@@ -140,13 +140,18 @@ pub struct Filters {
     pub reframe: Option<Reframe>,
     /// `ffcine.time.ramp/1`: the clip is retimed through the ramp, not its average speed.
     pub ramp: Option<Ramp>,
+    /// `ffcine.geo.crop/1` and `ffcine.geo.transform/1` (keyed through the clip's `fx`).
+    pub geo: Geo,
 }
 
 impl Filters {
     /// Whether a piece of the clip depends on where it sits in the clip (stabilized path,
     /// animated reframe, ramp).
     fn whole_clip(&self) -> bool {
-        self.stabilize.is_some() || self.reframe.is_some() || self.ramp.is_some()
+        self.stabilize.is_some()
+            || self.reframe.is_some()
+            || self.ramp.is_some()
+            || self.geo.is_animated()
     }
 
     /// Everything about the filters that changes pixels, including the inputs they derive
@@ -986,6 +991,19 @@ impl Planner<'_> {
             }
             return Ok(None);
         };
+        let media = if self.profile.proxies {
+            crate::proxy::find(&media, self.profile.proxy_dir.as_deref(), self.fp).unwrap_or_else(
+                || {
+                    self.warn(format!(
+                        "clip {:?}: no proxy, rendered from the source",
+                        c.name
+                    ));
+                    media
+                },
+            )
+        } else {
+            media
+        };
         let mut speed = 1.0;
         let mut clip_grade = None;
         let mut fx = Vec::new();
@@ -1037,6 +1055,11 @@ impl Planner<'_> {
                 Effect::Unknown(m) => fx.push(Value::Object(m.clone())),
             }
         }
+        filters.geo = Geo::from_effects(&c.effects).map_err(|e| PlanError::Effect {
+            clip: c.name.clone(),
+            effect: "geo",
+            msg: e.to_string(),
+        })?;
         let kind = match c
             .ffcine_value("source")
             .and_then(|s| s.get("kind"))
@@ -1509,6 +1532,49 @@ mod tests {
         t
     }
 
+    /// `review` decodes a camera proxy beside the clip when there is one, and keys apart from
+    /// `preview`; a clip without one renders from its source, warned.
+    #[test]
+    fn review_renders_from_proxies() {
+        let dir = std::env::temp_dir().join(format!("ffcine-plan-proxy-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for f in ["A.mp4", "A.LRF", "B.mp4"] {
+            std::fs::write(dir.join(f), b"x").unwrap();
+        }
+        let file = |name: &str, f: &str| {
+            let media = MediaReference::External(ExternalReference::from_path(&dir.join(f), None));
+            Item::Clip(Clip::new(
+                name,
+                media,
+                Some(TimeRange::from_frames(0.0, 48.0, RATE)),
+            ))
+        };
+        let t = timeline(vec![file("a", "A.mp4"), file("b", "B.mp4")], vec![]);
+        let media = |p: &Plan| -> Vec<PathBuf> {
+            p.segments
+                .iter()
+                .filter_map(|s| match &s.unit {
+                    Unit::Shot(s) => Some(s.media.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let review = plan(&t, &dir, &Profile::review(), &Fake, None).unwrap();
+        assert_eq!(media(&review), [dir.join("A.LRF"), dir.join("B.mp4")]);
+        assert!(
+            review
+                .warnings
+                .iter()
+                .any(|w| w.contains("\"b\": no proxy")),
+            "{:?}",
+            review.warnings
+        );
+        let preview = plan(&t, &dir, &Profile::preview(), &Fake, None).unwrap();
+        assert_eq!(media(&preview), [dir.join("A.mp4"), dir.join("B.mp4")]);
+        assert!(key_set(&review).is_disjoint(&key_set(&preview)));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     fn plan_of(t: &Timeline) -> Plan {
         plan(t, Path::new("/proj"), &Profile::preview(), &Fake, None).unwrap()
     }
@@ -1916,6 +1982,48 @@ mod tests {
             _ => None,
         };
         assert_ne!(reframe(&reel), reframe(&land));
+    }
+
+    #[test]
+    fn nle_geometry_is_read_and_keyed() {
+        let at = |fx: &[(usize, &str, Value)]| {
+            plan(
+                &timeline(filtered(fx), vec![]),
+                Path::new("/proj"),
+                &Profile::preview(),
+                &Fake,
+                None,
+            )
+            .unwrap()
+        };
+        let mut fx = base_fx();
+        fx.push((
+            2,
+            "ffcine.geo.transform/1",
+            json!({"units": "picture", "y": "down",
+                   "scale_x": [{"t": 0.0, "v": 1.0}, {"t": 1.0, "v": 0.5}]}),
+        ));
+        fx.push((2, "ffcine.geo.crop/1", json!({"left": 0.1})));
+        let p = at(&fx);
+        assert_eq!(changed(&at(&base_fx()), &p), ["c"]);
+        let Unit::Shot(c) = &p.segments[2].unit else {
+            panic!("shot")
+        };
+        assert!(!c.filters.geo.transforms.is_empty() && c.filters.geo.crop.is_some());
+        // Animated: keyed by where the piece sits in its clip.
+        assert!(c.filters.whole_clip());
+        let mut bad = base_fx();
+        bad.push((2, "ffcine.geo.transform/1", json!({"units": "inches"})));
+        assert!(
+            plan(
+                &timeline(filtered(&bad), vec![]),
+                Path::new("/proj"),
+                &Profile::preview(),
+                &Fake,
+                None,
+            )
+            .is_err()
+        );
     }
 
     #[test]

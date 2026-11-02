@@ -22,7 +22,7 @@ use ffcine_render::{
     Backend, Codec, Crop, Decode, Device, Grade, Hook, Image, Layer, LayerSource, Lut, LutStage,
     LutType, Overlay, ParamTrack, Pipeline, Rational, Size, shaders,
 };
-use serde_json::{Value, json};
+use serde_json::json;
 
 use crate::comp::{self, Finish, Layout, Placement, TransitionKind};
 use crate::plan::{
@@ -405,7 +405,7 @@ impl Renderer<'_> {
             Unit::Shot(s) => {
                 ctx = s.context();
                 let (input, start) = self.input_ctx(plan, s, ctx, key, "shot", &mut temps)?;
-                let mut g = self.shot_grade(s, plan, size, None, None)?;
+                let mut g = self.shot_grade(s, plan, size, None, Pic::Main)?;
                 g.grain = grain(Some(s))?;
                 (input, start, g)
             }
@@ -421,9 +421,9 @@ impl Renderer<'_> {
                     TransitionKind::Dissolve => {
                         ctx = a.context();
                         let (input, start) = self.input_ctx(plan, a, ctx, key, "a", &mut temps)?;
-                        let mut g = self.shot_grade(a, plan, size, None, None)?;
+                        let mut g = self.shot_grade(a, plan, size, None, Pic::Main)?;
                         g.grain = grain(Some(a))?;
-                        let mut bg = self.shot_grade(b, plan, size, None, None)?;
+                        let mut bg = self.shot_grade(b, plan, size, None, Pic::Main)?;
                         bg.grain = g.grain;
                         bg.hooks
                             .push(alpha_hook((0..n).map(|i| p(i) as f32).collect(), 0.0));
@@ -464,7 +464,7 @@ impl Renderer<'_> {
                                 .collect()
                         };
                         for (side, s, off) in [("a", a, 0.0), ("b", b, 1.0)] {
-                            let mut g = self.shot_grade(s, plan, size, None, None)?;
+                            let mut g = self.shot_grade(s, plan, size, None, Pic::Main)?;
                             g.grain = grain(Some(s))?;
                             g.hooks.push(Hook {
                                 name: "whip".into(),
@@ -517,7 +517,7 @@ impl Renderer<'_> {
                         };
                         ctx = a.context();
                         let (input, start) = self.input_ctx(plan, a, ctx, key, "a", &mut temps)?;
-                        let mut g = self.shot_grade(a, plan, size, Some(&mix(out_k)), None)?;
+                        let mut g = self.shot_grade(a, plan, size, Some(&mix(out_k)), Pic::Main)?;
                         g.grain = grain(Some(a))?;
                         let b2 = b.shifted(half, plan.rate);
                         let mut bg = self.shot_grade(
@@ -525,7 +525,7 @@ impl Renderer<'_> {
                             plan,
                             size,
                             Some(&mix(in_k[usize::try_from(half).unwrap_or(0)..].to_vec())),
-                            None,
+                            Pic::Main,
                         )?;
                         bg.grain = g.grain;
                         layers.push(self.video_layer(
@@ -555,7 +555,7 @@ impl Renderer<'_> {
                 let g_split = grain(None)?;
                 let (input, start, g) =
                     self.split(plan, split, frames, key, g_split, &mut layers, &mut temps)?;
-                let mut sg = self.shot_grade(shot, plan, size, None, None)?;
+                let mut sg = self.shot_grade(shot, plan, size, None, Pic::Main)?;
                 sg.grain = grain(Some(shot))?;
                 let op = (0..frames)
                     .map(|i| {
@@ -659,7 +659,7 @@ impl Renderer<'_> {
                         height: ph,
                     },
                     Some(&Mix::Both(fin, sp.finish.fade_colour)),
-                    Some(self.panel_crop(&s, pw, ph)?),
+                    Pic::Panel,
                 )?;
                 g.grain = g_split;
                 if radius > 0.0 {
@@ -879,15 +879,16 @@ impl Renderer<'_> {
         Ok((prep, secs(before, plan.rate)))
     }
 
-    /// A shot's grade at `size`: the grader's (LUT, look, sharpen), then its finish with a
-    /// transition's `mix` folded in, and an optional source crop.
+    /// A shot's grade at `size`: the grader's (LUT, look, sharpen), its geometry as `pic`
+    /// (reframe, stabilizer, and on the main picture the NLE crop and transform), then its finish
+    /// with a transition's `mix` folded in.
     fn shot_grade(
         &self,
         s: &Shot,
         plan: &Plan,
         size: Size,
         mix: Option<&Mix>,
-        crops: Option<Vec<Crop>>,
+        pic: Pic,
     ) -> Result<Grade> {
         let base = match self.grader {
             Some(g) => g(s).map_err(|msg| ExecError::Grade {
@@ -902,11 +903,17 @@ impl Renderer<'_> {
             ..base
         };
         let rate = plan.rate;
-        if let Some(c) = crops {
-            g.crops = c;
-        } else if size == plan.profile.size {
-            self.geometry(plan, s, &mut g)?;
-        }
+        let out = if size == plan.profile.size {
+            plan.profile.aspect.clone()
+        } else {
+            ffcine_reframe::Profile {
+                width: size.width,
+                height: size.height,
+                safe_area: None,
+                ..plan.profile.aspect.clone()
+            }
+        };
+        self.geometry(plan, s, &mut g, &out, pic)?;
         if let Some(h) = finish_hook(&s.finish, s.clip_at, s.frames, s.clip_frames, rate, mix) {
             g.hooks.push(h);
         }
@@ -938,60 +945,6 @@ impl Renderer<'_> {
             to,
             rects,
         })
-    }
-
-    /// A panel's source crop: the picture covering a `w x h` slot around its reframe `focus`,
-    /// pushed in per frame by `push [from, to]` (or a constant `zoom`).
-    #[allow(
-        clippy::many_single_char_names,
-        clippy::cast_possible_truncation,
-        clippy::cast_precision_loss,
-        clippy::cast_sign_loss
-    )]
-    fn panel_crop(&self, s: &Shot, w: u32, h: u32) -> Result<Vec<Crop>> {
-        let (sw, sh) = self.dims(&s.media)?;
-        let rf =
-            s.fx.iter()
-                .find(|v| v.get("effect").and_then(Value::as_str) == Some("ffcine.geo.reframe"))
-                .and_then(|v| v.get("ffcine"))
-                .cloned()
-                .unwrap_or_default();
-        let pair = |k: &str| {
-            rf.get(k)
-                .and_then(Value::as_array)
-                .and_then(|a| match a.as_slice() {
-                    [x, y] => Some([x.as_f64()?, y.as_f64()?]),
-                    _ => None,
-                })
-        };
-        let focus = pair("focus").unwrap_or([0.5, 0.5]);
-        let push = pair("push");
-        let zoom = rf.get("zoom").and_then(Value::as_f64).unwrap_or(1.0);
-        let n = s.frames.max(1);
-        Ok((0..n)
-            .map(|i| {
-                let z = push.map_or(zoom, |[z0, z1]| {
-                    z0 + (z1 - z0) * (s.clip_at + i) as f64 / s.clip_frames.max(1) as f64
-                });
-                let center = pair("push_center")
-                    .filter(|_| push.is_some())
-                    .unwrap_or(focus);
-                let c = comp::cover(
-                    f64::from(sw),
-                    f64::from(sh),
-                    f64::from(w),
-                    f64::from(h),
-                    center,
-                    z,
-                );
-                Crop {
-                    x: c.x as f32,
-                    y: c.y as f32,
-                    width: c.w as f32,
-                    height: c.h as f32,
-                }
-            })
-            .collect())
     }
 
     /// An overlay clip's layer: placed and faded per frame from its transform and blend.
@@ -1066,7 +1019,7 @@ impl Renderer<'_> {
         let opacity: Vec<f32> = (0..n).map(|j| place.opacity(t(j)) as f32).collect();
         let radius = place.radius * f64::from(h) * tw / rects.first().map_or(tw, |r| r.w.max(1.0));
         let mut grade = match &shot {
-            Some(s) => self.shot_grade(s, plan, size, None, None)?,
+            Some(s) => self.shot_grade(s, plan, size, None, Pic::Overlay)?,
             None => Grade {
                 dither: None,
                 peak_detect: false,
@@ -1124,8 +1077,9 @@ impl Renderer<'_> {
         })
     }
 
-    /// Reframe windows and the stabilizer warp of `s` into `grade` (the main picture, at the
-    /// profile size).
+    /// Reframe windows and the stabilizer warp of `s` into `grade`, rendering at `out`'s size;
+    /// on the main picture also its NLE crop and transform ([`ffcine_reframe::geo`]; an overlay's
+    /// transform places its layer instead). A panel's reframe `focus` sets its window.
     ///
     /// Windows come from the clip's reframe for the profile's aspect, evaluated at the piece's
     /// frames of the whole clip (so punch-ins and pushes run across cuts); without a reframe they
@@ -1139,17 +1093,33 @@ impl Renderer<'_> {
         clippy::cast_precision_loss,
         clippy::cast_sign_loss
     )]
-    fn geometry(&self, plan: &Plan, s: &Shot, grade: &mut Grade) -> Result<()> {
+    fn geometry(
+        &self,
+        plan: &Plan,
+        s: &Shot,
+        grade: &mut Grade,
+        out: &ffcine_reframe::Profile,
+        pic: Pic,
+    ) -> Result<()> {
         let stab = s.filters.stabilize.filter(|_| s.speed.abs() > 1e-9);
-        let out = &plan.profile.aspect;
+        let no_geo = ffcine_reframe::Geo::default();
+        let geo = if pic == Pic::Main {
+            &s.filters.geo
+        } else {
+            &no_geo
+        };
         let (w, h) = self.dims(&s.media)?;
         if s.filters.reframe.is_none()
             && stab.is_none()
+            && geo.is_empty()
             && (f64::from(w) / f64::from(h) - out.aspect()).abs() < 0.01
         {
             return Ok(());
         }
-        let reframe = s.filters.reframe.clone().unwrap_or_default();
+        let mut reframe = s.filters.reframe.clone().unwrap_or_default();
+        if pic == Pic::Panel {
+            reframe = reframe.focused();
+        }
         let shot = ffcine_reframe::Shot {
             width: w,
             height: h,
@@ -1157,11 +1127,22 @@ impl Renderer<'_> {
             rate: plan.rate,
             start: s.clip_start,
         };
-        let windows: Vec<_> = (0..s.frames)
-            .map(|i| reframe.frame((s.clip_at + i).max(0) as u64, &shot, out))
-            .collect();
-        ffcine_reframe::pass::apply(grade, &windows, &[], (w, h), out);
+        let at = |i: i64| (s.clip_at + i).max(0) as u64;
+        let mapped: Vec<_> = if geo.is_empty() {
+            let windows: Vec<_> = (0..s.frames)
+                .map(|i| reframe.frame(at(i), &shot, out))
+                .collect();
+            ffcine_reframe::pass::apply(grade, &windows, &[], (w, h), out);
+            Vec::new()
+        } else {
+            (0..s.frames)
+                .map(|i| geo.frame(&reframe, at(i), &shot, out).1)
+                .collect()
+        };
         let Some(params) = stab else {
+            if !mapped.is_empty() {
+                ffcine_reframe::pass::apply_mapped(grade, &mapped, &[], (w, h), out);
+            }
             return Ok(());
         };
         let detect = self.detect.ok_or_else(|| ExecError::Stabilize {
@@ -1198,16 +1179,23 @@ impl Renderer<'_> {
                     .copied()
             })
             .collect();
-        grade.warp = Some(Warp { transforms });
+        if mapped.is_empty() {
+            grade.warp = Some(Warp { transforms });
+        } else {
+            ffcine_reframe::pass::apply_mapped(grade, &mapped, &transforms, (w, h), out);
+        }
         Ok(())
     }
 
-    /// Mixes the audio (`ffcine_audio::render_audio`, the picture's length) and encodes it to
+    /// Mixes the audio (`ffcine_audio::stream_audio`, the picture's length) and encodes it to
     /// AAC. Returns the master's loudness and true peak.
     fn mix(&self, plan: &Plan, a: &AudioPlan, out: &Path) -> Result<(f64, f64)> {
-        let mix = ffcine_audio::render_audio(&a.timeline, &a.options)?;
-        let wav = self.dir("tmp")?.join(format!("{}.wav", a.key));
-        mix.master.write_wav(&wav)?;
+        let tmp = self.dir("tmp")?;
+        let mut options = a.options.clone();
+        options.scratch = Some(tmp.clone());
+        let mut mix = ffcine_audio::stream_audio(&a.timeline, &options, false)?;
+        let wav = tmp.join(format!("{}.wav", a.key));
+        mix.write_master(&wav)?;
         let mut v = vec![OsString::from("-i"), wav.clone().into()];
         v.extend(args(&[
             "-c:a",
@@ -1275,6 +1263,17 @@ enum Mix {
     Lift(Vec<f32>),
     /// A split-screen's own `(fade, lift)` tracks and fade colour.
     Both((Vec<f32>, Vec<f32>), [f64; 3]),
+}
+
+/// Which picture a shot's grade is for: what its geometry takes ([`Renderer::geometry`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pic {
+    /// The main picture (or a transition's side): reframe, stabilizer, NLE crop and transform.
+    Main,
+    /// A split-screen panel: reframe (its `focus`) and stabilizer, in the panel.
+    Panel,
+    /// Picture-in-picture: reframe and stabilizer in the layer; its transform places the layer.
+    Overlay,
 }
 
 /// No grade but the output size (gaps, backdrops).

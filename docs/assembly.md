@@ -10,6 +10,7 @@ ffcine import -o v1.otio edit.yaml                  # or Resolve OTIO, FCPXML, M
 ffcine render -o v1.mp4 v1.otio                     # preview profile: 1080p HEVC 10-bit
 ffcine render --profile master -o v1-4k.mp4 v1.otio # 4K master
 ffcine render --render-profile reel -o v1-reel.mp4 v1.otio  # 9:16 (also feed 4:5, square 1:1)
+ffcine render --profile review -o v1-review.mp4 v1.otio     # 720p from proxies, to watch an edit
 ffcine diff v1.otio v2.otio                         # which segments v2 re-renders
 ffcine render --dry-run -o v2.mp4 v2.otio           # same, against what's in the cache
 ffcine render --json -o v2.mp4 v2.otio              # progress as JSON lines on stdout
@@ -80,6 +81,9 @@ is ever pruned, and old masters stay where they are.
    stream decodes cleanly with `-xerror`, has exactly the planned frame count, and every frame
    lasts 1001/24000 s. The output gets a manifest, `<output>.ffcine.json`, with the keys it was
    made from. If the master key matches, the render does nothing.
+5. **Chapters and cover**: the timeline's chapter markers and `--cover` written into the master
+   with `mp4-atom` ([delivery.md](delivery.md#chapters-and-cover-in-the-mp4)), only when they
+   differ from what the file has.
 
 ## Keys
 
@@ -142,7 +146,7 @@ does, with no CPU fallback:
 
 | Effect | In the render |
 |---|---|
-| `ffcine.fx.stabilize/1` | NVOF motion detect over the clip (cached on disk, shared by every piece of the clip and by `ffcine grade --stabilize`), smoothed, warped in the grade pass with the reframe window folded in. Each piece decodes from its own first frame and indexes the clip's camera path by clip frame. A retimed or ramped clip is analysed on its source frames, mapped to output frames through its speed or ramp. Split-screen panels and overlays aren't stabilized or reframed, and only the main picture is denoised. Freeze frames aren't stabilized |
+| `ffcine.fx.stabilize/1` | NVOF motion detect over the clip (cached on disk, shared by every piece of the clip and by `ffcine grade --stabilize`), smoothed, warped in the grade pass with the reframe window folded in. Each piece decodes from its own first frame and indexes the clip's camera path by clip frame. A retimed or ramped clip is analysed on its source frames, mapped to output frames through its speed or ramp. Split-screen panels and picture-in-picture clips are stabilized and reframed too, inside their panel or layer ([reframe.md](reframe.md#panels-and-overlays)); only the main picture is denoised. Freeze frames aren't stabilized |
 | `ffcine.fx.denoise/1` | temporal (NVOF or block motion) and spatial NLM denoise on the decoded planes ([denoise.md](denoise.md)). Without the effect the grade's `denoise` number `d` (edit.yaml) maps to temporal strength `d`, radius 2, NVOF, plus spatial `0.2 d`. A piece of a clip decodes `radius` frames of the clip on each side as history and lookahead (`Pipeline::context`; none past the clip's ends), so cuts inside a clip don't show |
 | `ffcine.geo.reframe/1` | per-frame source windows (zoom, punch, push, pan, `crop_x`/`crop_y`, keyframes) evaluated over the whole clip, with the `profiles.<aspect>` override and the profile's punch cap |
 | `ffcine.time.ramp/1` | the ramp itself (`render.py`'s `ramp_setpts`), not the average speed: NVDEC, `setpts`, `fps`, this piece's frames, lossless NVENC. Source time is read from the clip's start on the source's clock (`-copyts`), so a piece seeks to just before its first source frame and gets the frames the whole clip has there |
@@ -206,6 +210,26 @@ $ ffcine diff v1.otio v4.otio
 1 of 107 segments render (2.0 s of 245.7 s), 1 old dropped; audio same
 ```
 
+## Review renders from proxies
+
+`--profile review` is a fast, small copy to watch an edit: 720 px on the short side (the
+timeline's preview size scaled down when it sets one), 8-bit HEVC NVENC `p1` constqp 26, AAC
+128 kb/s. Every shot decodes its proxy instead of the source:
+
+- the camera's own: a DJI `.LRF` (720p) next to the `.MP4`;
+- else one made before planning into `<cache>/proxy/<key>.mp4` (`ffcine_assembly::proxy`),
+  named by the source's fingerprint, so an edited or replaced source gets a new one: NVDEC,
+  `scale_cuda` to 720 px on the short side (never up) and NVENC, falling back to the CPU
+  (`scale`, libx264) when that fails. Picture only; colour tags kept, rotation left as metadata
+  (`-noautorotate`). It is made once and reused by every later review render.
+
+Geometry is relative to the decoded frame, so reframes, crops and split-screens land where they
+do on the source; stabilization analyses the proxy (its own motion cache entry). Segments are
+keyed by the proxy's fingerprint and the profile (with `"proxies": true`; other profiles' keys
+are unchanged), so review segments never mix with preview or master ones. A clip without a proxy
+renders from its source, with a warning. The audio is the same mix as the other profiles
+(sources, not proxies), encoded at 128 kb/s.
+
 ## Frame rates
 
 Clips are conformed to the timeline rate (`project.rate`) one segment at a time. The pipeline's
@@ -233,5 +257,4 @@ exact rationals (`24000/1001`, `60000/1001`).
   succeeds.
 - Joins, retime prep, blends and mux use the `ffmpeg` CLI (`$FFMPEG`, default `ffmpeg`). They
   could move into the libav backend.
-- Chapters and cover (`mp4-atom`), review renditions from proxies.
 

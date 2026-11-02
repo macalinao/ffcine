@@ -185,8 +185,52 @@ fn contain_places_the_whole_picture() {
     let p = f.place.unwrap();
     assert!(close(p.w, 1080.0) && close(p.h, 608.0));
     assert!(close(p.y, (1920.0f64 * 0.42 - 607.5 / 2.0).round()));
+    // A blurred fill around it, in pixels of the placed picture; `fill_blur: 0` is black.
+    assert!(close(f.blur.unwrap(), 0.04 * 608.0));
+    let mut g = Grade::default();
+    pass::apply(
+        &mut g,
+        &[f],
+        &[],
+        (3840, 2160),
+        &Profile::preset("reel").unwrap(),
+    );
+    assert_eq!(g.border, ffcine_render::Border::Blur(0.04 * 608.0));
+    let black = reframe(json!({"fit": "contain", "fill_blur": 0}), None);
+    assert_eq!(
+        black.frame(0, &UHD, &Profile::preset("reel").unwrap()).blur,
+        None
+    );
+    assert!(Reframe::parse(json!({"fill_blur": -1}).as_object().unwrap(), None).is_err());
+    // Cover has nothing around it.
+    assert_eq!(
+        reframe(json!({}), None)
+            .frame(0, &UHD, &Profile::preset("reel").unwrap())
+            .blur,
+        None
+    );
     // Resolve's sizing mode maps onto the same.
     assert_eq!(reframe(json!({"mode": "fit"}), None).fit, Fit::Contain);
+}
+
+#[test]
+fn panel_focus_defaults_the_window() {
+    let r = reframe(json!({"focus": [0.2, 0.7], "zoom": 1.2}), None).focused();
+    let panel = Profile::new("panel", 954, 1080);
+    let f = r.frame(0, &UHD, &panel);
+    // The panel-aspect window slid to 0.2 of the slack, then zoomed about the focus.
+    let aw = 2160.0 * 954.0 / 1080.0;
+    let ax = (3840.0 - aw) * 0.2;
+    assert!(close(f.crop.w, aw / 1.2));
+    assert!(close(f.crop.x, ax + (aw - aw / 1.2) * 0.2));
+    assert!(close(f.crop.y, (2160.0 - 2160.0 / 1.2) * 0.7));
+    // Explicit fields win over the focus; without one nothing changes.
+    let explicit = reframe(json!({"focus": [0.2, 0.7], "crop_x": 0.9}), None).focused();
+    assert_eq!(
+        explicit.crop_x,
+        crate::Slide::Keyed(crate::Keyed::Const(0.9))
+    );
+    assert_eq!(reframe(json!({}), None).focused(), reframe(json!({}), None));
 }
 
 #[test]
@@ -270,4 +314,50 @@ fn reads_the_effect_from_a_clip() {
     assert!(r.zoom.is_some());
     assert!(matches!(r.crop_x, crate::Slide::Keyed(crate::Keyed::Const(x)) if close(x, 0.1)));
     assert!(Reframe::from_effects(&[], None).unwrap().is_none());
+}
+
+#[test]
+fn mapped_hook_takes_the_whole_frame() {
+    let reel = Profile {
+        safe_area: Some(crate::SafeArea::REELS),
+        ..Profile::preset("reel").unwrap()
+    };
+    let geo = crate::Geo {
+        crop: Some(
+            crate::geo::Crop::parse(json!({"left": 0.1, "feather": 0.01}).as_object().unwrap())
+                .unwrap(),
+        ),
+        transforms: vec![
+            crate::geo::Transform::parse(json!({"rotate_deg": 5.0}).as_object().unwrap()).unwrap(),
+        ],
+    };
+    let r = reframe(json!({"fit": "contain", "push": [1.0, 1.1]}), None);
+    let mapped: Vec<_> = (0..120).map(|i| geo.frame(&r, i, &UHD, &reel).1).collect();
+    let mut g = Grade {
+        crop: Some(ffcine_render::Crop {
+            x: 1.0,
+            y: 1.0,
+            width: 2.0,
+            height: 2.0,
+        }),
+        ..Grade::default()
+    };
+    pass::apply_mapped(&mut g, &mapped, &[], (3840, 2160), &reel);
+    assert_eq!((g.crop, g.place, g.warp.as_ref()), (None, None, None));
+    assert_eq!(g.crops, []);
+    assert_eq!(g.hooks.len(), 2);
+    let h = &g.hooks[0];
+    assert_eq!(h.name, GEOMETRY_HOOK);
+    // The source's scale per axis: 3840 px over 1080, 2160 over the placed 608.
+    let (iw, ih) = pass::mapped_size(&mapped, (1080, 1920));
+    assert_eq!((iw, ih), (3840, 6822));
+    assert!(
+        h.source
+            .contains(&format!("//!WIDTH {iw}\n//!HEIGHT {ih}\n"))
+    );
+    assert_eq!(h.tracks.len(), 23);
+    assert!(h.tracks.iter().all(|t| t.values.len() == 120));
+    let mx0 = h.tracks.iter().find(|t| t.name == "mx0").unwrap();
+    assert!((f64::from(mx0.values[0]) - 384.0).abs() < 1e-3);
+    assert_eq!(g.hooks[1].name, SAFE_AREA_HOOK);
 }
