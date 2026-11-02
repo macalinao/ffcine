@@ -101,6 +101,10 @@ pub(crate) enum Cmd {
         #[bpaf(positional("TIMELINE"))]
         timeline: PathBuf,
     },
+    /// Write chapters (from a timeline's markers) and cover art into a finished MP4, without
+    /// re-encoding. Chapters and cover not given are kept.
+    #[bpaf(command)]
+    Tag(#[bpaf(external(deliver::tag_args))] deliver::TagArgs),
     /// Music credits (CC BY attribution lines) from the music clips' metadata.
     #[bpaf(command)]
     Credits {
@@ -169,7 +173,7 @@ pub(crate) enum Cmd {
     /// Which segments of NEW render that OLD's did not (and whether the audio changed).
     #[bpaf(command)]
     Diff {
-        /// Render profile: preview (1080p) or master (4K).
+        /// Render profile: preview (1080p), master (4K) or review (720p from proxies).
         #[bpaf(argument("NAME"), fallback("preview".to_owned()))]
         profile: String,
         /// Output aspect (overrides the timeline's project.output.aspect): landscape (16:9), reel
@@ -911,6 +915,7 @@ pub(crate) fn run(cmd: Cmd) -> anyhow::Result<()> {
         | Cmd::Render(_)
         | Cmd::Diff { .. }
         | Cmd::Chapters { .. }
+        | Cmd::Tag(_)
         | Cmd::Credits { .. }
         | Cmd::Subs { .. }
         | Cmd::Title(_)
@@ -934,6 +939,7 @@ pub(crate) fn run(cmd: Cmd) -> anyhow::Result<()> {
             output,
             timeline,
         } => deliver::chapters(&timeline, &intro, output.as_deref())?,
+        Cmd::Tag(args) => deliver::tag(&args)?,
         Cmd::Credits {
             public,
             output,

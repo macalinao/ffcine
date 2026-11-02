@@ -1,6 +1,6 @@
 [package]
 name = "ffcine-delivery"
-description = "Delivery extras from a timeline: YouTube chapters, music credits, still frames"
+description = "Delivery extras from a timeline: YouTube chapters, music credits, still frames, MP4 chapters and cover art"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -16,6 +16,7 @@ rust-version.workspace = true
 ffcine-core.workspace = true
 ffcine-timeline.workspace = true
 serde_json.workspace = true
+mp4-atom.workspace = true
 
 [lints]
 workspace = true

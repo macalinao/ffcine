@@ -1,8 +1,8 @@
 # Delivery
 
 Extras generated from the timeline, and encode profiles for the copies people actually watch.
-Code: `ffcine-delivery` (chapters, credits, frame lookup), `ffcine_render::profile`
-(`DeliveryProfile`), CLI in `ffcine-cli/src/deliver.rs`.
+Code: `ffcine-delivery` (chapters, credits, frame lookup, MP4 tags in `mp4`),
+`ffcine_render::profile` (`DeliveryProfile`), CLI in `ffcine-cli/src/deliver.rs`.
 
 ## YouTube chapters
 
@@ -16,6 +16,32 @@ marker. Markers on clips are placed through the clip (their time is in the clip'
 markers on tracks, gaps and the timeline stack directly. Markers within a second of the previous
 one are merged. If the first chapter isn't at 0:00, an `--intro` chapter is added there, as
 YouTube requires. Warnings (stderr) for fewer than 3 chapters or any shorter than 10 s.
+
+## Chapters and cover in the MP4
+
+```sh
+ffcine tag master.mp4 --timeline edit.otio [--intro Intro] [--cover thumb.png | --cover 2:47]
+ffcine tag master.mp4 --clear
+ffcine render -o master.mp4 edit.otio [--cover 2:47] [--no-chapters]
+```
+
+The same chapters as `ffcine chapters`, written into the file with `mp4-atom`, without
+re-encoding. They go in twice, as ffmpeg's muxer writes them: a Nero `moov/udta/chpl` list
+(ffmpeg, VLC, mpv) and a QuickTime chapter track, a disabled `text` track every other track
+points at with `tref/chap` (Apple players read only that one). The cover is an iTunes
+`moov/udta/meta/ilst/covr` item: a JPEG or PNG file, or with a time, the frame of the video
+there as a JPEG (`$FFMPEG`). ffprobe lists the chapters (`-show_chapters`) and the cover as an
+attached picture stream.
+
+The file is rewritten once: `ftyp`, the new `moov`, a small `mdat` with the chapter samples, then
+every other top-level box byte for byte, with the chunk offsets (`stco`, `co64` past 4 GiB) moved
+along. So the result is `+faststart` too. A previous run's chapter track, `chpl` and `covr` are
+replaced, so tagging twice is tagging once. `tag` keeps what it isn't given (`--cover` alone
+keeps the chapters); `--clear` starts from nothing. The video and audio packets are untouched
+(`framemd5` before and after match; `crates/ffcine-delivery/tests/mp4_ffprobe.rs`).
+
+`ffcine render` writes the timeline's chapters (when it has markers) and `--cover` into the
+master after the mux, and only rewrites when they differ from what the file has.
 
 ## Music credits
 
@@ -94,11 +120,11 @@ second pass that only runs when needed. A 10 min video in 50 MB
 90 s reel 4 Mb/s at 1080p.
 
 HEVC in `.mp4`/`.mov` is tagged `hvc1` (always, not only for these profiles): Apple players
-refuse ffmpeg's default `hev1`.
+refuse ffmpeg's default `hev1`. With `--deliver`, an `.mp4`/`.mov` output is made `+faststart`
+afterwards (the `moov` moved ahead of the media, as `tag` does), so the phone copy plays over
+HTTP before it has downloaded.
 
 ## Not yet
 
 - Audio: renders are video only until the audio step muxes the mix in (`AUDIO_BITRATE` is
   reserved in the budget).
-- `+faststart` for streaming the phone copy over HTTP.
-- Chapters and cover art written into the MP4 (`mp4-atom`), with assembly.
