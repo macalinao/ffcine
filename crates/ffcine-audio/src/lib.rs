@@ -7,7 +7,8 @@
 //!   libavfilter), `ffcine.audio.level/1` (R128 levelling, gain, ducking, fades) and buses.
 //! - [`mix`]: [`render_audio`] mixes the timeline's audio tracks into dialogue, music, ambience
 //!   and SFX buses (music ducked under dialogue), then a master at -14 LUFS under a 4x
-//!   oversampled true-peak limiter.
+//!   oversampled true-peak limiter. [`stream_audio`] is the same mix through scratch files, with
+//!   memory bounded however long the timeline.
 //!
 //! ```no_run
 //! use ffcine_audio::{MixOptions, render_audio};
@@ -36,10 +37,14 @@ pub mod dsp;
 pub mod mix;
 pub mod place;
 pub mod schema;
+pub mod spool;
 pub mod sync;
 
 pub use beats::Beats;
 pub use buffer::Audio;
-pub use mix::{ClipDefaults, Master, Mix, MixOptions, render_audio, sources, write_mix};
+pub use mix::{
+    ClipDefaults, Master, Mix, MixOptions, StreamedMix, render_audio, sources, stream_audio,
+    write_mix,
+};
 pub use schema::{Bus, Clean, Denoise, Level, LevelMode, SyncInfo};
 pub use sync::{ClipSync, Match, SyncOptions, WriteOptions, sync_files, write_timeline};

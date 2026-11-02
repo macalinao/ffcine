@@ -146,7 +146,7 @@ impl Audio {
     }
 }
 
-fn io_err(path: &Path, e: hound::Error) -> Error {
+pub(crate) fn io_err(path: &Path, e: hound::Error) -> Error {
     let source = match e {
         hound::Error::IoError(e) => e,
         e => std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()),
