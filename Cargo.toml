@@ -16,7 +16,7 @@ readme = "README.md"
 authors = ["Ian Macalinao <me@ianm.com>"]
 keywords = ["video", "ffmpeg", "libplacebo", "vulkan", "color-grading"]
 categories = ["multimedia::video"]
-rust-version = "1.85"
+rust-version = "1.88"
 
 [workspace.dependencies]
 # Internal crates
@@ -61,6 +61,8 @@ image = { version = "0.25", default-features = false, features = [
   "png",
   "jpeg",
 ] }
+# Chapters and cover art written into finished MP4s.
+mp4-atom = "0.17"
 # Ingest checksums (verify copies against the card).
 blake3 = "1"
 # Command-line parsing, derive API.
