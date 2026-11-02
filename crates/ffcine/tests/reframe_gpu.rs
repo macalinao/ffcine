@@ -258,7 +258,7 @@ fn contain_fill_and_nle_geometry() {
         let frames = r.frames(&shot, &reel);
         let out = d.join(format!("contain-{name}.mkv"));
         render(&ff, &src, &out, |g| {
-            pass::apply(g, &frames, &[], (1920, 1080), &reel)
+            pass::apply(g, &frames, &[], (1920, 1080), &reel);
         });
         let y = frame(&out, 1080, 1920);
         top.push(mean(&y, 1080, (0, 1080), (0, 200)));
