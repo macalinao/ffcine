@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/macalinao/ffcine/compare/v0.2.0...v0.3.0) - 2026-11-02
+
+### Added
+
+- *(text)* slide/pop/typewriter/wipe animations, keyframes, title sequences and end screens ([#5](https://github.com/macalinao/ffcine/pull/5))
+
+### Other
+
+- *(cli)* comprehensive --help for every command ([#18](https://github.com/macalinao/ffcine/pull/18))
+- Overlay rotation and anchor, blend modes, HDR layers ([#12](https://github.com/macalinao/ffcine/pull/12))
+
 ## [0.2.0](https://github.com/macalinao/ffcine/compare/v0.1.0...v0.2.0) - 2026-11-02
 
 ### Added
