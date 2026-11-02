@@ -67,7 +67,8 @@ is ever pruned, and old masters stay where they are.
      the output frame. Layers under the first such one stay `pl_overlay`s;
    - on an HDR output (PQ or HLG) layers render in and composite in the output's colour space
      (its primaries, PQ or HLG), all through the composite pass; stills are read as sRGB and
-     land at libplacebo's SDR reference white, 203 nits (BT.2408), as do the text overlays;
+     land at libplacebo's SDR reference white (`PL_COLOR_SDR_WHITE`, 203 nits per BT.2408),
+     the level SDR footage and the text overlays get in the same master;
    - per-shot finishing (`ffcine.fx.vignette/1`, `darken/1`, `fade/1`, `flash/1`) is one
      `PREOUTPUT` hook after the look (`shaders::finish`), its fade and flash per frame from the
      piece's place in its clip; transitions fold their fades into it;

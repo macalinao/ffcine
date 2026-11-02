@@ -425,6 +425,7 @@ fn hdr_output_puts_stills_at_reference_white() {
     ]);
     let i = ((H / 2 * W + W / 2) * 2) as usize;
     let v = i32::from(u16::from_le_bytes([y[i], y[i + 1]]));
-    // White at 203 nits is PQ 0.584: 64 + 876 · 0.584 = 576 (not 940, 10000 nits).
-    assert!((v - 576).abs() <= 8, "luma {v}");
+    // libplacebo's SDR reference white (PQ 0.58-0.61; an SDR white video lands at 593 here),
+    // not PQ 1.0 (940, 10000 nits) as when the still was taken as the output's space.
+    assert!((560..=620).contains(&v), "luma {v}");
 }
