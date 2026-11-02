@@ -86,6 +86,16 @@ pub(crate) enum Cmd {
     /// word times, runaway flags, and a clip page to pick from.
     #[bpaf(command)]
     Triage(#[bpaf(external(crate::triage::triage_args))] crate::triage::TriageArgs),
+    /// Shot list of a reference video: cuts, keyframes, camera motion, beat, colour, speech.
+    ///
+    /// Finds the cuts (decoding on NVDEC when it takes the clip, else the CPU) and per shot gives
+    /// its in, out and length; its first, sharpest-middle and last frame; the camera motion
+    /// (static, pan, tilt, push, pull, handheld) from global motion between frames; and its mean
+    /// colour and luma range. Checks the music's tempo and whether the cuts land on the beat,
+    /// transcribes speech with word times (faster-whisper, as triage), and reads on-screen text
+    /// when tesseract is on PATH. Reads local files only; download links first (yt-dlp).
+    #[bpaf(command, footer(crate::breakdown::FOOTER))]
+    Breakdown(#[bpaf(external(crate::breakdown::breakdown_args))] crate::breakdown::BreakdownArgs),
     /// YouTube chapter lines from the timeline's markers (those flagged `chapter`, else all).
     #[bpaf(command)]
     #[allow(clippy::doc_markdown)]
@@ -894,7 +904,8 @@ pub(crate) fn run(cmd: Cmd) -> anyhow::Result<()> {
         | Cmd::Tag(_)
         | Cmd::Credits { .. }
         | Cmd::Subs { .. }
-        | Cmd::Triage(_) => (false, None),
+        | Cmd::Triage(_)
+        | Cmd::Breakdown(_) => (false, None),
     };
     if no_cache {
         ff = ff.with_cache_dir(None);
@@ -983,6 +994,7 @@ pub(crate) fn run(cmd: Cmd) -> anyhow::Result<()> {
             new,
         } => assemble::diff(&profile, render_profile.as_deref(), all, &old, &new)?,
         Cmd::Triage(args) => args.run()?,
+        Cmd::Breakdown(args) => args.run()?,
     }
     Ok(())
 }

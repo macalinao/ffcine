@@ -23,6 +23,7 @@
 
 pub use ffcine_assembly as assembly;
 pub use ffcine_audio as audio;
+pub use ffcine_breakdown as breakdown;
 pub use ffcine_core::{ColorSpace, Error, Lut, LutType, MediaInfo, Rational, Result};
 pub use ffcine_core::{camera, color, geom, lut, probe};
 pub use ffcine_delivery as delivery;
