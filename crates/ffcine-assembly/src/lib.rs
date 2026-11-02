@@ -9,6 +9,7 @@
 //!   is a remux of the cached picture. Every cache entry is written atomically, so an interrupted
 //!   render resumes where it stopped.
 //! - [`diff`] lists which segments an edit re-renders.
+//! - [`proxy`] finds or makes the low-res copies `review` renders decode.
 //!
 //! Text (`ffcine.text`, via `ffcine-text`) is drawn in the segments it overlaps: segments are cut
 //! at text in/out points and keyed by the text they show.
@@ -20,6 +21,7 @@ pub mod diff;
 pub mod exec;
 pub mod plan;
 pub mod profile;
+pub mod proxy;
 pub mod recipe;
 
 pub use diff::Diff;
