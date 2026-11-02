@@ -58,7 +58,7 @@ impl Default for SyncOptions {
 pub struct Prepared {
     /// High-passed waveform at [`RATE`].
     pub signal: Vec<f32>,
-    /// Standardised log-RMS envelope, one value per [`HOP`].
+    /// Standardised log-RMS envelope, one value per `HOP` samples.
     pub envelope: Vec<f32>,
 }
 
