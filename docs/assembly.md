@@ -160,7 +160,7 @@ does, with no CPU fallback:
 
 | Effect | In the render |
 |---|---|
-| `ffcine.fx.stabilize/1` | NVOF motion detect over the clip (cached on disk, shared by every piece of the clip and by `ffcine grade --stabilize`), smoothed, warped in the grade pass with the reframe window folded in. A retimed or ramped clip is analysed on its source frames, mapped to output frames through its speed or ramp. Split-screen panels and overlays aren't stabilized or reframed, and only the main picture is denoised. Freeze frames aren't stabilized |
+| `ffcine.fx.stabilize/1` | NVOF motion detect over the clip (cached on disk, shared by every piece of the clip and by `ffcine grade --stabilize`), smoothed, warped in the grade pass with the reframe window folded in. A retimed or ramped clip is analysed on its source frames, mapped to output frames through its speed or ramp. Split-screen panels and picture-in-picture clips are stabilized and reframed too, inside their panel or layer ([reframe.md](reframe.md#panels-and-overlays)); only the main picture is denoised. Freeze frames aren't stabilized |
 | `ffcine.fx.denoise/1` | temporal (NVOF or block motion) and spatial NLM denoise on the decoded planes ([denoise.md](denoise.md)). Without the effect the grade's `denoise` number `d` (edit.yaml) maps to temporal strength `d`, radius 2, NVOF, plus spatial `0.2 d` |
 | `ffcine.geo.reframe/1` | per-frame source windows (zoom, punch, push, pan, `crop_x`/`crop_y`, keyframes) evaluated over the whole clip, with the `profiles.<aspect>` override and the profile's punch cap |
 | `ffcine.time.ramp/1` | the ramp itself (`render.py`'s `ramp_setpts`), not the average speed: NVDEC, `setpts`, `fps`, this piece's frames, lossless NVENC |

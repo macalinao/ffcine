@@ -31,7 +31,8 @@ pub enum Fit {
     /// Crop to the output aspect (the window slides by `crop_x` / `crop_y`).
     #[default]
     Cover,
-    /// The whole picture at full output width, centred at `fit_y`, black around it.
+    /// The whole picture at full output width, centred at `fit_y`, a blurred copy around it
+    /// (`fill_blur`; 0 = black).
     Contain,
 }
 
@@ -121,6 +122,9 @@ pub struct Frame {
     pub crop: Rect,
     /// Where it lands in the output, in output pixels; `None` fills the frame.
     pub place: Option<Rect>,
+    /// Around a placed picture: a blurred copy of it, this radius in pixels of the placed
+    /// picture; `None` is black.
+    pub blur: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -142,7 +146,16 @@ pub struct Reframe {
     pub fit: Fit,
     /// `fit: contain`: the picture's centre as a fraction of the output height (0.42).
     pub fit_y: f64,
+    /// `fit: contain`: blur radius of the fill around the picture, as a fraction of the placed
+    /// picture's height (0.04); 0 for black.
+    pub fill_blur: f64,
+    /// A split-screen panel's `[x, y]` focus: the default `crop_x`, `crop_y` and `zoom_center`
+    /// when it renders as a panel ([`Self::focused`]).
+    pub focus: Option<[f64; 2]>,
 }
+
+/// `fill_blur`'s default.
+pub const FILL_BLUR: f64 = 0.04;
 
 fn pair(v: &Value) -> Option<[f64; 2]> {
     match v.as_array()?.as_slice() {
@@ -171,6 +184,7 @@ impl Reframe {
         };
         let mut r = Self {
             fit_y: 0.42,
+            fill_blur: FILL_BLUR,
             ..Self::default()
         };
         for (k, v) in &p {
@@ -227,6 +241,13 @@ impl Reframe {
                     }
                 }
                 "fit_y" => r.fit_y = v.as_f64().ok_or_else(|| invalid("reframe fit_y", v))?,
+                "fill_blur" => {
+                    r.fill_blur = v
+                        .as_f64()
+                        .filter(|b| *b >= 0.0)
+                        .ok_or_else(|| invalid("reframe fill_blur", v))?;
+                }
+                "focus" => r.focus = Some(pair(v).ok_or_else(|| invalid("reframe focus", v))?),
                 _ => {}
             }
         }
@@ -249,14 +270,35 @@ impl Reframe {
         Ok(None)
     }
 
+    /// For a split-screen panel: `focus` stands in for `crop_x`, `crop_y` and `zoom_center`
+    /// where those aren't set.
+    #[must_use]
+    pub fn focused(mut self) -> Self {
+        if let Some([x, y]) = self.focus {
+            if self.crop_x == Slide::default() {
+                self.crop_x = Slide::Keyed(Keyed::Const(x));
+            }
+            if self.crop_y == Slide::default() {
+                self.crop_y = Slide::Keyed(Keyed::Const(y));
+            }
+            self.zoom_center.get_or_insert(Keyed::Const([x, y]));
+        }
+        self
+    }
+
     /// Output frame `i`'s geometry.
-    #[allow(clippy::cast_precision_loss)]
     pub fn frame(&self, i: u64, shot: &Shot, out: &Profile) -> Frame {
+        let full = Rect::frame(f64::from(shot.width), f64::from(shot.height));
+        self.frame_in(i, shot, out, full)
+    }
+
+    /// Output frame `i`'s geometry with the picture being `full`, a part of the source (an NLE
+    /// crop that fills the frame).
+    #[allow(clippy::cast_precision_loss)]
+    pub fn frame_in(&self, i: u64, shot: &Shot, out: &Profile, full: Rect) -> Frame {
         let rate = if shot.rate > 0.0 { shot.rate } else { 24.0 };
         let t = i as f64 / rate;
         let duration = shot.frames as f64 / rate;
-        let (sw, sh) = (f64::from(shot.width), f64::from(shot.height));
-        let full = Rect::frame(sw, sh);
         let (ow, oh) = (f64::from(out.width), f64::from(out.height));
 
         let src_t = shot.start + t;
@@ -325,7 +367,10 @@ impl Reframe {
             }
             None => window,
         };
-        Frame { crop, place }
+        let blur = place
+            .filter(|_| self.fill_blur > 0.0)
+            .map(|p| self.fill_blur * p.h);
+        Frame { crop, place, blur }
     }
 
     /// Every output frame's geometry.
