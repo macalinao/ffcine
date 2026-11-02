@@ -78,6 +78,20 @@ them; [audio.md](audio.md)). Every field is optional; the default is in brackets
 | `duck_attack`, `duck_release` | duck look-ahead and hold, s [0.25, 0.45] |
 | `sidechain`, `duck_threshold` | duck only while the dialogue is above `duck_threshold` dBFS [false, −40] |
 | `clean`, `clean_nat`, `highpass` | default clean chain of dialogue-bus clips without `ffcine.audio.clean/1`: strength for `dialogue` [0.6] and `nat` [0] clips, high-pass Hz [80] |
+| `buses` | bus faders, filters and sends, and the aux buses: [below](#buses) |
+
+### `buses`
+
+A map by bus name: `dialogue`, `music`, `ambience`, `sfx`, or any other name (letters, digits, `-`,
+`_`) for an aux bus fed by sends. Worked example in [audio.md](audio.md#bus-gain-filters-and-sends).
+
+| Field | Meaning |
+|---|---|
+| `gain_db` | fader, dB [0] |
+| `filter` | libavfilter chain over the bus (on an aux, after `reverb`) |
+| `sends` | not on an aux: `[{to, gain_db, pre}]`, level dB [0], `pre` taps before the fader and ducking [false] |
+| `reverb` | aux only: `{room, damp}`, 0..1 [0.5, 0.5] |
+| `duck` | aux only, makes it an unheard key bus: `{targets, depth_db, threshold_db, attack, release}`, [−12 dB, −40 dBFS, 0.04 s, 0.35 s] |
 
 ### `GradeParams`
 
@@ -236,7 +250,9 @@ Solid colour: `colour [r, g, b, a]`, sRGB 0..1.
 - Mix settings go to `project.mix`: `audio` (`dialogue_lufs`, `nat_lufs`, `xfade`, `highpass`,
   `clean`, `clean_nat`), `music` (`duck_db`, `nat_duck_db`, `duck_attack`, `duck_release`) and
   `output.audio` (`lufs`, `true_peak`). Per-shot `gain_db`, `duck_db`, `nat_db`, `clean`, music
-  cue gains and fades, ambience levels and SFX gains are clip effects.
+  cue gains and fades, ambience levels and SFX gains are clip effects. An ambience bed runs
+  `pre` and `post` past its shots ([0.3] s each, within the edit), its `level_lufs` and `fade` go to
+  `ffcine.audio.level/1`, and its `highpass` and `lowpass` to `ffcine.audio.clean/1`.
 - Paths are made absolute against the `edit.yaml` directory.
 - `output.preview`/`output.final` `width`, `height` and `max_punch` become `project.output`
   (`aspect` from the preview size, `final` -> `master`), and the preview size becomes
@@ -249,5 +265,5 @@ Solid colour: `colour [r, g, b, a]`, sRGB 0..1.
   `ffcine.color.grade/1`.
 - Not mapped (kept in `foreign.edit_yaml` and listed in the report): the rest of `output` (but
   `output.audio`), `sfx.duck_files`/`public_map`, `review`, `youtube`, `ingest`, `sources`,
-  `cache_dir`; per shot `blur`, `print`, `sharpen_up`, `still_push`; ambience `lowpass`; skipped
+  `cache_dir`; per shot `blur`, `print`, `sharpen_up`, `still_push`; skipped
   shots.
