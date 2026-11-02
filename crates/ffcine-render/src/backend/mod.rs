@@ -23,6 +23,8 @@ mod hw;
 mod io;
 #[cfg(feature = "ffmpeg")]
 mod retime;
+#[cfg(feature = "ffmpeg")]
+mod tiles;
 
 #[cfg(feature = "ffmpeg")]
 pub use ffmpeg::Ffmpeg;

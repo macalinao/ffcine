@@ -53,6 +53,13 @@ best JPEG quality under 5 MB, for posting in chat. Shots come from `--at` times 
 (evenly spaced) on the timeline, or `--clip FILE@SECONDS`. Photos are taken at time 0; a shot
 that fails to decode is skipped with a warning.
 
+Tiled HEIF stills (iPhone HEICs are a grid of 512x512 HEVC tiles) decode as the whole picture:
+libavformat lists each tile as a stream plus a tile-grid stream group, and the decoder
+(`ffcine-render` `backend/tiles.rs`) decodes every tile in software, places it on the canvas,
+crops to the grid's size (`clap`) and turns it upright (`irot`, its display matrix), matching
+the ffmpeg CLI. `probe` reports the grid as one video stream at the displayed size. Mirroring
+(`imir`) isn't applied.
+
 A variant is `[NAME:]SPEC`: a project look name, a `.cube` file or LUT alias, `cut` (the clip's
 own grade), or comma-separated `look=NAME`, `lut=ALIAS|FILE|none` and `GradeParams` fields
 (`warmth=0`, `saturation=1.1`, `lut_strength=0.7`, ...). Each one layers like a clip grade:
