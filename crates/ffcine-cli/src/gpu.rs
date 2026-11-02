@@ -529,8 +529,9 @@ pub(crate) struct GradeArgs {
     reframe: Option<String>,
     /// Draw the render profile's safe area over the picture (review renders).
     safe_area: bool,
-    /// Extra mpv .hook shader (repeatable).
-    #[bpaf(argument("FILE"), many)]
+    /// Extra mpv .hook shader (repeatable): a file, or a vendored or external shader name
+    /// (adaptive-sharpen, artcnn-c4f16, artcnn-c4f16-ds, krigbilateral, fsrcnnx, fsrcnnx-16).
+    #[bpaf(argument("FILE|NAME"), many)]
     shader: Vec<PathBuf>,
     /// Stabilize in the grade pass: GPU optical-flow detect (cached), vidstab-style smoothing,
     /// auto zoom, warp before the crop.
@@ -789,6 +790,7 @@ impl GradeArgs {
         Ok(enc)
     }
 
+    #[allow(clippy::too_many_lines)] // one flag-to-field mapping
     fn into_pipeline(mut self) -> anyhow::Result<Pipeline> {
         let lut = self
             .lut
@@ -800,6 +802,7 @@ impl GradeArgs {
                 })
             })
             .transpose()?;
+        let (shaders, named) = split_shaders(std::mem::take(&mut self.shader))?;
         let mut grade = Grade {
             input_color: self.in_color.unwrap_or_default(),
             lut,
@@ -825,7 +828,7 @@ impl GradeArgs {
                 sigmoid: self.sigmoid,
             },
             sharpen: self.sharpen,
-            shaders: std::mem::take(&mut self.shader),
+            shaders,
             denoise: Some(
                 Denoise {
                     temporal: (self.temporal_radius > 0).then_some(Temporal {
@@ -851,9 +854,11 @@ impl GradeArgs {
             }),
             ..Grade::default()
         };
+        grade.hooks.extend(named);
         if let Some(a) = self.adaptive_sharpen {
             ffcine::hooks::sharpen(&mut grade, a, ffcine::hooks::Sharpen::Adaptive);
         }
+        ffcine::hooks::order(&mut grade.hooks);
         if self.reframe.is_some() || self.render_profile.is_some() || self.safe_area {
             self.apply_reframe(&mut grade)?;
         }
@@ -1117,6 +1122,24 @@ pub(crate) fn run(cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Triage(args) => args.run()?,
     }
     Ok(())
+}
+
+/// `--shader` values: files (used as written), and vendored or external shader names as hooks.
+/// A path that exists wins over a name.
+fn split_shaders(shaders: Vec<PathBuf>) -> anyhow::Result<(Vec<PathBuf>, Vec<ffcine::Hook>)> {
+    let mut files = Vec::new();
+    let mut named = Vec::new();
+    for s in shaders {
+        match s
+            .to_str()
+            .filter(|_| !s.exists())
+            .and_then(ffcine::hooks::named)
+        {
+            Some(hook) => named.push(hook?),
+            None => files.push(s),
+        }
+    }
+    Ok((files, named))
 }
 
 #[cfg(test)]

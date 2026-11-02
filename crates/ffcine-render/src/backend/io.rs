@@ -31,6 +31,8 @@ pub(crate) struct Input {
     pub tb: Q,
     /// First pts to keep after the seek (stream time base).
     pub trim: i64,
+    /// A HEIF tile grid: its displayed size and the assembled picture, until it's taken.
+    grid: Option<((u32, u32), Option<Frame>)>,
 }
 
 // SAFETY: used by one thread at a time.
@@ -91,11 +93,16 @@ impl Input {
                 eof: false,
                 tb: Q::new(1, 1),
                 trim: i64::MIN,
+                grid: None,
             };
             check(
                 ff::avformat_find_stream_info(fmt, ptr::null_mut()),
                 "find stream info",
             )?;
+            // A tiled HEIF still: assemble it now, the video stream below is one tile.
+            if let Some(g) = super::tiles::TileGrid::find(fmt) {
+                this.grid = Some((g.size(), Some(super::tiles::decode(fmt, &g)?)));
+            }
             let mut codec = ptr::null();
             this.stream = check(
                 ff::av_find_best_stream(
@@ -147,7 +154,7 @@ impl Input {
             } else {
                 (*fmt).start_time
             };
-            if start_us > 0 {
+            if start_us > 0 && this.grid.is_none() {
                 let ts = base + start_us;
                 check(ff::avformat_seek_file(fmt, -1, i64::MIN, ts, ts, 0), "seek")?;
                 this.trim = super::retime::rescale_near(ts, Q::new(1, 1_000_000), this.tb);
@@ -161,8 +168,25 @@ impl Input {
         unsafe { &*self.dec.as_ptr() }
     }
 
+    /// Decoded picture size: the decoder's, or a tile grid's displayed size.
+    pub(crate) fn size(&self) -> (u32, u32) {
+        self.grid.as_ref().map_or_else(
+            || {
+                let d = self.decoder();
+                (
+                    u32::try_from(d.width).unwrap_or(0),
+                    u32::try_from(d.height).unwrap_or(0),
+                )
+            },
+            |g| g.0,
+        )
+    }
+
     /// The next decoded frame, or `None` at end of stream.
     pub(crate) fn next_frame(&mut self) -> Result<Option<Frame>> {
+        if let Some((_, f)) = &mut self.grid {
+            return Ok(f.take());
+        }
         let mut f = Frame::new()?;
         loop {
             // SAFETY: valid decoder and frame.
