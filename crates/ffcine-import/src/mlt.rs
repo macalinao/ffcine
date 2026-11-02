@@ -2,7 +2,7 @@
 //! straight from the XML. The OTIO Kdenlive adapter ignores `timewarp`, transforms, titles, LUTs
 //! and wipe types (`docs/import.md`).
 //!
-//! What maps (fields and units: [`common`](super::common)):
+//! What maps (fields and units: `common.rs`):
 //! - The main tractor's tracks (Kdenlive's two-playlist track tractors and sequences included;
 //!   the black / background track is skipped), playlist entries and blanks -> `Track`s, `Clip`s
 //!   and `Gap`s. Clips on a nested tractor or playlist -> nested `Stack`.
