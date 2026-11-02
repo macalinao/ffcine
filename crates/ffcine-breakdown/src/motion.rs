@@ -13,6 +13,8 @@ const BLOCK_R: i32 = 3;
 const COARSE_R: i32 = 4;
 /// Blocks flatter than this luma variance carry no motion.
 const MIN_VARIANCE: f32 = 12.0;
+/// A block's match cost must rise at least this much (mean abs luma) one pixel off, both ways.
+const MIN_CURVATURE: f32 = 1.0;
 
 /// A luma frame, row-major.
 #[derive(Debug, Clone)]
@@ -80,8 +82,13 @@ impl Luma {
     }
 }
 
-/// Mean absolute difference of `a` at `(x, y)` and `b` at `(x + dx, y + dy)` over the
-/// `w` x `h` window; `None` if it falls outside `b`.
+/// The `w` x `h` window of `l` at `(x, y)`, row by row.
+fn rows(l: &Luma, (x, y, w, h): (usize, usize, usize, usize)) -> impl Iterator<Item = &[f32]> {
+    (0..h).map(move |j| &l.px[(y + j) * l.w + x..][..w])
+}
+
+/// Mean absolute difference, means removed, of `a` at `(x, y)` and `b` at `(x + dx, y + dy)`
+/// over the `w` x `h` window; `None` if it falls outside `b`.
 #[allow(clippy::too_many_arguments)]
 fn sad(
     a: &Luma,
@@ -99,14 +106,22 @@ fn sad(
     if bx + w > b.w || by + h > b.h || x0 + w > a.w || y0 + h > a.h {
         return None;
     }
-    let mut s = 0.0;
-    for y in 0..h {
-        let ra = &a.px[(y0 + y) * a.w + x0..][..w];
-        let rb = &b.px[(by + y) * b.w + bx..][..w];
-        s += ra.iter().zip(rb).map(|(p, q)| (p - q).abs()).sum::<f32>();
-    }
+    let rows = |l, x, y| rows(l, (x, y, w, h));
     #[allow(clippy::cast_precision_loss)]
     let n = (w * h) as f32;
+    // Each side's mean removed, so a fade or exposure change isn't motion.
+    let ma = rows(a, x0, y0).flatten().sum::<f32>() / n;
+    let mb = rows(b, bx, by).flatten().sum::<f32>() / n;
+    let d = mb - ma;
+    let s: f32 = rows(a, x0, y0)
+        .zip(rows(b, bx, by))
+        .map(|(ra, rb)| {
+            ra.iter()
+                .zip(rb)
+                .map(|(p, q)| (q - p - d).abs())
+                .sum::<f32>()
+        })
+        .sum();
     Some(s / n)
 }
 
@@ -213,8 +228,16 @@ pub fn estimate(prev: &Pyramid, cur: &Pyramid) -> Step {
                 }
                 let (bx, by) = best.1;
                 let cost = |dx, dy| sad(a0, b0, block, dx, dy).unwrap_or(best.0);
-                let fx = parabola(cost(bx - 1, by), best.0, cost(bx + 1, by));
-                let fy = parabola(cost(bx, by - 1), best.0, cost(bx, by + 1));
+                let (xl, xr) = (cost(bx - 1, by), cost(bx + 1, by));
+                let (yl, yr) = (cost(bx, by - 1), cost(bx, by + 1));
+                // A block that only has edges one way (a bar, a horizon) can't tell motion
+                // along them: it needs a clear minimum in both directions.
+                if (xl + xr - 2.0 * best.0).min(yl + yr - 2.0 * best.0) < MIN_CURVATURE {
+                    x += BLOCK;
+                    continue;
+                }
+                let fx = parabola(xl, best.0, xr);
+                let fy = parabola(yl, best.0, yr);
                 let (px, py) = (
                     x as f32 + BLOCK as f32 / 2.0 - cx,
                     y as f32 + BLOCK as f32 / 2.0 - cy,
@@ -230,7 +253,8 @@ pub fn estimate(prev: &Pyramid, cur: &Pyramid) -> Step {
         let mut ys: Vec<f32> = vecs.iter().map(|v| v.3).collect();
         (median(&mut xs), median(&mut ys))
     } else {
-        (gx as f32, gy as f32)
+        // A flat picture (a title card, black) shows no motion either way.
+        return Step::default();
     };
     // Divergence: each block's outward motion over its distance from the centre.
     let min_r = a0.w.min(a0.h) as f32 / 6.0;

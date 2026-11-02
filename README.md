@@ -60,6 +60,7 @@ ffcine render --profile master -o master.mp4 timeline.otio
 | `audio`, `sync` | the timeline's audio mix (R128, buses, ducking); line up recorder WAVs |
 | `ingest`, `catalog`, `fetch-luts` | verified card offload; clip catalog with picture profiles; camera LUTs |
 | `triage`, `search`, `snap` | index a card (strips, scene cuts, transcripts); find words; snap cuts to words |
+| `breakdown` | shot list of a reference video: cuts, keyframes, camera motion, beat, colour, speech, contact sheet |
 | `chapters`, `tag`, `credits`, `still`, `publish` | YouTube chapters, chapters and cover art in the MP4, music credits, stills, upload to Immich |
 
 `ffcine <command> --help` has the details; [docs/](docs) has one page per area.
