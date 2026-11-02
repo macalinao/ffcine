@@ -23,6 +23,8 @@ mod assemble;
 mod deliver;
 #[path = "looks.rs"]
 mod looks;
+#[path = "title.rs"]
+mod title;
 
 /// `--dither`: a method or `none`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -132,6 +134,28 @@ pub(crate) enum Cmd {
         #[bpaf(positional("SUBS"))]
         subs: PathBuf,
     },
+    /// Add a title sequence or end screen to a timeline (an ffcine.title clip on a new Titles
+    /// track).
+    ///
+    ///
+    /// The title's words slide up one after another, a rule draws out from the middle, then the
+    /// subtitle and credit lines follow; everything fades out together. --end makes an end
+    /// screen instead: a dimmed backdrop, the title fading in word by word and the lines after
+    /// it, at the end of the timeline. Fonts and colours come from the project's base style (or
+    /// --style); sizes, timings and every piece's look can be changed with --set (see
+    /// docs/text.md, "Titles and end screens"). Render it with `ffcine render` or check a frame
+    /// with `ffcine still`.
+    ///
+    ///
+    /// Examples:
+    ///   ffcine title --into edit.otio "The Long Road" --subtitle "A short film"
+    ///   ffcine title --into edit.otio --end "Thanks for watching" \
+    ///       --line "Music: Example Artist (CC BY 4.0)" --line "Made with ffcine"
+    ///   ffcine title --into edit.otio "Day one" --at 12.5 --duration 4 --no-rule \
+    ///       --set 'title_style={"font":"DejaVu Serif","face":"Light"}' -o titled.otio
+    ///   ffcine still --at 2 -o title.png titled.otio
+    #[bpaf(command)]
+    Title(#[bpaf(external(title::title_args))] title::TitleArgs),
     /// Render a whole timeline into one master, applying each clip's grade, stabilize, denoise,
     /// reframe and speed ramp from the timeline, in its project.output aspect (or
     /// --render-profile). Segments are cached by content: after an edit only changed ones render,
@@ -884,6 +908,7 @@ pub(crate) fn run(cmd: Cmd) -> anyhow::Result<()> {
         | Cmd::Chapters { .. }
         | Cmd::Credits { .. }
         | Cmd::Subs { .. }
+        | Cmd::Title(_)
         | Cmd::Triage(_) => (false, None),
     };
     if no_cache {
@@ -917,6 +942,7 @@ pub(crate) fn run(cmd: Cmd) -> anyhow::Result<()> {
             output,
             subs,
         } => deliver::subs(&subs, &into, output.as_deref(), offset)?,
+        Cmd::Title(args) => title::title(&args)?,
         Cmd::Batch { file, .. } => {
             let text = std::fs::read_to_string(&file)
                 .with_context(|| format!("reading {}", file.display()))?;

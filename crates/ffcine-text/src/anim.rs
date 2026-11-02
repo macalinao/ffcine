@@ -82,7 +82,7 @@ impl Ease {
     }
 }
 
-/// `y` of a CSS cubic bezier at `x` (Newton steps, then bisection).
+/// `y` of a CSS cubic bezier at `x` (bisection).
 fn bezier([x1, y1, x2, y2]: [f64; 4], x: f64) -> f64 {
     let curve = |a: f64, b: f64, t: f64| {
         3.0 * a * t * (1.0 - t).powi(2) + 3.0 * b * t * t * (1.0 - t) + t.powi(3)
@@ -98,7 +98,7 @@ fn bezier([x1, y1, x2, y2]: [f64; 4], x: f64) -> f64 {
         } else {
             lo = t;
         }
-        t = (lo + hi) / 2.0;
+        t = f64::midpoint(lo, hi);
     }
     curve(y1, y2, t)
 }
@@ -197,9 +197,8 @@ impl Anim {
             Some("char" | "character" | "letter") => By::Char,
             Some("word") => By::Word,
             Some("line") => By::Line,
-            Some(_) => By::Whole,
             None if kind == Kind::Typewriter => By::Char,
-            None => By::Whole,
+            _ => By::Whole,
         };
         let ease = v.get("ease").and_then(Ease::parse).unwrap_or(match kind {
             Kind::Slide => Ease::Out,
@@ -259,6 +258,7 @@ pub struct Keys<const N: usize> {
 impl<const N: usize> Keys<N> {
     /// Reads keys whose values are numbers (`N` = 1 also takes a bare number; a number
     /// for `N` = 2 fills both, for scale).
+    #[allow(clippy::many_single_char_names)]
     fn parse(v: Option<&Value>) -> Self {
         let keys = v
             .and_then(Value::as_array)
@@ -300,6 +300,7 @@ impl<const N: usize> Keys<N> {
     }
 
     /// The value at `t` seconds into a clip `len` seconds long.
+    #[allow(clippy::many_single_char_names)]
     pub fn at(&self, t: f64, len: f64) -> Option<[f64; N]> {
         let mut k: Vec<(f64, [f64; N], Ease)> = self
             .keys
@@ -496,7 +497,7 @@ fn partition(r: &Rendered, mask: [f32; 2], by: [By; 2]) -> (Vec<Unit>, [usize; 2
         // Group fine units by the coarser unit containing their left edge.
         let coarse = units(r, mask, by[side]);
         for o in &mut out {
-            let cx = (o.crop[0] + o.crop[2]) / 2.0;
+            let cx = f32::midpoint(o.crop[0], o.crop[2]);
             o.group[side] = coarse
                 .iter()
                 .find(|(c, _)| c.line == o.line && cx >= c.crop[0] && cx <= c.crop[2])
@@ -531,7 +532,11 @@ const REST: Look = Look {
 };
 
 /// The look of group `g` (of `n`) at `t` seconds into a clip showing for `len` seconds.
-#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::many_single_char_names
+)]
 fn look(anim: &Animation, g: [usize; 2], n: [usize; 2], t: f64, len: f64, fh: f32) -> Look {
     let mut l = REST;
     for (side, a) in [(0, &anim.in_), (1, &anim.out)] {
@@ -614,7 +619,7 @@ fn wiped(
         o[i + 2] = r[i] + b * len;
         o
     };
-    let i = if horizontal { 0 } else { 1 };
+    let i = usize::from(!horizontal);
     Some((cut(src, i), cut(dst, i)))
 }
 
@@ -647,7 +652,8 @@ pub struct Span {
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
-    clippy::too_many_lines
+    clippy::too_many_lines,
+    clippy::many_single_char_names
 )]
 pub fn animate(
     r: &Rendered,
@@ -686,7 +692,10 @@ pub fn animate(
                 b[3].max(u.crop[3]),
             ];
         }
-        [at[0] + (b[0] + b[2]) / 2.0, at[1] + (b[1] + b[3]) / 2.0]
+        [
+            at[0] + f32::midpoint(b[0], b[2]),
+            at[1] + f32::midpoint(b[1], b[3]),
+        ]
     };
     // Pops scale about their own piece.
     let side = usize::from(
@@ -789,7 +798,7 @@ pub fn animate(
                     match &mut run {
                         Some((rl, rui, crop))
                             if rl == l
-                                && l.k == 1.0
+                                && (l.k - 1.0).abs() < f32::EPSILON
                                 && l.wipe.is_none()
                                 && units[*rui].line == u.line
                                 && (crop[2] - u.crop[0]).abs() < 1e-3 =>
@@ -852,6 +861,12 @@ pub fn rect(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::many_single_char_names
+)]
 mod tests {
     use super::*;
     use crate::layout::Layer;
