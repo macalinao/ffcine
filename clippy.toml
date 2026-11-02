@@ -1,2 +1,12 @@
 allow-unwrap-in-tests = true
-doc-valid-idents = ["NVENC", "NVDEC", "FFmpeg", "libplacebo", "libav", ".."]
+doc-valid-idents = [
+  "NVENC",
+  "NVDEC",
+  "FFmpeg",
+  "libplacebo",
+  "libav",
+  "ArtCNN",
+  "KrigBilateral",
+  "FSRCNNX",
+  "..",
+]
