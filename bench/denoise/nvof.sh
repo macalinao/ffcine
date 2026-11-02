@@ -28,16 +28,27 @@ for b in "${bins[@]}"; do
   tag=${b%%:*} bin=${b#*:}
   for mode in "${modes[@]}"; do
     for run in $(seq "$RUNS"); do
-      # shellcheck disable=SC2046
-      nice -n 19 "$bin" grade --no-cache --rate qp=4 --ss "$ss" --frames "$N" $(args "$mode") \
-        "$clip" "$W/$tag-$mode.mkv" 2>&1 | grep -E 'denoise:|frames in' |
-        sed -E 's/ Denoise \{.*//' | sed "s/^/  $tag $mode $run: /"
+      # A shared GPU may be out of memory for a moment: retry a few times.
+      for _ in 1 2 3 4 5; do
+        # shellcheck disable=SC2046
+        out=$(nice -n 19 "$bin" grade --no-cache --rate qp=4 --ss "$ss" --frames "$N" $(args "$mode") \
+          "$clip" "$W/$tag-$mode.mkv" 2>&1 || true)
+        if grep -q 'frames in' <<<"$out" && { [ "$mode" != nvof ] || grep -q 'motion nvof' <<<"$out"; }; then
+          grep -E 'denoise:|frames in' <<<"$out" | sed -E 's/ Denoise \{.*//' | sed "s/^/  $tag $mode $run: /"
+          break
+        fi
+        sleep 30
+      done
     done
   done
   # Lossless and undithered, so two binaries can be compared frame by frame.
   # shellcheck disable=SC2046
-  nice -n 19 "$bin" grade --no-cache --dither none --rate qp=0 --ss "$ss" --frames "$N" \
-    $(args nvof) "$clip" "$W/$tag-exact.mkv" >/dev/null 2>&1
+  for _ in 1 2 3 4 5; do
+    # shellcheck disable=SC2046
+    nice -n 19 "$bin" grade --no-cache --dither none --rate qp=0 --ss "$ss" --frames "$N" \
+      $(args nvof) "$clip" "$W/$tag-exact.mkv" 2>&1 | grep -q 'motion nvof' && break
+    sleep 30
+  done
 done
 if [ -n "$BEFORE" ]; then
   h() { ffmpeg -loglevel error -i "$1" -f framemd5 - | grep -v '^#' | md5sum | cut -c1-12; }
