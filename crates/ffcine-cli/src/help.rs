@@ -138,6 +138,15 @@ pub const CHAPTERS: &str = examples!(
     "ffcine chapters --intro Welcome -o chapters.txt timeline.otio",
 );
 
+pub const TAG: &str = concat!(
+    examples!(
+        "ffcine tag --timeline timeline.otio --cover 0:42 master.mp4",
+        "ffcine tag --cover cover.jpg master.mp4",
+        "ffcine tag --clear --timeline timeline.otio master.mp4",
+    ),
+    see!("delivery.md")
+);
+
 pub const CREDITS: &str = examples!(
     "ffcine credits timeline.otio",
     "ffcine credits --public -o credits.txt timeline.otio",
@@ -197,6 +206,7 @@ pub const RENDER: &str = concat!(
         "ffcine render --profile master -o master.mp4 timeline.otio",
         "ffcine render --render-profile reel -o reel.mp4 timeline.otio",
         "ffcine render --dry-run -o master.mp4 timeline.otio   # what would render",
+        "ffcine render --profile review --cover 0:42 -o review.mp4 timeline.otio",
         "ffcine render --lufs=-16 --sidechain --json -o master.mp4 timeline.otio",
     ),
     see!("timeline.md", "assembly.md")

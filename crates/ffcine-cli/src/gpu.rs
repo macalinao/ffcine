@@ -142,6 +142,11 @@ pub(crate) enum Cmd {
         #[bpaf(positional("TIMELINE"))]
         timeline: PathBuf,
     },
+    /// Write chapters and cover art into a finished MP4, without re-encoding.
+    ///
+    /// Chapters come from a timeline's markers; chapters and cover not given are kept.
+    #[bpaf(command, footer(crate::help::TAG))]
+    Tag(#[bpaf(external(deliver::tag_args))] deliver::TagArgs),
     /// Music credits (CC BY attribution lines) from the music clips' metadata.
     ///
     /// One line per track from the clips' `music` and `attribution` metadata, for a video
@@ -202,7 +207,8 @@ pub(crate) enum Cmd {
     /// i.e. what `render` would redo after the edit. Renders nothing.
     #[bpaf(command, footer(crate::help::DIFF))]
     Diff {
-        /// Render profile: preview (1080 px short side) or master (2160 px).
+        /// Render profile: preview (1080 px short side), master (2160 px) or review (720 px,
+        /// from proxies).
         #[bpaf(argument("NAME"), fallback("preview".to_owned()), display_fallback)]
         profile: String,
         /// Output aspect (overrides the timeline's project.output.aspect): landscape (16:9), reel
@@ -975,6 +981,7 @@ pub(crate) fn run(cmd: Cmd) -> anyhow::Result<()> {
         | Cmd::Render(_)
         | Cmd::Diff { .. }
         | Cmd::Chapters { .. }
+        | Cmd::Tag(_)
         | Cmd::Credits { .. }
         | Cmd::Subs { .. }
         | Cmd::Triage(_) => (false, None),
@@ -997,6 +1004,7 @@ pub(crate) fn run(cmd: Cmd) -> anyhow::Result<()> {
             output,
             timeline,
         } => deliver::chapters(&timeline, &intro, output.as_deref())?,
+        Cmd::Tag(args) => deliver::tag(&args)?,
         Cmd::Credits {
             public,
             output,

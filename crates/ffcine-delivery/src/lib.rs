@@ -1,8 +1,11 @@
 //! Delivery extras generated from a timeline (`docs/delivery.md`): YouTube chapter text from
 //! markers ([`chapters`]), music credits from music clips' metadata ([`credits`]), and the
-//! source frame under a timeline time for stills ([`frame_at`]).
+//! source frame under a timeline time for stills ([`frame_at`]), and chapters and cover art
+//! written into a finished MP4 ([`mp4`]).
 
 #![allow(clippy::doc_markdown)] // "YouTube"
+
+pub mod mp4;
 
 use std::fmt::Write as _;
 use std::path::PathBuf;
