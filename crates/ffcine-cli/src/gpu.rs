@@ -28,6 +28,15 @@ mod looks;
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct DitherArg(Option<DitherMethod>);
 
+impl std::fmt::Display for DitherArg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            Some(m) => write!(f, "{m}"),
+            None => f.write_str("none"),
+        }
+    }
+}
+
 impl FromStr for DitherArg {
     type Err = ffcine::Error;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -42,119 +51,171 @@ impl FromStr for DitherArg {
 #[derive(Debug, Clone, Bpaf)]
 #[allow(clippy::large_enum_variant, clippy::doc_markdown)] // parsed once; doc comments are --help
 pub(crate) enum Cmd {
-    /// Show container, streams, codecs and colour tags.
-    #[bpaf(command)]
+    /// Show a file's container, streams, codecs and colour tags.
+    ///
+    /// Prints `PATH: FORMAT, DURATIONs, BITRATE kb/s`, then one line per stream: `#N video CODEC
+    /// WxH PIXFMT COLOUR, FPS fps, N frames` or `#N audio CODEC RATE Hz Nch FORMAT`.
+    #[bpaf(command, footer(crate::help::PROBE))]
     Probe {
+        /// Media file to inspect (video, audio or image).
         #[bpaf(positional("FILE"))]
         file: PathBuf,
     },
-    /// Grade a clip on the GPU: tone mapping, crop/scale, 3D LUT, sharpen, encode.
-    #[bpaf(command)]
+    /// Grade one clip on the GPU: tone mapping, LUT, crop/scale, sharpen, encode.
+    ///
+    /// Decodes with Vulkan or NVDEC, grades in libplacebo and encodes on NVENC, frames staying in
+    /// VRAM. Defaults match the prototype: camera LUT from the probed profile, bt.2390 tone
+    /// mapping, perceptual gamut mapping, lanczos scaling in gamma light, 10-bit HEVC NVENC
+    /// master (p6, hq, qp=12, main10, p010le, GOP 24); --preview is 8-bit libx264 (crf 10).
+    /// Prints frames, wall time and fps.
+    #[bpaf(command, footer(crate::help::GRADE))]
     Grade(#[bpaf(external(grade_args))] GradeArgs),
-    /// Grade many shots through one GPU pipeline (device, renderer and shader cache stay warm).
-    /// FILE has one shot per line, written as `grade` arguments; `#` starts a comment.
-    #[bpaf(command)]
+    /// Grade many shots through one warm GPU pipeline (device, renderer, shader cache).
+    ///
+    /// FILE has one shot per line, written as `grade` arguments; see the format below.
+    #[bpaf(command, footer(crate::help::BATCH))]
     Batch {
         /// libplacebo shader cache directory (default: ~/.cache/ffcine/placebo).
         #[bpaf(argument("DIR"))]
         cache_dir: Option<PathBuf>,
         /// Don't use an on-disk shader cache.
         no_cache: bool,
+        /// Batch file: one shot per line as `grade` arguments.
         #[bpaf(positional("FILE"))]
         file: PathBuf,
     },
-    /// Stabilize a shot: optical-flow motion detect on the GPU (cached), vidstab-style smoothing,
-    /// auto zoom. Writes the per-frame warps.
-    #[bpaf(command, long("stabilise"))]
+    /// Stabilize a shot: GPU optical-flow motion detect, smoothing and auto zoom.
+    ///
+    /// Detects frame-to-frame motion with NVIDIA optical flow (cached per input and range),
+    /// smooths it vidstab-style and picks the zoom that hides the borders. Prints the detect time
+    /// and the zoom; the warps are only written with --hook, --transforms or --motions. To
+    /// stabilize while grading, use `grade --stabilize`.
+    #[bpaf(command, long("stabilise"), footer(crate::help::STABILIZE))]
     Stabilize(#[bpaf(external(stabilize_args))] StabilizeArgs),
-    /// Residual jitter of a clip: RMS of its frame-to-frame motion minus a smoothed version.
-    #[bpaf(command)]
+    /// Measure a clip's residual jitter: the motion left after smoothing.
+    ///
+    /// RMS of the frame-to-frame motion minus a smoothed version of it, e.g. to compare
+    /// stabilizers. Prints `jitter tx PX ty PX angle DEG (N pairs, mean confidence C)`.
+    #[bpaf(command, footer(crate::help::JITTER))]
     Jitter(#[bpaf(external(jitter_args))] JitterArgs),
-    /// Download the camera vendors' LUTs ffcine knows (DJI Osmo Pocket 4 D-Log -> Rec.709) into
-    /// the LUT dir (default: the first of $FFCINE_LUT_DIR, ~/.local/share/ffcine/luts).
-    #[bpaf(command)]
+    /// Download the camera vendors' LUTs ffcine knows into the LUT directory.
+    ///
+    /// Currently DJI Osmo Pocket 4 D-Log -> Rec.709 (normal and vivid). Each download is checked to be a .cube LUT;
+    /// files already there are kept. `grade --camera` and the catalog find them there.
+    #[bpaf(command, footer(crate::help::FETCH_LUTS))]
     FetchLuts {
+        /// LUT directory (default: the first of $FFCINE_LUT_DIR, else
+        /// $XDG_DATA_HOME/ffcine/luts, i.e. ~/.local/share/ffcine/luts).
         #[bpaf(argument("DIR"))]
         dir: Option<PathBuf>,
         /// Download again even if the file is there.
         force: bool,
     },
-    /// Bake a camera LUT, a grade LUT and a look into one .cube (camera, then LUT, then look),
-    /// evaluated in Rust: for other tools, or as a single --lut.
-    #[bpaf(command)]
+    /// Bake a camera LUT, a grade LUT and a look into one .cube.
+    ///
+    /// Applied in that order (as the render does) and evaluated in Rust over a lattice: for other
+    /// tools, or as a single --lut.
+    #[bpaf(command, footer(crate::help::BAKE))]
     Bake(#[bpaf(external(bake_args))] BakeArgs),
-    /// Convert another editor's project (edit.yaml, OTIO) to an ffcine timeline (.otio).
-    #[bpaf(command)]
+    /// Convert another editor's project to an ffcine timeline (.otio).
+    ///
+    /// Reads edit.yaml, OTIO (including Resolve's), FCPXML, Kdenlive/Shotcut MLT, FCP7/Premiere
+    /// XML, CMX3600 EDL and CapCut drafts. Prints what it mapped and what it skipped.
+    #[bpaf(command, footer(crate::help::IMPORT))]
     Import(#[bpaf(external(import_args))] ImportArgs),
-    /// Index a card before editing: contact strips, scene cuts, speech map, GPU transcripts with
-    /// word times, runaway flags, and a clip page to pick from.
-    #[bpaf(command)]
+    /// Index a card before editing: strips, scene cuts, speech, transcripts, flags.
+    ///
+    /// Per clip: a contact strip, scene cuts, a speech map, GPU whisper transcripts with word
+    /// times, runaway/dead/dark flags and optional locations. Writes OUT/index.json (what search
+    /// and snap read), OUT/index.html (the clip page), OUT/strips/<clip>.jpg and a per-clip cache
+    /// in OUT/clips/; re-running only analyses what changed.
+    #[bpaf(command, footer(crate::help::TRIAGE))]
     Triage(#[bpaf(external(crate::triage::triage_args))] crate::triage::TriageArgs),
-    /// YouTube chapter lines from the timeline's markers (those flagged `chapter`, else all).
-    #[bpaf(command)]
+    /// YouTube chapter lines from the timeline's markers.
+    ///
+    /// Uses the markers flagged `chapter`, else all markers; prints `M:SS Title` lines (H:MM:SS
+    /// past an hour), with a 0:00 chapter added when the first marker is later.
+    #[bpaf(command, footer(crate::help::CHAPTERS))]
     #[allow(clippy::doc_markdown)]
     Chapters {
         /// Title of the 0:00 chapter added when the first marker is later.
-        #[bpaf(argument("TITLE"), fallback("Intro".to_owned()))]
+        #[bpaf(argument("TITLE"), fallback("Intro".to_owned()), display_fallback)]
         intro: String,
         /// Write here instead of stdout.
         #[bpaf(short('o'), argument("FILE"))]
         output: Option<PathBuf>,
+        /// Timeline (.otio).
         #[bpaf(positional("TIMELINE"))]
         timeline: PathBuf,
     },
-    /// Write chapters (from a timeline's markers) and cover art into a finished MP4, without
-    /// re-encoding. Chapters and cover not given are kept.
-    #[bpaf(command)]
+    /// Write chapters and cover art into a finished MP4, without re-encoding.
+    ///
+    /// Chapters come from a timeline's markers; chapters and cover not given are kept.
+    #[bpaf(command, footer(crate::help::TAG))]
     Tag(#[bpaf(external(deliver::tag_args))] deliver::TagArgs),
     /// Music credits (CC BY attribution lines) from the music clips' metadata.
-    #[bpaf(command)]
+    ///
+    /// One line per track from the clips' `music` and `attribution` metadata, for a video
+    /// description.
+    #[bpaf(command, footer(crate::help::CREDITS))]
     Credits {
-        /// The public cut: leave out `private` sounds.
+        /// The public cut: leave out `private` sounds (or credit their `public_alt`).
         public: bool,
         /// Write here instead of stdout.
         #[bpaf(short('o'), argument("FILE"))]
         output: Option<PathBuf>,
+        /// Timeline (.otio).
         #[bpaf(positional("TIMELINE"))]
         timeline: PathBuf,
     },
-    /// A full-resolution PNG of the timeline at a time (thumbnails), text included.
-    #[bpaf(command)]
+    /// Write a full-resolution PNG of the timeline at a time, text included.
+    ///
+    /// The shot under TIME with its grade and the timeline's text clips, e.g. for thumbnails.
+    #[bpaf(command, footer(crate::help::STILL))]
     Still(#[bpaf(external(deliver::still_args))] deliver::StillArgs),
-    /// Compare grade variants (looks, LUTs, overrides) on shots: full-res JPEGs and a labelled
-    /// contact sheet per shot, through one warm GPU pipeline.
-    #[bpaf(command)]
+    /// Compare grade variants (looks, LUTs, overrides) on shots, with contact sheets.
+    ///
+    /// Writes OUT/<shot>_<variant>.jpg at full resolution and OUT/<shot>_sheet.jpg (variants side
+    /// by side, labelled, under 5 MB), all through one warm GPU pipeline. Shots come from --at,
+    /// --sample and --clip.
+    #[bpaf(command, footer(crate::help::LOOKS))]
     Looks(#[bpaf(external(looks::looks_args))] looks::LooksArgs),
     /// Add .ass/.ssa subtitles to a timeline as ffcine.text clips with their styles.
-    #[bpaf(command)]
+    ///
+    /// Prints how many lines, styles and tracks were added, and override tags it dropped.
+    #[bpaf(command, footer(crate::help::SUBS))]
     Subs {
-        /// Shift the subtitles by this many seconds.
-        #[bpaf(argument("SECONDS"), fallback(0.0))]
+        /// Shift the subtitles by this many seconds (may be negative).
+        #[bpaf(argument("SECONDS"), fallback(0.0), display_fallback)]
         offset: f64,
-        /// Timeline to add them to.
+        /// Timeline to add them to (.otio).
         #[bpaf(argument("TIMELINE"))]
         into: PathBuf,
         /// Output timeline (default: overwrite --into).
         #[bpaf(short('o'), argument("FILE"))]
         output: Option<PathBuf>,
+        /// Subtitle file (.ass or .ssa).
         #[bpaf(positional("SUBS"))]
         subs: PathBuf,
     },
-    /// Render a whole timeline into one master, applying each clip's grade, stabilize, denoise,
-    /// reframe and speed ramp from the timeline, in its project.output aspect (or
-    /// --render-profile). Segments are cached by content: after an edit only changed ones render,
-    /// the master joins them by stream copy, and an audio-only change is a remux. Re-run after an
-    /// interruption to resume. The audio is the finished mix (`ffcine audio`): clean chain, R128
-    /// levelling, music ducked under dialogue, clip gain and fade keyframes, synced recorder
-    /// clips, master limiter; its settings come from the timeline (project.mix, clip effects), the
-    /// mix flags override them.
-    #[bpaf(command)]
+    /// Render a whole timeline into one master, with a segment cache.
+    ///
+    /// Applies each clip's grade, stabilize, denoise, reframe and speed ramp from the timeline,
+    /// in its project.output aspect (or --render-profile), and draws its text clips. Segments are
+    /// cached by content: after an edit only changed ones render, the master joins them by stream
+    /// copy, and an audio-only change is a remux. Re-run after an interruption to resume. The
+    /// audio is the finished mix, as `ffcine audio`; the mix flags override project.mix.
+    #[bpaf(command, footer(crate::help::RENDER))]
     Render(#[bpaf(external(assemble::render_args))] assemble::RenderArgs),
-    /// Which segments of NEW render that OLD's did not (and whether the audio changed).
-    #[bpaf(command)]
+    /// List which segments of NEW would render that OLD's render already has.
+    ///
+    /// Compares the segment keys of two versions of a timeline (and whether the audio changed),
+    /// i.e. what `render` would redo after the edit. Renders nothing.
+    #[bpaf(command, footer(crate::help::DIFF))]
     Diff {
-        /// Render profile: preview (1080p), master (4K) or review (720p from proxies).
-        #[bpaf(argument("NAME"), fallback("preview".to_owned()))]
+        /// Render profile: preview (1080 px short side), master (2160 px) or review (720 px,
+        /// from proxies).
+        #[bpaf(argument("NAME"), fallback("preview".to_owned()), display_fallback)]
         profile: String,
         /// Output aspect (overrides the timeline's project.output.aspect): landscape (16:9), reel
         /// (9:16), feed (4:5), square (1:1), WxH or NAME=WxH.
@@ -162,8 +223,10 @@ pub(crate) enum Cmd {
         render_profile: Option<String>,
         /// List unchanged segments too.
         all: bool,
+        /// The timeline as last rendered (.otio).
         #[bpaf(positional("OLD"))]
         old: PathBuf,
+        /// The edited timeline (.otio).
         #[bpaf(positional("NEW"))]
         new: PathBuf,
     },
@@ -205,22 +268,25 @@ fn report(output: &std::path::Path, s: &ffcine::RunStats) {
 }
 
 #[derive(Debug, Clone, Bpaf)]
+#[allow(clippy::doc_markdown)] // --help text
 pub(crate) struct ImportArgs {
-    /// Source format (edit-yaml, otio, resolve, fcpxml, mlt, fcp7, edl, capcut); default: from
-    /// the file (Resolve's .otio is detected).
+    /// Source format: edit-yaml, otio, resolve, fcpxml, mlt (Kdenlive, Shotcut), fcp7 (Premiere
+    /// XML), edl or capcut (default: from the file; Resolve's .otio is detected).
     #[bpaf(argument("FORMAT"))]
     format: Option<ffcine::import::Format>,
     /// Timeline frame rate, e.g. 24000/1001 (default: the source's).
     #[bpaf(argument::<String>("FPS"), parse(|s: String| parse_rate(&s)), optional)]
     rate: Option<f64>,
-    /// Timeline frame size, for sources without one (Resolve OTIO).
+    /// Timeline frame size in px, for sources without one (Resolve OTIO), e.g. 3840x2160.
     #[bpaf(long("size"), long("frame-size"), argument("WxH"))]
     size: Option<Size>,
     /// Fail on anything the importer can't read instead of skipping it.
     strict: bool,
-    /// Output .otio file.
+    /// Output timeline (.otio).
     #[bpaf(short('o'), long("output"), argument("FILE"))]
     output: PathBuf,
+    /// Project file to convert (.yaml, .otio, .fcpxml/.fcpxmld, .kdenlive/.mlt, .xml, .edl,
+    /// a CapCut draft or its folder).
     #[bpaf(positional("FILE"))]
     input: PathBuf,
 }
@@ -285,32 +351,32 @@ const NTSC_FILM: Rate = Rate(Rational {
 #[allow(clippy::doc_markdown)] // --help text
 pub(crate) struct StabilizeArgs {
     /// Range start in seconds (like ffmpeg -ss on the input).
-    #[bpaf(argument("SECONDS"), fallback(0.0))]
+    #[bpaf(argument("SECONDS"), fallback(0.0), display_fallback)]
     start: f64,
-    /// Frames to stabilize.
+    /// Frames to stabilize, counted at --rate (required).
     #[bpaf(argument("N"))]
     frames: usize,
-    /// Output frame rate (fps filter).
+    /// Frame rate the range is read at (fps filter), NUM/DEN or N.
     #[bpaf(argument("NUM/DEN"), fallback(NTSC_FILM), display_fallback)]
     rate: Rate,
     /// Gaussian smoothing half-window in frames (vidstab smoothing).
     #[bpaf(argument("FRAMES"), fallback(20), display_fallback)]
     smoothing: u32,
-    /// Optical flow analysis width.
+    /// Width in px the frames are scaled to for optical flow.
     #[bpaf(argument("PX"), fallback(1920), display_fallback)]
     analysis_width: u32,
     /// Optical flow quality: slow, medium or fast.
     #[bpaf(argument("Q"), fallback(FlowQuality::Slow), display_fallback)]
     quality: FlowQuality,
-    /// Cap the automatic zoom (borders may show beyond it).
+    /// Cap on the automatic zoom, e.g. 1.1 (borders may show beyond it; default: no cap).
     #[bpaf(argument("Z"))]
     max_zoom: Option<f64>,
-    /// Fixed zoom instead of the automatic one.
+    /// Fixed zoom instead of the automatic one, e.g. 1.05 (1 = none).
     #[bpaf(argument("Z"))]
     zoom: Option<f64>,
     /// Ignore and overwrite the detect cache.
     no_cache: bool,
-    /// Write the warps as a libplacebo/mpv .hook shader.
+    /// Write the warps as an mpv/libplacebo .hook shader, for ffmpeg's libplacebo filter.
     #[bpaf(argument("FILE"))]
     hook: Option<PathBuf>,
     /// Hook passes run per frame in the final shader file (libplacebo's `frame` counts passes).
@@ -322,6 +388,7 @@ pub(crate) struct StabilizeArgs {
     /// Write the detected frame-to-frame motions as text.
     #[bpaf(argument("FILE"))]
     motions: Option<PathBuf>,
+    /// Clip to stabilize.
     #[bpaf(positional("INPUT"))]
     input: PathBuf,
 }
@@ -329,10 +396,12 @@ pub(crate) struct StabilizeArgs {
 #[derive(Debug, Clone, Bpaf)]
 pub(crate) struct JitterArgs {
     /// Range start in seconds.
-    #[bpaf(argument("SECONDS"), fallback(0.0))]
+    #[bpaf(argument("SECONDS"), fallback(0.0), display_fallback)]
     start: f64,
+    /// Frames to measure, counted at --rate (required).
     #[bpaf(argument("N"))]
     frames: usize,
+    /// Frame rate the range is read at, NUM/DEN or N.
     #[bpaf(argument("NUM/DEN"), fallback(NTSC_FILM), display_fallback)]
     rate: Rate,
     /// Smoothing sigma in frames: motion slower than this counts as intended.
@@ -341,8 +410,10 @@ pub(crate) struct JitterArgs {
     /// Skip the frame pair ending at this frame (a cut or punch-in); repeatable.
     #[bpaf(argument("FRAME"), many)]
     exclude: Vec<usize>,
+    /// Width in px the frames are scaled to for optical flow.
     #[bpaf(argument("PX"), fallback(1920), display_fallback)]
     analysis_width: u32,
+    /// Clip to measure (e.g. a stabilized render).
     #[bpaf(positional("INPUT"))]
     input: PathBuf,
 }
@@ -454,40 +525,45 @@ impl HdrOut {
 #[allow(clippy::struct_excessive_bools, clippy::doc_markdown)]
 pub(crate) struct GradeArgs {
     /// Start time in seconds (accurate seek, like ffmpeg's input -ss).
-    #[bpaf(argument("SECONDS"), fallback(0.0))]
+    #[bpaf(argument("SECONDS"), fallback(0.0), display_fallback)]
     ss: f64,
-    /// Number of frames to output (the last frame repeats if the source ends first).
+    /// Frames to output (default: to the end of the source; the last frame repeats if the
+    /// source ends first).
     #[bpaf(argument("N"))]
     frames: Option<u64>,
-    /// Output frame rate (N/D or N), like ffmpeg's fps filter.
+    /// Output frame rate, N/D or N, e.g. 24000/1001, like ffmpeg's fps filter (default: the
+    /// source's).
     #[bpaf(argument("RATE"))]
     fps: Option<Rational>,
-    /// Override source colour tags: matrix/primaries/transfer/range, '-' keeps one.
+    /// Override the source's colour tags as MATRIX/PRIMARIES/TRANSFER/RANGE, `-` keeping one,
+    /// e.g. -/bt2020/arib-std-b67/- (values as ffmpeg names them: bt709, bt2020nc, smpte2084,
+    /// tv, pc, ...).
     #[bpaf(argument("M/P/T/R"))]
     in_color: Option<ColorOverride>,
-    /// Camera profile: auto (from the probe), rec709, hdr, dlogm, dlogm-vivid, clog3, applelog.
-    /// Log profiles add their camera LUT before the grade; auto adds none when --lut is given
-    /// (a baked grade already includes it). Vendor LUTs come from $FFCINE_LUT_DIR.
+    /// Camera profile: auto (from the probe), rec709, hdr, dlog, dlog-vivid, dlogm, dlogm-vivid,
+    /// clog3 or applelog (default: auto without --lut, none with it). Log profiles add their
+    /// camera LUT before the grade; a --lut is taken as a baked grade that already includes it.
+    /// Vendor LUTs come from the LUT dir (`ffcine fetch-luts`).
     #[bpaf(argument("PROFILE"))]
     camera: Option<ProfileChoice>,
-    /// 3D LUT (.cube) to apply.
+    /// 3D LUT (.cube) to apply after the camera LUT.
     #[bpaf(argument("FILE"))]
     lut: Option<PathBuf>,
     /// LUT input space: native, normalized or conversion.
     #[bpaf(argument("TYPE"), fallback(LutType::Normalized), display_fallback)]
     lut_type: LutType,
-    /// HDR -> SDR tone curve (bt.2390, bt.2446a, st2094-40, st2094-10, spline, hable, mobius,
-    /// reinhard, gamma, linear, clip, auto).
+    /// HDR -> SDR tone curve: bt.2390, bt.2446a, st2094-40, st2094-10, spline, hable, mobius,
+    /// reinhard, gamma, linear, clip or auto.
     #[bpaf(argument("CURVE"), fallback(ToneMapping::Bt2390), display_fallback)]
     tonemap: ToneMapping,
-    /// Gamut mapping (perceptual, softclip, highlight, relative, saturation, absolute,
-    /// desaturate, darken, linear, clip).
+    /// Gamut mapping: perceptual, softclip, highlight, relative, saturation, absolute,
+    /// desaturate, darken, linear or clip.
     #[bpaf(argument("MODE"), fallback(GamutMapping::Perceptual), display_fallback)]
     gamut: GamutMapping,
     /// HDR contrast recovery strength (0 = off).
     #[bpaf(argument("S"), fallback(0.30), display_fallback)]
     contrast_recovery: f32,
-    /// Perceptual gamut mapping strength (0..1).
+    /// Perceptual gamut mapping strength, 0..1.
     #[bpaf(argument("S"), fallback(0.80), display_fallback)]
     perceptual_strength: f32,
     /// Don't measure the HDR peak per frame.
@@ -498,43 +574,51 @@ pub(crate) struct GradeArgs {
     /// No deband, even for D-Log M.
     no_deband: bool,
     /// Output dither: blue, ordered, white or none.
-    #[bpaf(argument("METHOD"), fallback(DitherArg(Some(DitherMethod::Blue))))]
+    #[bpaf(
+        argument("METHOD"),
+        fallback(DitherArg(Some(DitherMethod::Blue))),
+        display_fallback
+    )]
     dither: DitherArg,
     /// Vary the dither pattern per frame.
     temporal_dither: bool,
-    /// Source crop in input pixels.
+    /// Source crop in input pixels, W:H:X:Y as ffmpeg's crop filter, e.g. 3840:1608:0:276.
     #[bpaf(argument("W:H:X:Y"))]
     crop: Option<Crop>,
-    /// Output size (default: input size).
+    /// Output size in px, e.g. 1920x1080 (default: the crop's or the input's).
     #[bpaf(argument("WxH"))]
     size: Option<Size>,
-    /// Upscaling filter.
+    /// Upscaling filter: lanczos, ewa_lanczos, ewa_lanczossharp, spline36, mitchell, bicubic,
+    /// bilinear or nearest.
     #[bpaf(argument("FILTER"), fallback(Scaler::Lanczos), display_fallback)]
     upscaler: Scaler,
-    /// Downscaling filter.
+    /// Downscaling filter (as --upscaler).
     #[bpaf(argument("FILTER"), fallback(Scaler::Lanczos), display_fallback)]
     downscaler: Scaler,
-    /// Scale in linear light.
+    /// Scale in linear light (default: gamma light).
     linear: bool,
     /// Sigmoidized upscaling.
     sigmoid: bool,
-    /// Luma unsharp amount after the LUT (ffmpeg unsharp=5:5:AMOUNT).
-    #[bpaf(argument("AMOUNT"), fallback(0.0))]
+    /// Luma unsharp amount after the LUT, as ffmpeg unsharp=5:5:AMOUNT, e.g. 0.6; 0 = off.
+    #[bpaf(argument("AMOUNT"), fallback(0.0), display_fallback)]
     sharpen: f32,
-    /// Adaptive-sharpen strength (curve_height, 0.3 to 2.0) after scaling; replaces --sharpen.
+    /// Adaptive-sharpen strength after scaling (its curve_height, 0.3..2.0); replaces
+    /// --sharpen.
     #[bpaf(argument("STRENGTH"))]
     adaptive_sharpen: Option<f32>,
     /// Render profile: landscape, hd, reel (9:16), feed (4:5), square, WxH or NAME=WxH. Sets the
     /// output size and picks the reframe's per-profile overrides.
     #[bpaf(argument("PROFILE"))]
     render_profile: Option<Profile>,
-    /// Reframe: ffcine.geo.reframe/1 parameters as JSON (zoom, punch, push, crop_x, ...), or @FILE.
+    /// Reframe: ffcine.geo.reframe/1 parameters as a JSON object (zoom, punch, push, crop_x,
+    /// ...) or @FILE holding one; see docs/reframe.md.
     #[bpaf(argument("JSON"))]
     reframe: Option<String>,
     /// Draw the render profile's safe area over the picture (review renders).
     safe_area: bool,
-    /// Extra mpv .hook shader (repeatable): a file, or a vendored or external shader name
-    /// (adaptive-sharpen, artcnn-c4f16, artcnn-c4f16-ds, krigbilateral, fsrcnnx, fsrcnnx-16).
+    /// Extra mpv/libplacebo .hook shader, run in the grade pass: a file, or a vendored or
+    /// external shader name (adaptive-sharpen, artcnn-c4f16, artcnn-c4f16-ds, krigbilateral,
+    /// fsrcnnx, fsrcnnx-16). Repeatable.
     #[bpaf(argument("FILE|NAME"), many)]
     shader: Vec<PathBuf>,
     /// Stabilize in the grade pass: GPU optical-flow detect (cached), vidstab-style smoothing,
@@ -544,41 +628,42 @@ pub(crate) struct GradeArgs {
     /// --stabilize smoothing half-window in frames (vidstab smoothing).
     #[bpaf(argument("FRAMES"), fallback(20), display_fallback)]
     stab_smoothing: u32,
-    /// --stabilize fixed zoom instead of the automatic one.
+    /// --stabilize fixed zoom instead of the automatic one, e.g. 1.05.
     #[bpaf(argument("Z"))]
     stab_zoom: Option<f64>,
-    /// --stabilize cap on the automatic zoom.
+    /// --stabilize cap on the automatic zoom, e.g. 1.1 (default: no cap).
     #[bpaf(argument("Z"))]
     stab_max_zoom: Option<f64>,
-    /// Temporal denoise: frames on each side (1-5), motion-compensated; 0 = off.
-    #[bpaf(argument("N"), fallback(0))]
+    /// Temporal denoise: frames on each side, 1..5, motion-compensated; 0 = off.
+    #[bpaf(argument("N"), fallback(0), display_fallback)]
     temporal_radius: u32,
-    /// Temporal denoise motion: nvof (NVIDIA optical flow) or blocks (Vulkan block matching).
+    /// Temporal denoise motion: nvof (NVIDIA optical flow) or blocks (Vulkan block matching)
+    /// (default: nvof).
     #[bpaf(argument("SRC"), fallback(ffcine::filters::Motion::Nvof))]
     temporal_motion: ffcine::filters::Motion,
-    /// Temporal denoise luma strength (noise sigma, 8-bit code values).
-    #[bpaf(argument("S"), fallback(4.0))]
+    /// Temporal denoise luma strength: noise sigma in 8-bit code values.
+    #[bpaf(argument("S"), fallback(4.0), display_fallback)]
     temporal_strength: f32,
     /// Temporal denoise chroma strength (default: the luma strength).
     #[bpaf(argument("S"))]
     temporal_chroma: Option<f32>,
     /// Spatial (NLM) denoise luma strength, after the temporal one; 0 = off.
-    #[bpaf(argument("S"), fallback(0.0))]
+    #[bpaf(argument("S"), fallback(0.0), display_fallback)]
     denoise: f32,
     /// Spatial denoise chroma strength (default: 1.5x luma).
     #[bpaf(argument("S"))]
     denoise_chroma: Option<f32>,
-    /// Spatial denoise search radius (1-4).
-    #[bpaf(argument("R"), fallback(2))]
+    /// Spatial denoise search radius in px, 1..4.
+    #[bpaf(argument("R"), fallback(2), display_fallback)]
     denoise_radius: u32,
     /// Film grain sigma at mid-grey (8-bit code values) on the graded output; 0 = off.
-    #[bpaf(argument("S"), fallback(0.0))]
+    #[bpaf(argument("S"), fallback(0.0), display_fallback)]
     grain: f32,
     /// Grain cell size in output pixels.
-    #[bpaf(argument("PX"), fallback(1.5))]
+    #[bpaf(argument("PX"), fallback(1.5), display_fallback)]
     grain_size: f32,
-    /// Chroma grain relative to luma grain.
-    #[bpaf(argument("K"), fallback(0.0))]
+    /// Chroma grain relative to luma grain, 0..1.
+    #[bpaf(argument("K"), fallback(0.0), display_fallback)]
     grain_chroma: f32,
     /// HDR deliverable: pq (HDR10, with mastering display and content light metadata) or hlg,
     /// BT.2020, 10-bit. HDR sources keep their range; log sources use the analytic HDR camera
@@ -588,49 +673,54 @@ pub(crate) struct GradeArgs {
     /// Mastering peak of the HDR deliverable, cd/m².
     #[bpaf(argument("NITS"), fallback(1000.0), display_fallback)]
     hdr_peak: f64,
-    /// 8-bit libx264 preview instead of the 10-bit HEVC NVENC master.
+    /// 8-bit libx264 preview (crf 10) instead of the 10-bit HEVC NVENC master.
     preview: bool,
-    /// Encoder (hevc_nvenc, h264_nvenc, av1_nvenc, hevc_vulkan, libx264, ...).
+    /// Encoder: hevc_nvenc, h264_nvenc, av1_nvenc, hevc_vaapi, hevc_vulkan, h264_vulkan,
+    /// av1_vulkan, libx264, libx265 or png (default: hevc_nvenc; libx264 with --preview).
     #[bpaf(argument("CODEC"))]
     codec: Option<Codec>,
-    /// Encoder preset (p1..p7 for NVENC).
+    /// Encoder preset: p1..p7 for NVENC, x264's names for libx264 (default: p6; veryfast with
+    /// --preview).
     #[bpaf(argument("PRESET"))]
     preset: Option<String>,
-    /// Encoder tune (hq, ll, ...).
+    /// Encoder tune, e.g. hq or ll (default: hq; none with --preview).
     #[bpaf(argument("TUNE"))]
     tune: Option<String>,
-    /// Encoder profile (main10, high10, ...).
+    /// Encoder profile, e.g. main10 or high10 (default: main10; none with --preview).
     #[bpaf(argument("PROFILE"))]
     profile: Option<String>,
-    /// Rate control: qp=N, crf=N or bitrate=BITS.
+    /// Rate control: qp=N, crf=N or bitrate=BITS per second (default: qp=12; crf=10 with
+    /// --preview).
     #[bpaf(argument("RC"))]
     rate: Option<RateControl>,
-    /// Encoder pixel format (p010le, nv12, yuv420p, ...).
+    /// Encoder pixel format: p010le, nv12, yuv420p, yuv420p10le, gbrp16le or rgba (default:
+    /// p010le; yuv420p with --preview).
     #[bpaf(argument("FMT"))]
     pix_fmt: Option<PixelFormat>,
-    /// Keyframe interval in frames.
+    /// Keyframe interval in frames (default: 24).
     #[bpaf(argument("N"))]
     gop: Option<u32>,
     /// Delivery profile: master, preview, review (under --budget-mb) or phone (1080p HEVC);
     /// sets the encoder and size (--size still wins).
     #[bpaf(argument("PROFILE"))]
     deliver: Option<ffcine::DeliveryProfile>,
-    /// Size cap of the review profile, MB (default 50).
+    /// Size cap of the review profile in MB (default: 50).
     #[bpaf(argument("MB"))]
     budget_mb: Option<f64>,
     /// Draw this timeline's ffcine.text clips over the output.
     #[bpaf(argument("TIMELINE"))]
     text: Option<PathBuf>,
-    /// Timeline second the first output frame shows (with --text).
-    #[bpaf(argument("SECONDS"), fallback(0.0))]
+    /// Timeline time in seconds of the first output frame (with --text).
+    #[bpaf(argument("SECONDS"), fallback(0.0), display_fallback)]
     text_at: f64,
-    /// CUDA device; Vulkan is derived from it (no Vulkan encode).
+    /// CUDA device index; Vulkan is derived from it (default: picked automatically).
     #[bpaf(argument("N"))]
     cuda: Option<u32>,
     /// Vulkan device index (instead of --cuda).
     #[bpaf(argument("N"))]
     vulkan: Option<u32>,
-    /// Hardware decode API: vulkan (frames go straight to the renderer) or cuda (NVDEC, one copy).
+    /// Hardware decode API: vulkan (frames go straight to the renderer) or cuda (NVDEC, one
+    /// copy).
     #[bpaf(argument("API"), fallback(Decode::Vulkan), display_fallback)]
     decode: Decode,
     /// libplacebo shader cache directory (default: ~/.cache/ffcine/placebo).
@@ -638,8 +728,10 @@ pub(crate) struct GradeArgs {
     cache_dir: Option<PathBuf>,
     /// Don't use an on-disk shader cache.
     no_cache: bool,
+    /// Source clip.
     #[bpaf(positional("INPUT"))]
     input: PathBuf,
+    /// Output file; the container follows the extension (.mkv, .mov, .mp4, ...).
     #[bpaf(positional("OUTPUT"))]
     output: PathBuf,
 }
@@ -914,26 +1006,34 @@ pub(crate) struct BakeArgs {
     /// Grade LUT (.cube, normalized input), after the camera LUT.
     #[bpaf(argument("FILE"))]
     lut: Option<PathBuf>,
-    /// Look: exposure in stops.
+    /// Look: exposure in stops (display-linear light).
     #[bpaf(argument("STOPS"), fallback(0.0))]
     exposure: f32,
+    /// Look: warmth (+ warmer).
     #[bpaf(argument("W"), fallback(0.0))]
     warmth: f32,
+    /// Look: tint (+ magenta).
     #[bpaf(argument("T"), fallback(0.0))]
     tint: f32,
+    /// Look: S-curve contrast.
     #[bpaf(argument("C"), fallback(0.0))]
     contrast: f32,
+    /// Look: gamma (y = x^(1/gamma)).
     #[bpaf(argument("G"), fallback(1.0))]
     gamma: f32,
+    /// Look: black level.
     #[bpaf(argument("L"), fallback(0.0))]
     lift: f32,
+    /// Look: white level.
     #[bpaf(argument("G"), fallback(1.0))]
     gain: f32,
+    /// Look: saturation (Rec.709 luma).
     #[bpaf(argument("S"), fallback(1.0))]
     saturation: f32,
     /// Lattice size.
     #[bpaf(argument("N"), fallback(ffcine::bake::DEFAULT_SIZE), display_fallback)]
     size: usize,
+    /// The .cube to write.
     #[bpaf(positional("OUTPUT"))]
     output: PathBuf,
 }
