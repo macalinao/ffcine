@@ -46,7 +46,7 @@ mappings should carry over exactly so ffcine renders can be diffed against the p
 | Dither | not set (libavfilter defaults) | `pl_dither` blue noise to the output depth; on by default for DJI D-Log M |
 | Sharpen | CPU `unsharp=5:5:amount`; GPU mpv `.hook` (PREOUTPUT, BT.601 luma) matching it; `sharpen_up` (0.45) on upscaled shots | `Grade::sharpen` as a generated hook (`ffcine::shaders::unsharp`, already in the API) for prototype diffs; `adaptive-sharpen` `.hook` supersedes it as the default |
 | Chroma / AI upscale | none | `.hook` shaders: KrigBilateral (CHROMA) for 4:2:0 sources; FSRCNNX or ArtCNN for 1080p clips in a 4K timeline |
-| Stabilize | two-pass `vidstabdetect` (shakiness 6, accuracy 15) -> cached `.trf`; `vidstabtransform` (smoothing 20, optzoom 1, zoomspeed 0.25, bicubic, crop black) on CPU after the grade, before crop/scale | a GPU stabilizer, right after the grade path: NVOFA optical flow to detect, trajectory smoothing on the CPU, warp in the libplacebo pass, transforms cached by source range. CPU `vidstab` via libavfilter only as the tuning reference (it makes a stabilized shot about 18x slower). Gyro (`telemetry-parser`) can feed the same smoothing later |
+| Stabilize | two-pass `vidstabdetect` (shakiness 6, accuracy 15) -> cached `.trf`; `vidstabtransform` (smoothing 20, optzoom 1, zoomspeed 0.25, bicubic, crop black) on CPU after the grade, before crop/scale | a GPU stabilizer, right after the grade path: NVOFA optical flow to detect, trajectory smoothing on the CPU, warp in the libplacebo pass, transforms cached by source range. CPU `vidstab` via libavfilter only as the tuning reference (it makes a stabilized shot about 18x slower). Camera gyro or attitude feeds the same smoothing where the file has it (`docs/stabilize.md#gyro`) |
 | Grain | `noise=c0s=g:c1s=0.4g:c2s=0.4g` (temporal+uniform) once at assembly, after overlays/captions, in yuv444p16le (final) | libplacebo's AV1/H.274 grain synthesis (`pl_frame.film_grain`, params generated from `g` with chroma at 0.4) in the grade pass, replacing the CPU `noise`; `filmgrain.glsl` as a hook alternative. It applies to the source planes per shot, so captions/cards stay clean and the strength needs retuning against the prototype |
 | Audio | per clip: `highpass=80` -> `afftdn nr=6+10c nf=-34+6c tn=1` -> (dialogue) `equalizer 3.2 kHz +1.8c`, `deesser i=0.35c`, `acompressor -24 dB 2.5:1 8/160 ms`; `atempo` for speed; EBU R128 levelling (dialogue -18, nat -22 LUFS, gain clamped -10..+14); ambience beds with 1 s loop crossfades; music cues at -20 LUFS with a 100 Hz duck envelope (attack 0.25, release 0.45); SFX bus; master `volume` to -14 LUFS, 4x-oversampled `alimiter` at true peak -2 dB, up to 3 passes to land within 0.25 LU | a separate audio graph rendered per timeline, not per shot: the per-clip chain via libavfilter (all LGPL filters), mixing/ducking/fades in Rust, `ebur128` for loudness and true peak, `rubato` for the oversampled limiter |
 
@@ -320,7 +320,8 @@ clip sets them. The library API stays the resolved form; the timeline crate does
 - **Text**: `cosmic-text` (shaping and layout for captions and cards).
 - **Container/time**: `mp4-atom` (chapters, cover art, tags without a remux), `vtc` (timecode at
   NTSC rates).
-- **Later**: `telemetry-parser` (git dep) for DJI/iPhone gyro, to drive stabilization.
+- **Gyro**: `telemetry-parser` 0.2.6 (crates.io, optional feature `telemetry`) for camera gyro
+  metadata; DJI's `dbgi` attitude is read by `ffcine-stabilize` itself.
 - **Our own**: `.cube` parser (`ffcine_core::Lut`), and a serde model of the OTIO JSON schema in
   `ffcine-timeline` (there is no production Rust OTIO crate; `mediaio-timeline` is a reference
   only).

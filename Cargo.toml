@@ -78,6 +78,8 @@ hound = "3"
 rustfft = "6"
 # dlopen of the NVIDIA driver libraries (CUDA, optical flow) at run time.
 libloading = "0.8"
+# Camera gyro and attitude metadata (optional, `telemetry`). 0.2.6 is the last crates.io release.
+telemetry-parser = "0.2.6"
 
 # PNG decode and JPEG encode in `ffcine looks` are unusably slow unoptimised.
 [profile.dev.package.image]

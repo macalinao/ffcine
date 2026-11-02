@@ -17,12 +17,15 @@ default = ["nvof"]
 # NVIDIA optical flow (NVOFA) detect on NVDEC frames. The driver libraries are loaded at run
 # time, so it builds without them.
 nvof = ["dep:ffmpeg-next", "dep:libloading", "ffcine-core/ffmpeg"]
+# Gyro from every format telemetry-parser reads, on top of the DJI debug track `nvof` reads itself.
+telemetry = ["nvof", "dep:telemetry-parser"]
 
 [dependencies]
 ffcine-core.workspace = true
 serde_json.workspace = true
 ffmpeg-next = { workspace = true, optional = true }
 libloading = { workspace = true, optional = true }
+telemetry-parser = { workspace = true, optional = true }
 
 [lints]
 workspace = true

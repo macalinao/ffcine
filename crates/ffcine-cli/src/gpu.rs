@@ -9,7 +9,10 @@ use anyhow::Context as _;
 use bpaf::{Bpaf, Parser as _};
 use ffcine::camera::{self, ProfileChoice};
 use ffcine::reframe::{Profile, Reframe, Shot};
-use ffcine::stabilize::{self, DetectParams, FlowQuality, SourceRange, StabilizeParams, Zoom};
+use ffcine::stabilize::{
+    self, DetectParams, FlowQuality, GyroParams, MotionOptions, MotionSource, SourceRange,
+    StabilizeParams, Zoom,
+};
 use ffcine::{
     Backend as _, Codec, ColorMapTuning, ColorOverride, Crop, Deband, Decode, Denoise, Device,
     Dither, DitherMethod, EncoderSettings, GamutMapping, Grade, Grain, Lut, LutStage, LutType,
@@ -356,6 +359,15 @@ pub(crate) struct StabilizeArgs {
     /// Gaussian smoothing half-window in frames (vidstab smoothing).
     #[bpaf(argument("FRAMES"), fallback(20), display_fallback)]
     smoothing: u32,
+    /// Camera motion from: auto (gyro where it is trusted, else flow), gyro or flow.
+    #[bpaf(argument("SOURCE"), fallback(MotionSource::Auto), display_fallback)]
+    source: MotionSource,
+    /// Gyro: focal length in source pixels, instead of the file's or the camera's.
+    #[bpaf(argument("PX"))]
+    focal: Option<f64>,
+    /// Gyro: added to frame times before looking up the attitude.
+    #[bpaf(argument("MS"), fallback(0.0), display_fallback)]
+    gyro_offset: f64,
     /// Width in px the frames are scaled to for optical flow.
     #[bpaf(argument("PX"), fallback(1920), display_fallback)]
     analysis_width: u32,
@@ -412,6 +424,13 @@ pub(crate) struct JitterArgs {
     input: PathBuf,
 }
 
+/// `auto` went to optical flow: say why.
+fn print_fallback(found: &stabilize::MotionDetection) {
+    if let Some(why) = &found.fallback {
+        eprintln!("stabilize: optical flow, not gyro: {why}");
+    }
+}
+
 impl StabilizeArgs {
     fn run(self) -> anyhow::Result<()> {
         let range = SourceRange {
@@ -425,15 +444,22 @@ impl StabilizeArgs {
             ..DetectParams::default()
         };
         let t = std::time::Instant::now();
-        let (det, cached) = if self.no_cache {
-            (stabilize::detect(&self.input, &range, &detect)?, false)
-        } else {
-            stabilize::detect_cached(&self.input, &range, &detect)?
+        let motion = MotionOptions {
+            source: self.source,
+            gyro: GyroParams {
+                focal_px: self.focal,
+                offset_ms: self.gyro_offset,
+            },
         };
+        let found =
+            stabilize::detect_motion(&self.input, &range, &detect, &motion, !self.no_cache)?;
+        print_fallback(&found);
+        let det = &found.detection;
         println!(
-            "detect {:.2} s{} ({}x{} analysed at {}x{})",
+            "detect {:.2} s{} from {} ({}x{} analysed at {}x{})",
             t.elapsed().as_secs_f64(),
-            if cached { " (cached)" } else { "" },
+            if found.cached { " (cached)" } else { "" },
+            found.source,
             det.width,
             det.height,
             det.analysis_width,
@@ -446,7 +472,7 @@ impl StabilizeArgs {
                 None => Zoom::Auto { max: self.max_zoom },
             },
         };
-        let st = stabilize::stabilize(&det, &params);
+        let st = stabilize::stabilize(det, &params);
         println!("zoom {:.4} (needed {:.4})", st.zoom, st.min_zoom);
         let write = |path: &PathBuf, text: String| {
             std::fs::write(path, text).with_context(|| format!("writing {}", path.display()))
@@ -592,6 +618,15 @@ pub(crate) struct GradeArgs {
     /// auto zoom, warp before the crop.
     #[bpaf(long("stabilize"), long("stabilise"))]
     stabilize: bool,
+    /// --stabilize camera motion from: auto (gyro where it is trusted, else flow), gyro or flow.
+    #[bpaf(argument("SOURCE"), fallback(MotionSource::Auto), display_fallback)]
+    stab_source: MotionSource,
+    /// --stabilize gyro: focal length in source pixels, instead of the file's or the camera's.
+    #[bpaf(argument("PX"))]
+    stab_focal: Option<f64>,
+    /// --stabilize gyro: added to frame times before looking up the attitude.
+    #[bpaf(argument("MS"), fallback(0.0), display_fallback)]
+    stab_gyro_offset: f64,
     /// --stabilize smoothing half-window in frames (vidstab smoothing).
     #[bpaf(argument("FRAMES"), fallback(20), display_fallback)]
     stab_smoothing: u32,
@@ -712,6 +747,13 @@ impl GradeArgs {
     /// The pipeline, with its camera LUT and stabilized on `ff` if asked.
     fn build(self, ff: &dyn ffcine::Backend) -> anyhow::Result<Pipeline> {
         let stab = self.stabilize();
+        let motion = MotionOptions {
+            source: self.stab_source,
+            gyro: GyroParams {
+                focal_px: self.stab_focal,
+                offset_ms: self.stab_gyro_offset,
+            },
+        };
         let choice = match self.camera {
             Some(c) => Some(c),
             None if self.lut.is_none() => Some(ProfileChoice::Auto),
@@ -741,12 +783,14 @@ impl GradeArgs {
         }
         if let Some(params) = stab {
             let t = std::time::Instant::now();
-            let (st, cached) = ffcine::stabilize_pipeline(ff, &mut p, &params, true)
+            let (st, found) = ffcine::stabilize_pipeline(ff, &mut p, &params, &motion, true)
                 .with_context(|| format!("stabilizing {}", p.input.display()))?;
+            print_fallback(&found);
             eprintln!(
-                "stabilize: detect {:.2} s{}, {} frames, zoom {:.4} (needed {:.4})",
+                "stabilize: detect {:.2} s{} from {}, {} frames, zoom {:.4} (needed {:.4})",
                 t.elapsed().as_secs_f64(),
-                if cached { " (cached)" } else { "" },
+                if found.cached { " (cached)" } else { "" },
+                found.source,
                 st.transforms.len(),
                 st.zoom,
                 st.min_zoom

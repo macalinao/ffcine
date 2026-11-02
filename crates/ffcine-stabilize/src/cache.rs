@@ -1,14 +1,17 @@
 //! On-disk cache of detect results, keyed by the source file (canonical path, size, mtime), the
-//! range and the detect parameters. Plain text in `$XDG_CACHE_HOME/ffcine/stabilize/`.
+//! range, and the motion source with its parameters. Plain text in
+//! `$XDG_CACHE_HOME/ffcine/stabilize/`.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use super::{DetectParams, Detection, Motion, SourceRange};
+use super::{DetectParams, Detection, Motion, MotionOptions, SourceRange};
 use ffcine_core::{Error, Result};
 
 /// Bump when detect's output for the same key changes (estimator, flow handling).
 pub const FORMAT_VERSION: u32 = 2;
+/// Bump when the gyro path's output for the same key changes (axes, per-camera focal lengths).
+pub const GYRO_VERSION: u32 = 1;
 
 #[cfg_attr(not(feature = "nvof"), allow(dead_code))] // used by detect_cached
 const MAGIC: &str = "ffcine-stabilize-detect";
@@ -43,6 +46,35 @@ fn cache_base() -> Option<PathBuf> {
 
 /// The cache key as text (also stored in the entry, to rule out hash collisions).
 pub fn key(path: &Path, range: &SourceRange, params: &DetectParams) -> Result<String> {
+    let e = &params.estimate;
+    Ok(format!(
+        "{}detect {} {} {}\nestimate {} {} {} {} {} {}\n",
+        source_key(path, range)?,
+        params.analysis_width,
+        params.quality,
+        params.grid,
+        e.border,
+        e.max_cost,
+        e.step,
+        e.threshold,
+        e.iterations,
+        e.min_confidence,
+    ))
+}
+
+/// The cache key of the same range's motions from the file's gyro. The source choice is part of
+/// it: what `--source gyro` forces, `auto` may refuse, and mustn't find here.
+pub fn gyro_key(path: &Path, range: &SourceRange, options: &MotionOptions) -> Result<String> {
+    Ok(format!(
+        "{}gyro {GYRO_VERSION} {} {:?} {}\n",
+        source_key(path, range)?,
+        options.source,
+        options.gyro.focal_px,
+        options.gyro.offset_ms,
+    ))
+}
+
+fn source_key(path: &Path, range: &SourceRange) -> Result<String> {
     let io = |source| Error::Io {
         path: path.to_owned(),
         source,
@@ -54,11 +86,8 @@ pub fn key(path: &Path, range: &SourceRange, params: &DetectParams) -> Result<St
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .unwrap_or_default();
-    let e = &params.estimate;
     Ok(format!(
-        "version {FORMAT_VERSION}\nsource {}\nsize {}\nmtime {}.{:09}\n\
-         range {} {} {}\ndetect {} {} {}\n\
-         estimate {} {} {} {} {} {}\n",
+        "version {FORMAT_VERSION}\nsource {}\nsize {}\nmtime {}.{:09}\nrange {} {} {}\n",
         canon.display(),
         meta.len(),
         mtime.as_secs(),
@@ -66,15 +95,6 @@ pub fn key(path: &Path, range: &SourceRange, params: &DetectParams) -> Result<St
         range.start,
         range.frames,
         range.rate,
-        params.analysis_width,
-        params.quality,
-        params.grid,
-        e.border,
-        e.max_cost,
-        e.step,
-        e.threshold,
-        e.iterations,
-        e.min_confidence,
     ))
 }
 
@@ -171,31 +191,61 @@ pub fn detect_cached(
     params: &DetectParams,
 ) -> Result<(Detection, bool)> {
     let key = key(path, range, params)?;
-    let name = format!("{:016x}.txt", fnv1a(key.as_bytes()));
-    let file = dir().map(|d| d.join(&name));
-    for f in file
-        .iter()
-        .chain(legacy_dir().map(|d| d.join(&name)).iter())
-    {
-        if let Some(det) = std::fs::read_to_string(f)
-            .ok()
-            .and_then(|t| from_text(&key, &t))
-        {
-            return Ok((det, true));
-        }
+    if let Some(det) = read_entry(&key) {
+        return Ok((det, true));
     }
     let det = super::detect(path, range, params)?;
-    if let Some(f) = &file
+    write_entry(&key, &det);
+    Ok((det, false))
+}
+
+/// `compute` (motions from the file's gyro), through the cache. The outer error is an I/O one on
+/// the source; the inner is why the file has no usable gyro, which isn't cached.
+#[cfg(feature = "nvof")]
+pub fn gyro_cached(
+    path: &Path,
+    range: &SourceRange,
+    options: &MotionOptions,
+    compute: impl FnOnce() -> Result<Detection, String>,
+) -> Result<Result<(Detection, bool), String>> {
+    let key = gyro_key(path, range, options)?;
+    if let Some(det) = read_entry(&key) {
+        return Ok(Ok((det, true)));
+    }
+    Ok(compute().map(|det| {
+        write_entry(&key, &det);
+        (det, false)
+    }))
+}
+
+#[cfg(feature = "nvof")]
+fn entry_name(key: &str) -> String {
+    format!("{:016x}.txt", fnv1a(key.as_bytes()))
+}
+
+#[cfg(feature = "nvof")]
+fn read_entry(key: &str) -> Option<Detection> {
+    let name = entry_name(key);
+    dir()
+        .map(|d| d.join(&name))
+        .into_iter()
+        .chain(legacy_dir().map(|d| d.join(&name)))
+        .find_map(|f| from_text(key, &std::fs::read_to_string(f).ok()?))
+}
+
+/// A cache that can't be written is skipped, not an error.
+#[cfg(feature = "nvof")]
+fn write_entry(key: &str, det: &Detection) {
+    if let Some(f) = dir().map(|d| d.join(entry_name(key)))
         && let Some(parent) = f.parent()
         && std::fs::create_dir_all(parent).is_ok()
     {
         // Write then rename, so a concurrent reader never sees half an entry.
         let tmp = f.with_extension(format!("tmp{}", std::process::id()));
-        if std::fs::write(&tmp, to_text(&key, &det)).is_ok() && std::fs::rename(&tmp, f).is_err() {
+        if std::fs::write(&tmp, to_text(key, det)).is_ok() && std::fs::rename(&tmp, f).is_err() {
             let _ = std::fs::remove_file(&tmp);
         }
     }
-    Ok((det, false))
 }
 
 #[cfg(test)]
@@ -257,5 +307,28 @@ mod tests {
             ..p
         };
         assert_ne!(k, key(&me, &r, &p2).unwrap());
+        // The source is part of the key: gyro and flow entries never mix.
+        let forced = MotionOptions {
+            source: crate::MotionSource::Gyro,
+            ..MotionOptions::default()
+        };
+        let gk = gyro_key(&me, &r, &forced).unwrap();
+        assert_ne!(k, gk);
+        assert!(gk.contains("gyro "));
+        let auto = MotionOptions::default();
+        assert_ne!(gk, gyro_key(&me, &r, &auto).unwrap());
+        for gyro in [
+            crate::GyroParams {
+                focal_px: Some(2000.0),
+                offset_ms: 0.0,
+            },
+            crate::GyroParams {
+                focal_px: None,
+                offset_ms: 5.0,
+            },
+        ] {
+            let o = MotionOptions { gyro, ..forced };
+            assert_ne!(gk, gyro_key(&me, &r, &o).unwrap());
+        }
     }
 }

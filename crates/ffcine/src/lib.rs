@@ -44,8 +44,8 @@ pub use ffcine_text as text;
 pub use ffcine_timeline as timeline;
 pub use ffcine_triage as triage;
 
-/// Stabilizes a pipeline's shot in its grade pass: GPU detect over the pipeline's range (cached
-/// unless `cache` is false), smoothing and zoom per `params`, and the warps set on the first
+/// Stabilizes a pipeline's shot in its grade pass: camera motion over the pipeline's range from
+/// the source `motion` chooses (cached unless `cache` is false), smoothing and zoom per `params`, and the warps set on the first
 /// grade stage (one is added if there is none). The range's rate is the pipeline's output rate,
 /// else the source's (probed on `backend`); with no `frames` it runs to the end of the source.
 ///
@@ -56,8 +56,9 @@ pub fn stabilize_pipeline(
     backend: &dyn Backend,
     pipeline: &mut Pipeline,
     params: &stabilize::StabilizeParams,
+    motion: &stabilize::MotionOptions,
     cache: bool,
-) -> Result<(stabilize::Stabilization, bool)> {
+) -> Result<(stabilize::Stabilization, stabilize::MotionDetection)> {
     let start = pipeline.start.as_secs_f64();
     let (rate, frames) = match (pipeline.frame_rate, pipeline.frames) {
         (Some(r), Some(n)) => (r, n),
@@ -81,12 +82,8 @@ pub fn stabilize_pipeline(
         rate,
     };
     let detect = stabilize::DetectParams::default();
-    let (det, cached) = if cache {
-        stabilize::detect_cached(&pipeline.input, &range, &detect)?
-    } else {
-        (stabilize::detect(&pipeline.input, &range, &detect)?, false)
-    };
-    let st = stabilize::stabilize(&det, params);
+    let det = stabilize::detect_motion(&pipeline.input, &range, &detect, motion, cache)?;
+    let st = stabilize::stabilize(&det.detection, params);
     let warp = Some(Warp {
         transforms: st.transforms.clone(),
     });
@@ -101,5 +98,5 @@ pub fn stabilize_pipeline(
             }),
         );
     }
-    Ok((st, cached))
+    Ok((st, det))
 }
