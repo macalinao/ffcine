@@ -10,13 +10,16 @@ yt-dlp -o ref.mp4 'https://...'   # ffcine reads local files only
 ffcine breakdown ref.mp4          # -> ref-breakdown/
 ```
 
+For agents, [skills/shot-breakdown](../skills/shot-breakdown/SKILL.md) goes from a link to a
+shot list with how to recreate each shot.
+
 Output goes to `NAME-breakdown/` beside the video (`-o` to change it):
 
 | File | What |
 |---|---|
 | `breakdown.json` | every shot's analysis ([schema](#breakdownjson)), for agents and scripts |
 | `shotlist.md` | `#`, time, length, motion, speech/text, an empty notes column, keyframe path |
-| `contact-sheet.jpg` | the keyframes in a grid, numbered, with each shot's length; under 5 MB for chat. Over 12 rows, more pages: `contact-sheet-2.jpg`, ... |
+| `contact-sheet.jpg` | the keyframes in a grid, numbered, with each shot's length; under 5 MB for chat; past 12 rows, `contact-sheet-2.jpg`... |
 | `keyframes/NNN.jpg` | each shot's representative frame (960 px long side); `NNN-first.jpg`, `NNN-last.jpg` |
 
 ## What it does
@@ -80,7 +83,7 @@ Phone files with a rotation tag are analysed unrotated; downloads from the platf
 }
 ```
 
-Times are seconds from the first frame (beats and words shifted onto it when the audio starts elsewhere); `end` is the next shot's `start`; `frames` is the first
-frame and one past the last. `cut_on_beat` and `beat_offset` (nearest beat minus the cut) are
+Times are seconds from the first frame (beats and words shifted onto it when the audio starts
+elsewhere); `end` is the next shot's `start`; `frames` is the first frame and one past the last. `cut_on_beat` and `beat_offset` (nearest beat minus the cut) are
 absent for the first shot and without music; `beats` is the shot's length in beats. `speech` and
 `text` are absent when empty. `transcript` is triage's format.

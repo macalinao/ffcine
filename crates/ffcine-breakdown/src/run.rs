@@ -1,6 +1,7 @@
 //! The breakdown, top to bottom.
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use ffcine_triage::scene::{SceneDetector, SceneParams, small_luma};
@@ -334,7 +335,7 @@ pub fn run(o: &Options) -> Result<Breakdown> {
                 crate::clock(b.duration)
             );
             if pages > 1 {
-                title.push_str(&format!("  ·  {}/{pages}", i + 1));
+                let _ = write!(title, "  ·  {}/{pages}", i + 1);
             }
             let img = sheet::render(&title, page, o.sheet_width, cols);
             // The sheet is a convenience: its failure mustn't cost the shot list.

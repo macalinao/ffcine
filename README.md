@@ -64,6 +64,8 @@ ffcine render --profile master -o master.mp4 timeline.otio
 | `chapters`, `tag`, `credits`, `still`, `publish` | YouTube chapters, chapters and cover art in the MP4, music credits, stills, upload to Immich |
 
 `ffcine <command> --help` has the details; [docs/](docs) has one page per area.
+[skills/](skills) has agent skills: [shot-breakdown](skills/shot-breakdown/SKILL.md) turns a
+TikTok, reel or YouTube link into a shot list to recreate it.
 
 ## Development
 
