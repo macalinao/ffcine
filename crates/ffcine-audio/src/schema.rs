@@ -129,6 +129,11 @@ impl Bus {
         }
     }
 
+    /// The bus called `name`, if `name` is one of the four.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|b| b.name() == name)
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Bus::Dialogue => "dialogue",
@@ -163,6 +168,8 @@ pub struct Clean {
     pub amount: f64,
     /// High-pass corner in Hz (12 dB/oct); `null` for none.
     pub highpass: Option<f64>,
+    /// Low-pass corner in Hz (12 dB/oct), none by default.
+    pub lowpass: Option<f64>,
     /// Outdoor wind preset: 24 dB/oct high-pass at 150 Hz, low shelf -6 dB at 300 Hz, de-click
     /// for gust pops.
     pub wind: bool,
@@ -180,6 +187,7 @@ impl Default for Clean {
         Self {
             amount: 0.6,
             highpass: Some(80.0),
+            lowpass: None,
             wind: false,
             declick: false,
             denoise: Denoise::Afftdn,
@@ -224,6 +232,9 @@ impl Clean {
         let mut f: Vec<String> = Vec::new();
         if let Some(hz) = self.highpass {
             f.push(format!("highpass=f={hz}"));
+        }
+        if let Some(hz) = self.lowpass {
+            f.push(format!("lowpass=f={hz}"));
         }
         if self.wind {
             f.push("highpass=f=150:p=2,highpass=f=150:p=2,lowshelf=f=300:g=-6".into());

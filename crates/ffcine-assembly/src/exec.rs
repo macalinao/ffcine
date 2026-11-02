@@ -1133,12 +1133,15 @@ impl Renderer<'_> {
         Ok(())
     }
 
-    /// Mixes the audio (`ffcine_audio::render_audio`, the picture's length) and encodes it to
+    /// Mixes the audio (`ffcine_audio::stream_audio`, the picture's length) and encodes it to
     /// AAC. Returns the master's loudness and true peak.
     fn mix(&self, plan: &Plan, a: &AudioPlan, out: &Path) -> Result<(f64, f64)> {
-        let mix = ffcine_audio::render_audio(&a.timeline, &a.options)?;
-        let wav = self.dir("tmp")?.join(format!("{}.wav", a.key));
-        mix.master.write_wav(&wav)?;
+        let tmp = self.dir("tmp")?;
+        let mut options = a.options.clone();
+        options.scratch = Some(tmp.clone());
+        let mut mix = ffcine_audio::stream_audio(&a.timeline, &options, false)?;
+        let wav = tmp.join(format!("{}.wav", a.key));
+        mix.write_master(&wav)?;
         let mut v = vec![OsString::from("-i"), wav.clone().into()];
         v.extend(args(&[
             "-c:a",

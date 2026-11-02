@@ -966,6 +966,19 @@ impl Planner<'_> {
             }
             return Ok(None);
         };
+        let media = if self.profile.proxies {
+            crate::proxy::find(&media, self.profile.proxy_dir.as_deref(), self.fp).unwrap_or_else(
+                || {
+                    self.warn(format!(
+                        "clip {:?}: no proxy, rendered from the source",
+                        c.name
+                    ));
+                    media
+                },
+            )
+        } else {
+            media
+        };
         let mut speed = 1.0;
         let mut clip_grade = None;
         let mut fx = Vec::new();
@@ -1492,6 +1505,49 @@ mod tests {
         a.children = audio;
         t.tracks.children = vec![Item::Track(v), Item::Track(a)];
         t
+    }
+
+    /// `review` decodes a camera proxy beside the clip when there is one, and keys apart from
+    /// `preview`; a clip without one renders from its source, warned.
+    #[test]
+    fn review_renders_from_proxies() {
+        let dir = std::env::temp_dir().join(format!("ffcine-plan-proxy-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for f in ["A.mp4", "A.LRF", "B.mp4"] {
+            std::fs::write(dir.join(f), b"x").unwrap();
+        }
+        let file = |name: &str, f: &str| {
+            let media = MediaReference::External(ExternalReference::from_path(&dir.join(f), None));
+            Item::Clip(Clip::new(
+                name,
+                media,
+                Some(TimeRange::from_frames(0.0, 48.0, RATE)),
+            ))
+        };
+        let t = timeline(vec![file("a", "A.mp4"), file("b", "B.mp4")], vec![]);
+        let media = |p: &Plan| -> Vec<PathBuf> {
+            p.segments
+                .iter()
+                .filter_map(|s| match &s.unit {
+                    Unit::Shot(s) => Some(s.media.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let review = plan(&t, &dir, &Profile::review(), &Fake, None).unwrap();
+        assert_eq!(media(&review), [dir.join("A.LRF"), dir.join("B.mp4")]);
+        assert!(
+            review
+                .warnings
+                .iter()
+                .any(|w| w.contains("\"b\": no proxy")),
+            "{:?}",
+            review.warnings
+        );
+        let preview = plan(&t, &dir, &Profile::preview(), &Fake, None).unwrap();
+        assert_eq!(media(&preview), [dir.join("A.mp4"), dir.join("B.mp4")]);
+        assert!(key_set(&review).is_disjoint(&key_set(&preview)));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     fn plan_of(t: &Timeline) -> Plan {

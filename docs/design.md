@@ -374,8 +374,9 @@ crate that uses them ([Crates](#crates)).
    `mp4-atom`, replacing the prototype's final ffmpeg pass.
    `ffcine render` assembles a whole timeline from a content-keyed segment cache: only changed
    segments render, the master joins them by stream copy, an audio-only change is a remux, and
-   renders resume ([assembly.md](assembly.md)). Still to come: text, chapters, cover, split-screen
-   compositing, the full audio graph (step 6).
+   renders resume ([assembly.md](assembly.md)). Chapters and cover are written with `mp4-atom`
+   ([delivery.md](delivery.md)). Still to come: text, split-screen compositing, the full audio
+   graph (step 6).
 9. **`.hook` shaders**: vendored `adaptive-sharpen` (replacing the unsharp hook as default),
    KrigBilateral chroma for 4:2:0 sources, FSRCNNX/ArtCNN for 1080p clips in a 4K timeline,
    `filmgrain.glsl`, all through `pl_mpv_user_shader_parse` in the grade pass. adaptive-sharpen
