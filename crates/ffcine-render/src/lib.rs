@@ -22,5 +22,5 @@ pub use grade::{
 };
 pub use layer::{Image, Layer, LayerSource};
 pub use overlay::{Mask, Overlay, OverlayPart};
-pub use pipeline::{Backend, Decode, Device, Pipeline, RunStats, Stage};
+pub use pipeline::{Backend, Decode, Device, FrameContext, Pipeline, RunStats, Stage};
 pub use profile::DeliveryProfile;

@@ -33,6 +33,13 @@ pub enum Device {
     Vulkan(u32),
 }
 
+/// Frames read around a pipeline's range for temporal filters. See [`Pipeline::context`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FrameContext {
+    pub before: u64,
+    pub after: u64,
+}
+
 /// One processing step. Frames stay on the GPU between stages.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
@@ -50,6 +57,10 @@ pub struct Pipeline {
     pub start: Duration,
     /// Output exactly this many frames (repeating the last one if the source runs out).
     pub frames: Option<u64>,
+    /// Frames before `start` and after the last output frame that a temporal denoiser reads as
+    /// history and lookahead but that aren't output (fewer where the input runs out). Ignored
+    /// without one.
+    pub context: FrameContext,
     /// Output frame rate (ffmpeg's `fps` filter); `None` keeps the source's frames.
     pub frame_rate: Option<Rational>,
     pub stages: Vec<Stage>,
@@ -70,6 +81,7 @@ impl Pipeline {
             output: output.into(),
             start: Duration::ZERO,
             frames: None,
+            context: FrameContext::default(),
             frame_rate: None,
             stages: Vec::new(),
             encoder: EncoderSettings::default(),
@@ -96,6 +108,13 @@ impl Pipeline {
     pub fn range(mut self, start: Duration, frames: Option<u64>) -> Self {
         self.start = start;
         self.frames = frames;
+        self
+    }
+
+    /// See [`Pipeline::context`].
+    #[must_use]
+    pub fn context(mut self, before: u64, after: u64) -> Self {
+        self.context = FrameContext { before, after };
         self
     }
 

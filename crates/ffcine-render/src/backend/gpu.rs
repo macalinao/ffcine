@@ -74,7 +74,21 @@ impl Gpu {
             Decode::Cuda => &self.devices.cuda,
             _ => &self.devices.vulkan,
         };
-        let input = Input::open(&p.input, p.start, dec_device)?;
+        // History and lookahead for the temporal denoiser: decoded and denoised, not output.
+        let ctx = if grade.denoise.is_some_and(|d| !d.is_off()) {
+            p.context
+        } else {
+            crate::FrameContext::default()
+        };
+        // Generous: the seek only has to land before the frames kept as history.
+        #[allow(clippy::cast_precision_loss)]
+        let lead = Duration::from_secs_f64(
+            (ctx.before + u64::from(ctx.before > 0)) as f64
+                * p.frame_rate
+                    .filter(|r| r.num > 0)
+                    .map_or(0.1, |r| f64::from(r.den) / f64::from(r.num)),
+        );
+        let input = Input::open_with_lead(&p.input, p.start, lead, dec_device)?;
         let (in_w, in_h) = input.size();
         let chroma = input.decoder().chroma_sample_location;
         let (w, h) = grade.size.map_or((in_w, in_h), |s| (s.width, s.height));
@@ -172,12 +186,13 @@ impl Gpu {
         }
         let setup = t0.elapsed();
 
-        let want = p.frames.unwrap_or(u64::MAX);
+        let want = p.frames.map_or(u64::MAX, |n| n.saturating_add(ctx.after));
+        let lead_frames = usize::try_from(ctx.before).unwrap_or(0);
         let vulkan = self.devices.vulkan.clone();
         // Three stages in flight: decode + upload N+1 | render N | download + encode N-1. Each
         // hands frames on with ffmpeg's/libplacebo's semaphores attached, so no stage waits on
         // the GPU for another; the bounded channels cap VRAM use.
-        let (dec_tx, dec_rx) = sync_channel::<Frame>(DEPTH);
+        let (dec_tx, dec_rx) = sync_channel::<(Frame, bool)>(DEPTH);
         let (enc_tx, enc_rx) = sync_channel::<Frame>(DEPTH);
         let (dec, rendered, enc) = thread::scope(|sc| {
             let grade = &grade;
@@ -188,7 +203,9 @@ impl Gpu {
                     sc.spawn(move || decode_loop(inp, rate, n, &vk, g, &tx))
                 })
                 .collect();
-            let dec = sc.spawn(move || decode_loop(input, rate, want, &vulkan, grade, &dec_tx));
+            let dec = sc.spawn(move || {
+                decode_lead(input, rate, lead_frames, want, &vulkan, grade, &dec_tx)
+            });
             let enc = sc.spawn(move || encode_loop(output, &enc_rx, p.frames, t0));
             let mut t_render = Busy::new("render");
             let mut index = 0;
@@ -214,27 +231,39 @@ impl Gpu {
             };
             let rendered = (|| -> Result<()> {
                 let Some(dn) = &mut denoiser else {
-                    for up in dec_rx {
+                    for (up, _) in dec_rx {
                         if !send(self, Src::Frame(&up))? {
                             break;
                         }
                     }
                     return Ok(());
                 };
-                let mut open = true;
-                for up in dec_rx {
-                    dn.push(&up)?;
-                    while let Some((props, image)) = dn.pop(false)? {
-                        open = send(self, Src::Image(&props, &image))?;
-                        if !open {
+                // Context frames go through the denoiser in order but aren't rendered.
+                let mut lead = std::collections::VecDeque::new();
+                let mut left = p.frames.unwrap_or(u64::MAX);
+                let mut rx = dec_rx.into_iter();
+                loop {
+                    let flush = match rx.next() {
+                        Some((up, l)) => {
+                            dn.push(&up)?;
+                            lead.push_back(l);
+                            false
+                        }
+                        None => true,
+                    };
+                    while let Some((props, image)) = dn.pop(flush)? {
+                        if lead.pop_front().unwrap_or(false) {
+                            continue;
+                        }
+                        if left == 0 || !send(self, Src::Image(&props, &image))? {
                             return Ok(());
                         }
+                        left -= 1;
+                    }
+                    if flush {
+                        return Ok(());
                     }
                 }
-                while open && let Some((props, image)) = dn.pop(true)? {
-                    open = send(self, Src::Image(&props, &image))?;
-                }
-                Ok(())
             })();
             drop(send);
             // Layer decoders still sending (the main input ran short) stop when hung up on.
@@ -651,14 +680,43 @@ fn join<T>(h: thread::ScopedJoinHandle<'_, Result<T>>) -> Result<T> {
 
 /// Decode, select frames (seek trim, fps), upload to Vulkan. Stops quietly if the renderer hangs up.
 fn decode_loop(
-    mut input: Input,
+    input: Input,
     rate: Option<Q>,
     want: u64,
     vulkan: &BufferRef,
     grade: &Grade,
     tx: &SyncSender<Frame>,
 ) -> Result<()> {
-    let mut retimer = Retimer::new(input.tb, input.trim, rate);
+    decode_frames(input, rate, 0, want, vulkan, grade, tx, |f, _| f)
+}
+
+/// [`decode_loop`], first sending up to `lead` frames from before the seek point, flagged
+/// `true` (not counted in `want`).
+fn decode_lead(
+    input: Input,
+    rate: Option<Q>,
+    lead: usize,
+    want: u64,
+    vulkan: &BufferRef,
+    grade: &Grade,
+    tx: &SyncSender<(Frame, bool)>,
+) -> Result<()> {
+    decode_frames(input, rate, lead, want, vulkan, grade, tx, |f, l| (f, l))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn decode_frames<T>(
+    mut input: Input,
+    rate: Option<Q>,
+    lead: usize,
+    want: u64,
+    vulkan: &BufferRef,
+    grade: &Grade,
+    tx: &SyncSender<T>,
+    wrap: fn(Frame, bool) -> T,
+) -> Result<()> {
+    let mut retimer = Retimer::new(input.tb, input.trim, rate).lead(lead);
+    let mut out = 0usize;
     let mut vk_in: Option<BufferRef> = None;
     let mut ready = Vec::new();
     let mut sent = 0u64;
@@ -674,10 +732,11 @@ fn decode_loop(
             eof = true;
         }
         for f in ready.drain(..) {
-            if sent == want {
+            let lead = out < retimer.led();
+            if !lead && sent == want {
                 break;
             }
-            if sent == 0 && f.get().hw_frames_ctx.is_null() {
+            if out == 0 && f.get().hw_frames_ctx.is_null() {
                 // ffmpeg falls back to software decode quietly when the hardware decoder rejects
                 // a format (4:2:2 HEVC on NVDEC and Vulkan video as of driver 615).
                 // SAFETY: software frames carry their pixel format in `format`; the name is a
@@ -697,10 +756,11 @@ fn decode_loop(
                 );
             }
             let up = t_up.time(|| upload(&f, &mut vk_in, vulkan, grade))?;
-            if tx.send(up).is_err() {
+            if tx.send(wrap(up, lead)).is_err() {
                 return Ok(());
             }
-            sent += 1;
+            out += 1;
+            sent += u64::from(!lead);
         }
     }
     t_dec.report();
