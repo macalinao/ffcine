@@ -246,6 +246,17 @@ pub fn grade(mut args: GradeArgs, ff: &dyn Backend) -> anyhow::Result<()> {
     }
     let s = p.run(ff)?;
     report(&p.output, &s);
+    let faststart = |out: &Path| -> anyhow::Result<()> {
+        let mp4 = out
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "mp4" | "mov" | "m4v"));
+        if profile.is_some() && mp4 {
+            delivery::mp4::faststart(out)
+                .with_context(|| format!("faststart {}", out.display()))?;
+        }
+        Ok(())
+    };
     if profile == Some(ffcine::DeliveryProfile::Review) {
         let cap = budget.unwrap_or(ffcine::profile::REVIEW_BUDGET);
         // The muxed audio comes later; check the video against its share.
@@ -267,7 +278,7 @@ pub fn grade(mut args: GradeArgs, ff: &dyn Backend) -> anyhow::Result<()> {
             }
         }
     }
-    Ok(())
+    faststart(&p.output)
 }
 
 #[derive(Debug, Clone, Bpaf)]

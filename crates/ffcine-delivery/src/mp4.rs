@@ -625,6 +625,12 @@ pub fn write_in_place(path: &Path, tags: &Tags) -> Result<()> {
     std::fs::rename(&partial, path).map_err(io(path))
 }
 
+/// Moves `path`'s `moov` ahead of its media (`+faststart`, for playback over HTTP before the
+/// download ends), keeping its chapters and cover.
+pub fn faststart(path: &Path) -> Result<()> {
+    write_in_place(path, &read(path)?)
+}
+
 /// The chapters (`chpl`) and cover (`covr`) in an MP4, as [`write`] puts them.
 pub fn read(path: &Path) -> Result<Tags> {
     let mut f = File::open(path).map_err(io(path))?;
@@ -842,6 +848,25 @@ mod tests {
                 .count(),
             1
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn faststart_moves_moov_first() {
+        let dir = std::env::temp_dir().join(format!("ffcine-mp4-fast-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("a.mp4");
+        std::fs::write(&path, synthetic()).expect("write");
+        faststart(&path).expect("faststart");
+        let bytes = std::fs::read(&path).expect("read");
+        let kinds: Vec<_> = children(&bytes)
+            .expect("top")
+            .iter()
+            .map(|c| c.kind)
+            .collect();
+        assert_eq!(kinds, [*b"ftyp", *b"moov", *b"mdat"]);
+        assert_eq!(frames(&bytes), frames(&synthetic()));
+        assert_eq!(read(&path).expect("tags"), Tags::default());
         let _ = std::fs::remove_dir_all(dir);
     }
 
