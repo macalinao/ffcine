@@ -16,7 +16,8 @@ N=${N:-48}
 NLFF=${NLFF:-ffmpeg}
 
 mkdir -p "$W"
-grade() { nice -n 19 "$FF" grade --no-cache --rate qp=4 --frames "$N" "$@"; }
+# ENC: encoder flags; NVENC runs out of VRAM on a busy card, see presets.sh for a lossless set.
+grade() { nice -n 19 "$FF" grade --no-cache ${ENC:---rate qp=4} --frames "$N" "$@"; }
 case $1 in
 setup)
   nice -n 19 ffmpeg -loglevel error -y -ss 0.25 -i "$SRC" -frames:v "$N" \

@@ -1,0 +1,31 @@
+[package]
+name = "ffcine-breakdown"
+description = "ffcine breakdown: shot list of a reference video (cuts, keyframes, camera motion, beat alignment, colour, speech, on-screen text), contact sheet"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[features]
+default = ["ffmpeg"]
+# Decode the video (NVDEC with resize, else the CPU) and its audio through libav*.
+ffmpeg = ["dep:ffmpeg-next", "ffcine-triage/ffmpeg", "ffcine-audio/ffmpeg"]
+
+[dependencies]
+ffcine-triage.workspace = true
+ffcine-audio.workspace = true
+ffcine-text.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+image = { workspace = true }
+ffmpeg-next = { workspace = true, optional = true }
+
+[lints]
+workspace = true

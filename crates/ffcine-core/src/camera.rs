@@ -183,6 +183,50 @@ impl Profile {
         }))
     }
 
+    /// The camera LUT for an HDR deliverable: log -> BT.2020 PQ, mastered to `peak` cd/m², from
+    /// the analytic curves; vendor LUTs only reach Rec.709. `None` for
+    /// profiles libplacebo maps from the tags; an error for D-Log M (no published curve).
+    pub fn camera_lut_hdr(self, peak: f64) -> Result<Option<CameraLut>> {
+        let lut = match self {
+            Self::Rec709 | Self::Hdr => return Ok(None),
+            Self::DjiDlog => analytic_pq(
+                33,
+                dlog_decode,
+                &rgb_to_rgb(&D_GAMUT, &BT2020),
+                0.53 / 0.8,
+                peak,
+                "DJI D-Log / D-Gamut",
+            ),
+            Self::AppleLog => analytic_pq(
+                33,
+                apple_log_decode,
+                &rgb_to_rgb(&BT2020, &BT2020),
+                1.0,
+                peak,
+                "Apple Log",
+            ),
+            Self::CanonClog3 => analytic_pq(
+                33,
+                clog3_decode,
+                &rgb_to_rgb(&CINEMA_GAMUT, &BT2020),
+                1.0,
+                peak,
+                "Canon Log 3",
+            ),
+            _ => {
+                return Err(Error::Invalid {
+                    what: "camera profile for HDR (DJI publishes no D-Log M curve, only Rec.709 LUTs)",
+                    value: self.to_string(),
+                });
+            }
+        };
+        Ok(Some(CameraLut {
+            lut,
+            primaries: Primaries::Bt2020,
+            transfer: Transfer::Pq,
+        }))
+    }
+
     /// File names a vendor LUT for this profile may have in a LUT dir, preferred first.
     pub fn vendor_names(self) -> &'static [&'static str] {
         match self {
@@ -369,6 +413,62 @@ fn analytic(n: usize, decode: fn(f64) -> f64, gamut: &M3, exposure: f64, title: 
     lut
 }
 
+/// SMPTE ST 2084 (PQ) inverse EOTF: cd/m² -> signal.
+pub fn pq_encode(nits: f64) -> f64 {
+    const M1: f64 = 2610.0 / 16384.0;
+    const M2: f64 = 2523.0 / 4096.0 * 128.0;
+    const C1: f64 = 3424.0 / 4096.0;
+    const C2: f64 = 2413.0 / 4096.0 * 32.0;
+    const C3: f64 = 2392.0 / 4096.0 * 32.0;
+    let y = (nits / 10_000.0).clamp(0.0, 1.0).powf(M1);
+    ((C1 + C2 * y) / (1.0 + C3 * y)).powf(M2)
+}
+
+/// Scene-linear 18 % grey on an HDR display: 26 cd/m² (ITU-R BT.2408, with diffuse white at
+/// 203 cd/m²).
+const HDR_GREY_NITS: f64 = 26.0;
+/// Where the highlight roll-off starts: BT.2408's diffuse white.
+const HDR_KNEE_NITS: f64 = 203.0;
+
+/// Scene linear (0.18 = grey) -> display cd/m²: grey at 26 cd/m², linear to the knee,
+/// then an exponential shoulder that reaches `peak` asymptotically.
+pub fn hdr_display_nits(x: f64, peak: f64) -> f64 {
+    let l = x.max(0.0) * HDR_GREY_NITS / 0.18;
+    let knee = HDR_KNEE_NITS.min(0.75 * peak);
+    if l <= knee {
+        l
+    } else {
+        let room = peak - knee;
+        knee + room * (1.0 - (-(l - knee) / room).exp())
+    }
+}
+
+/// A log -> BT.2020 PQ LUT: decode, gamut matrix to BT.2020, `exposure`, [`hdr_display_nits`],
+/// PQ encode. The HDR twin of the Rec.709 analytic LUTs; `exposure` 1 keeps 18 % grey at grey.
+fn analytic_pq(
+    n: usize,
+    decode: fn(f64) -> f64,
+    gamut: &M3,
+    exposure: f64,
+    peak: f64,
+    title: &str,
+) -> Lut {
+    let mut lut = Lut::identity(n);
+    for e in &mut lut.data {
+        let lin = e.map(|v| decode(f64::from(v)));
+        *e = std::array::from_fn(|i| {
+            let v: f64 = (0..3).map(|k| gamut[i][k] * lin[k]).sum();
+            #[allow(clippy::cast_possible_truncation)]
+            let out = pq_encode(hdr_display_nits(v * exposure, peak)) as f32;
+            out
+        });
+    }
+    lut.title = Some(format!(
+        "{title} to BT.2020 PQ {peak} nits (ffcine analytic)"
+    ));
+    lut
+}
+
 /// Per-clip profile choice: `auto` (probe) or a fixed [`Profile`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ProfileChoice {
@@ -408,19 +508,7 @@ impl fmt::Display for ProfileChoice {
 
 /// Writes `lut` as a `.cube` file (for inspection, or to hand an analytic LUT to other tools).
 pub fn write_cube(lut: &Lut, path: &Path) -> Result<()> {
-    use std::fmt::Write as _;
-    let mut s = String::new();
-    if let Some(t) = &lut.title {
-        let _ = writeln!(s, "TITLE \"{t}\"");
-    }
-    let _ = writeln!(s, "LUT_3D_SIZE {}", lut.size);
-    for [r, g, b] in &lut.data {
-        let _ = writeln!(s, "{r:.6} {g:.6} {b:.6}");
-    }
-    std::fs::write(path, s).map_err(|source| Error::Io {
-        path: path.to_owned(),
-        source,
-    })
+    lut.write_cube(path)
 }
 
 #[cfg(test)]
@@ -554,6 +642,33 @@ mod tests {
             // White stays white.
             assert!((m[i].iter().sum::<f64>() - 1.0).abs() < 1e-9);
         }
+    }
+
+    #[test]
+    fn hdr_luts() {
+        // PQ: 100 cd/m² is about 0.508, 1000 about 0.752, 10000 is 1.
+        assert!((pq_encode(100.0) - 0.508).abs() < 0.001);
+        assert!((pq_encode(1000.0) - 0.752).abs() < 0.001);
+        assert!((pq_encode(10_000.0) - 1.0).abs() < 1e-9);
+        // Grey at 26 nits, monotonic, never past the peak.
+        assert!((hdr_display_nits(0.18, 1000.0) - 26.0).abs() < 1e-9);
+        let mut last = 0.0;
+        for i in 0..200 {
+            let n = hdr_display_nits(f64::from(i) * 0.5, 1000.0);
+            assert!(n >= last && n < 1000.0);
+            last = n;
+        }
+        let c = Profile::CanonClog3.camera_lut_hdr(1000.0).unwrap().unwrap();
+        assert_eq!((c.primaries, c.transfer), (Primaries::Bt2020, Transfer::Pq));
+        // Canon Log 3 grey (0.3434) lands on 26 nits.
+        let grey = c.lut.sample([0.343_4; 3]);
+        assert!(
+            (f64::from(grey[1]) - pq_encode(26.0)).abs() < 0.01,
+            "{grey:?}"
+        );
+        assert!(Profile::DjiDlog.camera_lut_hdr(1000.0).unwrap().is_some());
+        assert!(Profile::DjiDlogM.camera_lut_hdr(1000.0).is_err());
+        assert!(Profile::Hdr.camera_lut_hdr(1000.0).unwrap().is_none());
     }
 
     #[test]

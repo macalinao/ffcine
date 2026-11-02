@@ -7,6 +7,9 @@
 //! 2. [`stabilize`]: the camera path, vidstab's Gaussian smoothing, and the static zoom that
 //!    keeps every frame free of black borders. Cheap, so it is recomputed every time.
 //! 3. [`hook::warp_hook`]: the warps as an mpv `.hook` for libplacebo.
+//!
+//! [`gyro`] is the other way to get the motions of step 1, from what the camera recorded;
+//! [`detect_motion`] chooses between them.
 
 // Numeric code: pixel counts and grid indices convert to f64 and back all over, always in range.
 #![allow(
@@ -24,17 +27,23 @@ pub mod cuda;
 #[cfg(feature = "nvof")]
 mod detect;
 pub mod fx;
+pub mod gyro;
 pub mod hook;
 pub mod motion;
 #[cfg(feature = "nvof")]
 pub mod nvof;
+#[cfg(feature = "telemetry")]
+mod parser;
 pub mod path;
+#[cfg(feature = "nvof")]
+mod read;
 
 #[cfg(feature = "nvof")]
 pub use cache::detect_cached;
 pub use cache::motions_text;
 #[cfg(feature = "nvof")]
 pub use detect::{analysis_size, detect};
+pub use gyro::GyroParams;
 pub use motion::{EstimateParams, Motion};
 pub use path::Zoom;
 
@@ -98,6 +107,91 @@ pub struct Detection {
     pub analysis_width: u32,
     pub analysis_height: u32,
     pub motions: Vec<Motion>,
+}
+
+named_enum!(
+    /// Where a stabilizer's camera motion comes from.
+    #[derive(Default)]
+    MotionSource {
+        /// Gyro if the file has telemetry `auto` trusts, else optical flow.
+        #[default]
+        Auto = "auto",
+        /// The file's gyro or attitude telemetry; an error if it has none.
+        Gyro = "gyro",
+        /// Optical flow.
+        Flow = "flow",
+    }
+);
+
+/// Which motion source to use, and how.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct MotionOptions {
+    pub source: MotionSource,
+    pub gyro: GyroParams,
+}
+
+/// What [`detect_motion`] found, and how.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MotionDetection {
+    pub detection: Detection,
+    /// [`MotionSource::Gyro`] or [`MotionSource::Flow`], never `Auto`.
+    pub source: MotionSource,
+    /// Why `auto` fell back to flow.
+    pub fallback: Option<String>,
+    /// Read from the cache.
+    pub cached: bool,
+}
+
+/// The camera motion of `range` from the source `options` chooses, through the cache if `cache`.
+/// With [`MotionSource::Auto`], a file with no telemetry it trusts goes to optical flow and says
+/// why in [`MotionDetection::fallback`].
+#[cfg(feature = "nvof")]
+pub fn detect_motion(
+    path: &std::path::Path,
+    range: &SourceRange,
+    params: &DetectParams,
+    options: &MotionOptions,
+    cache: bool,
+) -> ffcine_core::Result<MotionDetection> {
+    let flow = |fallback| -> ffcine_core::Result<MotionDetection> {
+        let (detection, cached) = if cache {
+            detect_cached(path, range, params)?
+        } else {
+            (detect(path, range, params)?, false)
+        };
+        Ok(MotionDetection {
+            detection,
+            source: MotionSource::Flow,
+            fallback,
+            cached,
+        })
+    };
+    if options.source == MotionSource::Flow {
+        return flow(None);
+    }
+    let strict = options.source == MotionSource::Gyro;
+    let gyro = || -> Result<Detection, String> {
+        let (telemetry, size) = read::read(path, range, strict)?;
+        if let Some(why) = telemetry.auto_refusal.filter(|_| !strict) {
+            return Err(why.into());
+        }
+        gyro::detection(&telemetry, range, &options.gyro, size)
+    };
+    let got = if cache {
+        cache::gyro_cached(path, range, options, gyro)?
+    } else {
+        gyro().map(|d| (d, false))
+    };
+    match got {
+        Ok((detection, cached)) => Ok(MotionDetection {
+            detection,
+            source: MotionSource::Gyro,
+            fallback: None,
+            cached,
+        }),
+        Err(why) if strict => Err(Error::Pipeline(format!("gyro: {why}"))),
+        Err(why) => flow(Some(why)),
+    }
 }
 
 /// Smoothing and zoom; the defaults are render.py's (`smoothing` 20, optzoom 1).
@@ -286,6 +380,34 @@ mod tests {
         assert!(after.ty < before.ty * 0.1, "{before:?} -> {after:?}");
         assert!(after.angle < before.angle * 0.1, "{before:?} -> {after:?}");
         assert_eq!(jitter(&det.motions, 5.0, &[50]).pairs, 118);
+    }
+
+    #[cfg(feature = "nvof")]
+    #[test]
+    fn no_gyro_is_an_error_only_when_asked_for() {
+        let dir = std::env::temp_dir().join(format!("ffcine-motion-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("not-a-video.mp4");
+        std::fs::write(&f, b"not a video").unwrap();
+        let range = SourceRange {
+            start: 0.0,
+            frames: 2,
+            rate: Rational { num: 25, den: 1 },
+        };
+        let run = |source| {
+            let options = MotionOptions {
+                source,
+                ..MotionOptions::default()
+            };
+            detect_motion(&f, &range, &DetectParams::default(), &options, false)
+                .unwrap_err()
+                .to_string()
+        };
+        // Asked for gyro: the gyro path's error. Auto: on to flow, which fails on this file itself.
+        assert!(run(MotionSource::Gyro).contains("gyro: "));
+        assert!(!run(MotionSource::Auto).contains("gyro: "));
+        assert!(!run(MotionSource::Flow).contains("gyro: "));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

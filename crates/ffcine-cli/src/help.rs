@@ -58,6 +58,8 @@ pub const GRADE: &str = concat!(
         "ffcine grade --stabilize --temporal-radius 2 --grain 2 --render-profile reel clip.mov reel.mkv",
         "# Phone delivery with the timeline's titles over it",
         "ffcine grade --deliver phone --text timeline.otio --text-at 30 clip.mov phone.mp4",
+        "# HDR10 master (BT.2020 PQ, 1000 cd/m² mastering metadata); --hdr hlg for HLG",
+        "ffcine grade --hdr pq clip.mov hdr10.mkv",
     ),
     see!("color.md", "denoise.md", "delivery.md")
 );
@@ -102,6 +104,16 @@ pub const FETCH_LUTS: &str = examples!(
     "ffcine fetch-luts --dir ~/luts --force",
 );
 
+pub const BAKE: &str = concat!(
+    examples!(
+        "# DJI D-Log -> Rec.709 with a show LUT and a warmer look, as one 65^3 LUT",
+        "ffcine bake --camera dlog --lut show.cube --warmth 0.03 --saturation 1.1 baked.cube",
+        "# The analytic Canon Log 3 -> BT.2020 PQ transform, mastered to 1000 cd/m²",
+        "ffcine bake --camera clog3 --hdr-peak 1000 clog3_pq.cube",
+    ),
+    see!("color.md")
+);
+
 pub const IMPORT: &str = concat!(
     examples!(
         "ffcine import edit.fcpxml -o timeline.otio",
@@ -119,6 +131,25 @@ pub const TRIAGE: &str = concat!(
         "ffcine triage --immich http://photos.example/api --camera-tz +02:00 ~/projects/trip",
     ),
     see!("triage.md")
+);
+
+pub const BREAKDOWN: &str = concat!(
+    reference!(
+        "Writes, in DIR:",
+        "breakdown.json      every shot: in/out, frames, keyframes, motion, colour, beat, speech, text",
+        "shotlist.md         # | Time | Dur | Motion | Notes | Keyframe (♪: cut on the beat)",
+        "contact-sheet.jpg   the keyframes in a grid, numbered, with each shot's length (contact-sheet-2.jpg... past 12 rows)",
+        "keyframes/NNN.jpg   each shot's sharpest middle frame; NNN-first.jpg, NNN-last.jpg",
+    ),
+    examples!(
+        "ffcine breakdown reel.mp4",
+        "ffcine breakdown -o /tmp/ref --no-transcribe trailer.mkv",
+        "# Fast cutting: shots down to 3 frames, a lower cut threshold",
+        "ffcine breakdown --min-shot 0.1 --threshold 0.22 reel.mp4",
+        "# ffcine reads local files only: download first",
+        "yt-dlp -o ref.mp4 URL && ffcine breakdown ref.mp4",
+    ),
+    see!("breakdown.md")
 );
 
 pub const SEARCH: &str = examples!(

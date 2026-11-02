@@ -9,12 +9,14 @@ use anyhow::Context as _;
 use bpaf::{Bpaf, Parser as _};
 use ffcine::camera::{self, ProfileChoice};
 use ffcine::reframe::{Profile, Reframe, Shot};
-use ffcine::stabilize::{self, DetectParams, FlowQuality, SourceRange, StabilizeParams, Zoom};
+use ffcine::stabilize::{
+    self, DetectParams, FlowQuality, GyroParams, MotionOptions, MotionSource, SourceRange,
+    StabilizeParams, Zoom,
+};
 use ffcine::{
-    Backend as _, Codec, ColorMapTuning, ColorOverride, Crop, Deband, Decode, Denoise, Device,
-    Dither, DitherMethod, EncoderSettings, GamutMapping, Grade, Grain, Lut, LutStage, LutType,
-    Pipeline, PixelFormat, RateControl, Rational, Scaler, Scaling, Size, Spatial, Temporal,
-    ToneMapping, backend,
+    Backend as _, Codec, ColorMapTuning, ColorOverride, Crop, Deband, Decode, Device, Dither,
+    DitherMethod, EncoderSettings, GamutMapping, Grade, Grain, Lut, LutStage, LutType, Pipeline,
+    PixelFormat, RateControl, Rational, Scaler, Scaling, Size, ToneMapping, backend,
 };
 
 #[path = "assemble.rs"]
@@ -113,6 +115,12 @@ pub(crate) enum Cmd {
         /// Download again even if the file is there.
         force: bool,
     },
+    /// Bake a camera LUT, a grade LUT and a look into one .cube.
+    ///
+    /// Applied in that order (as the render does) and evaluated in Rust over a lattice: for other
+    /// tools, or as a single --lut.
+    #[bpaf(command, footer(crate::help::BAKE))]
+    Bake(#[bpaf(external(bake_args))] BakeArgs),
     /// Convert another editor's project to an ffcine timeline (.otio).
     ///
     /// Reads edit.yaml, OTIO (including Resolve's), FCPXML, Kdenlive/Shotcut MLT, FCP7/Premiere
@@ -127,6 +135,16 @@ pub(crate) enum Cmd {
     /// in OUT/clips/; re-running only analyses what changed.
     #[bpaf(command, footer(crate::help::TRIAGE))]
     Triage(#[bpaf(external(crate::triage::triage_args))] crate::triage::TriageArgs),
+    /// Shot list of a reference video: cuts, keyframes, motion, beat, speech.
+    ///
+    /// Finds the cuts (decoding on NVDEC when it takes the clip, else the CPU) and per shot gives
+    /// its in, out and length; its first, sharpest-middle and last frame; the camera motion
+    /// (static, pan, tilt, push, pull, handheld) from global motion between frames; and its mean
+    /// colour and luma range. Checks the music's tempo and whether the cuts land on the beat,
+    /// transcribes speech with word times (faster-whisper, as triage), and reads on-screen text
+    /// when tesseract is on PATH. Reads local files only; download links first (yt-dlp).
+    #[bpaf(command, footer(crate::help::BREAKDOWN))]
+    Breakdown(#[bpaf(external(crate::breakdown::breakdown_args))] crate::breakdown::BreakdownArgs),
     /// YouTube chapter lines from the timeline's markers.
     ///
     /// Uses the markers flagged `chapter`, else all markers; prints `M:SS Title` lines (H:MM:SS
@@ -368,6 +386,15 @@ pub(crate) struct StabilizeArgs {
     /// Gaussian smoothing half-window in frames (vidstab smoothing).
     #[bpaf(argument("FRAMES"), fallback(20), display_fallback)]
     smoothing: u32,
+    /// Camera motion from: auto (gyro where it is trusted, else flow), gyro or flow.
+    #[bpaf(argument("SOURCE"), fallback(MotionSource::Auto), display_fallback)]
+    source: MotionSource,
+    /// Gyro: focal length in source pixels, instead of the file's or the camera's.
+    #[bpaf(argument("PX"))]
+    focal: Option<f64>,
+    /// Gyro: added to frame times before looking up the attitude.
+    #[bpaf(argument("MS"), fallback(0.0), display_fallback)]
+    gyro_offset: f64,
     /// Width in px the frames are scaled to for optical flow.
     #[bpaf(argument("PX"), fallback(1920), display_fallback)]
     analysis_width: u32,
@@ -424,6 +451,13 @@ pub(crate) struct JitterArgs {
     input: PathBuf,
 }
 
+/// `auto` went to optical flow: say why.
+fn print_fallback(found: &stabilize::MotionDetection) {
+    if let Some(why) = &found.fallback {
+        eprintln!("stabilize: optical flow, not gyro: {why}");
+    }
+}
+
 impl StabilizeArgs {
     fn run(self) -> anyhow::Result<()> {
         let range = SourceRange {
@@ -437,15 +471,22 @@ impl StabilizeArgs {
             ..DetectParams::default()
         };
         let t = std::time::Instant::now();
-        let (det, cached) = if self.no_cache {
-            (stabilize::detect(&self.input, &range, &detect)?, false)
-        } else {
-            stabilize::detect_cached(&self.input, &range, &detect)?
+        let motion = MotionOptions {
+            source: self.source,
+            gyro: GyroParams {
+                focal_px: self.focal,
+                offset_ms: self.gyro_offset,
+            },
         };
+        let found =
+            stabilize::detect_motion(&self.input, &range, &detect, &motion, !self.no_cache)?;
+        print_fallback(&found);
+        let det = &found.detection;
         println!(
-            "detect {:.2} s{} ({}x{} analysed at {}x{})",
+            "detect {:.2} s{} from {} ({}x{} analysed at {}x{})",
             t.elapsed().as_secs_f64(),
-            if cached { " (cached)" } else { "" },
+            if found.cached { " (cached)" } else { "" },
+            found.source,
             det.width,
             det.height,
             det.analysis_width,
@@ -458,7 +499,7 @@ impl StabilizeArgs {
                 None => Zoom::Auto { max: self.max_zoom },
             },
         };
-        let st = stabilize::stabilize(&det, &params);
+        let st = stabilize::stabilize(det, &params);
         println!("zoom {:.4} (needed {:.4})", st.zoom, st.min_zoom);
         let write = |path: &PathBuf, text: String| {
             std::fs::write(path, text).with_context(|| format!("writing {}", path.display()))
@@ -496,6 +537,33 @@ impl JitterArgs {
             j.tx, j.ty, j.angle, j.pairs, j.confidence
         );
         Ok(())
+    }
+}
+
+/// `--hdr`: the HDR deliverable's transfer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HdrOut {
+    Pq,
+    Hlg,
+}
+
+impl FromStr for HdrOut {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "pq" | "hdr10" => Ok(Self::Pq),
+            "hlg" => Ok(Self::Hlg),
+            _ => Err(format!("unknown HDR output {s:?}, expected pq or hlg")),
+        }
+    }
+}
+
+impl HdrOut {
+    fn color(self) -> ffcine::ColorSpace {
+        match self {
+            Self::Pq => ffcine::ColorSpace::BT2020_PQ,
+            Self::Hlg => ffcine::ColorSpace::BT2020_HLG,
+        }
     }
 }
 
@@ -604,6 +672,15 @@ pub(crate) struct GradeArgs {
     /// auto zoom, warp before the crop.
     #[bpaf(long("stabilize"), long("stabilise"))]
     stabilize: bool,
+    /// --stabilize camera motion from: auto (gyro where it is trusted, else flow), gyro or flow.
+    #[bpaf(argument("SOURCE"), fallback(MotionSource::Auto), display_fallback)]
+    stab_source: MotionSource,
+    /// --stabilize gyro: focal length in source pixels, instead of the file's or the camera's.
+    #[bpaf(argument("PX"))]
+    stab_focal: Option<f64>,
+    /// --stabilize gyro: added to frame times before looking up the attitude.
+    #[bpaf(argument("MS"), fallback(0.0), display_fallback)]
+    stab_gyro_offset: f64,
     /// --stabilize smoothing half-window in frames (vidstab smoothing).
     #[bpaf(argument("FRAMES"), fallback(20), display_fallback)]
     stab_smoothing: u32,
@@ -613,28 +690,35 @@ pub(crate) struct GradeArgs {
     /// --stabilize cap on the automatic zoom, e.g. 1.1 (default: no cap).
     #[bpaf(argument("Z"))]
     stab_max_zoom: Option<f64>,
-    /// Temporal denoise: frames on each side, 1..5, motion-compensated; 0 = off.
-    #[bpaf(argument("N"), fallback(0), display_fallback)]
-    temporal_radius: u32,
-    /// Temporal denoise motion: nvof (NVIDIA optical flow) or blocks (Vulkan block matching)
-    /// (default: nvof).
-    #[bpaf(argument("SRC"), fallback(ffcine::filters::Motion::Nvof))]
-    temporal_motion: ffcine::filters::Motion,
-    /// Temporal denoise luma strength: noise sigma in 8-bit code values.
-    #[bpaf(argument("S"), fallback(4.0), display_fallback)]
-    temporal_strength: f32,
+    /// Denoise preset: night (flat dark sky, stars protected) or snow (bright fine texture, gentle).
+    /// The denoise flags below override its values one by one.
+    #[bpaf(argument("NAME"))]
+    denoise_preset: Option<ffcine::filters::Preset>,
+    /// Temporal denoise: frames on each side (1-5), motion-compensated; 0 = off.
+    #[bpaf(argument("N"))]
+    temporal_radius: Option<u32>,
+    /// Temporal denoise motion: nvof (NVIDIA optical flow, default) or blocks (Vulkan block matching).
+    #[bpaf(argument("SRC"))]
+    temporal_motion: Option<ffcine::filters::Motion>,
+    /// Temporal denoise luma strength (noise sigma, 8-bit code values; default 3).
+    #[bpaf(argument("S"))]
+    temporal_strength: Option<f32>,
     /// Temporal denoise chroma strength (default: the luma strength).
     #[bpaf(argument("S"))]
     temporal_chroma: Option<f32>,
     /// Spatial (NLM) denoise luma strength, after the temporal one; 0 = off.
-    #[bpaf(argument("S"), fallback(0.0), display_fallback)]
-    denoise: f32,
+    #[bpaf(argument("S"))]
+    denoise: Option<f32>,
     /// Spatial denoise chroma strength (default: 1.5x luma).
     #[bpaf(argument("S"))]
     denoise_chroma: Option<f32>,
-    /// Spatial denoise search radius in px, 1..4.
-    #[bpaf(argument("R"), fallback(2), display_fallback)]
-    denoise_radius: u32,
+    /// Spatial denoise search radius (1-4; default 2).
+    #[bpaf(argument("R"))]
+    denoise_radius: Option<u32>,
+    /// Keep pixels that stand out by more than K strengths from being averaged away (stars,
+    /// point lights); 0 = off.
+    #[bpaf(argument("K"))]
+    denoise_protect: Option<f32>,
     /// Film grain sigma at mid-grey (8-bit code values) on the graded output; 0 = off.
     #[bpaf(argument("S"), fallback(0.0), display_fallback)]
     grain: f32,
@@ -644,6 +728,14 @@ pub(crate) struct GradeArgs {
     /// Chroma grain relative to luma grain, 0..1.
     #[bpaf(argument("K"), fallback(0.0), display_fallback)]
     grain_chroma: f32,
+    /// HDR deliverable: pq (HDR10, with mastering display and content light metadata) or hlg,
+    /// BT.2020, 10-bit. HDR sources keep their range; log sources use the analytic HDR camera
+    /// transform; SDR sources sit at BT.2408 reference white.
+    #[bpaf(argument("pq|hlg"))]
+    hdr: Option<HdrOut>,
+    /// Mastering peak of the HDR deliverable, cd/m².
+    #[bpaf(argument("NITS"), fallback(1000.0), display_fallback)]
+    hdr_peak: f64,
     /// 8-bit libx264 preview (crf 10) instead of the 10-bit HEVC NVENC master.
     preview: bool,
     /// Encoder: hevc_nvenc, h264_nvenc, av1_nvenc, hevc_vaapi, hevc_vulkan, h264_vulkan,
@@ -724,12 +816,20 @@ impl GradeArgs {
     /// The pipeline, with its camera LUT and stabilized on `ff` if asked.
     fn build(self, ff: &dyn ffcine::Backend) -> anyhow::Result<Pipeline> {
         let stab = self.stabilize();
+        let motion = MotionOptions {
+            source: self.stab_source,
+            gyro: GyroParams {
+                focal_px: self.stab_focal,
+                offset_ms: self.stab_gyro_offset,
+            },
+        };
         let choice = match self.camera {
             Some(c) => Some(c),
             None if self.lut.is_none() => Some(ProfileChoice::Auto),
             None => None,
         };
         let no_deband = self.no_deband;
+        let hdr_peak = self.hdr.map(|_| self.hdr_peak);
         let mut p = self.into_pipeline()?;
         if let Some(choice) = choice {
             let info = ff
@@ -737,7 +837,11 @@ impl GradeArgs {
                 .with_context(|| format!("probing {}", p.input.display()))?;
             let profile = choice.resolve(&info);
             eprintln!("profile: {profile} ({choice})");
-            if let Some(cam) = profile.camera_lut(&camera::lut_dirs())? {
+            let cam = match hdr_peak {
+                Some(peak) => profile.camera_lut_hdr(peak)?,
+                None => profile.camera_lut(&camera::lut_dirs())?,
+            };
+            if let Some(cam) = cam {
                 if let Some(ffcine::Stage::Grade(g)) = p.stages.first_mut() {
                     if profile.as_str().starts_with("dlog") && !no_deband {
                         g.deband.get_or_insert_with(Deband::default);
@@ -753,12 +857,14 @@ impl GradeArgs {
         }
         if let Some(params) = stab {
             let t = std::time::Instant::now();
-            let (st, cached) = ffcine::stabilize_pipeline(ff, &mut p, &params, true)
+            let (st, found) = ffcine::stabilize_pipeline(ff, &mut p, &params, &motion, true)
                 .with_context(|| format!("stabilizing {}", p.input.display()))?;
+            print_fallback(&found);
             eprintln!(
-                "stabilize: detect {:.2} s{}, {} frames, zoom {:.4} (needed {:.4})",
+                "stabilize: detect {:.2} s{} from {}, {} frames, zoom {:.4} (needed {:.4})",
                 t.elapsed().as_secs_f64(),
-                if cached { " (cached)" } else { "" },
+                if found.cached { " (cached)" } else { "" },
+                found.source,
                 st.transforms.len(),
                 st.zoom,
                 st.min_zoom
@@ -831,6 +937,27 @@ impl GradeArgs {
         Ok(())
     }
 
+    /// The master or preview encoder; with `--hdr`, BT.2020 PQ or HLG output, its metadata and
+    /// the encoder's tags.
+    fn base_encoder(&self, grade: &mut Grade) -> anyhow::Result<EncoderSettings> {
+        let mut enc = if self.preview {
+            EncoderSettings::x264_preview()
+        } else {
+            EncoderSettings::nvenc_hevc_master()
+        };
+        let Some(h) = self.hdr else {
+            return Ok(enc);
+        };
+        if self.preview || self.pix_fmt.is_some_and(|f| !f.as_str().contains("10")) {
+            anyhow::bail!("--hdr needs a 10-bit encode (no --preview, a 10-bit --pix-fmt)");
+        }
+        grade.output = h.color();
+        grade.output_hdr =
+            (h == HdrOut::Pq).then(|| ffcine::HdrMetadata::P3_D65_1000.with_peak(self.hdr_peak));
+        enc.color = grade.output;
+        Ok(enc)
+    }
+
     #[allow(clippy::too_many_lines)] // one flag-to-field mapping
     fn into_pipeline(mut self) -> anyhow::Result<Pipeline> {
         let lut = self
@@ -871,21 +998,17 @@ impl GradeArgs {
             sharpen: self.sharpen,
             shaders,
             denoise: Some(
-                Denoise {
-                    temporal: (self.temporal_radius > 0).then_some(Temporal {
-                        radius: self.temporal_radius,
-                        motion: self.temporal_motion,
-                        strength: self.temporal_strength,
-                        chroma: self.temporal_chroma,
-                    }),
-                    spatial: (self.denoise > 0.0 || self.denoise_chroma.is_some_and(|c| c > 0.0))
-                        .then_some(Spatial {
-                            radius: self.denoise_radius,
-                            luma: self.denoise,
-                            chroma: self.denoise_chroma.unwrap_or(1.5 * self.denoise),
-                        }),
+                ffcine::filters::Overrides {
+                    temporal_radius: self.temporal_radius,
+                    temporal_motion: self.temporal_motion,
+                    temporal_strength: self.temporal_strength,
+                    temporal_chroma: self.temporal_chroma,
+                    luma: self.denoise,
+                    chroma: self.denoise_chroma,
+                    spatial_radius: self.denoise_radius,
+                    protect: self.denoise_protect,
                 }
-                .clamped(),
+                .resolve(self.denoise_preset),
             )
             .filter(|d| !d.is_off()),
             grain: (self.grain > 0.0).then_some(Grain {
@@ -904,11 +1027,7 @@ impl GradeArgs {
             self.apply_reframe(&mut grade)?;
         }
 
-        let mut enc = if self.preview {
-            EncoderSettings::x264_preview()
-        } else {
-            EncoderSettings::nvenc_hevc_master()
-        };
+        let mut enc = self.base_encoder(&mut grade)?;
         if let Some(c) = self.codec {
             enc.codec = c;
         }
@@ -939,6 +1058,94 @@ impl GradeArgs {
             p = p.frame_rate(r);
         }
         Ok(p)
+    }
+}
+
+#[derive(Debug, Clone, Bpaf)]
+#[allow(clippy::doc_markdown)]
+pub(crate) struct BakeArgs {
+    /// Camera profile whose LUT goes first (dlog, dlog-vivid, dlogm, dlogm-vivid, clog3,
+    /// applelog); vendor LUTs come from $FFCINE_LUT_DIR, else the analytic transform.
+    #[bpaf(argument("PROFILE"))]
+    camera: Option<camera::Profile>,
+    /// With --camera: the HDR (BT.2020 PQ) camera transform mastered to this peak, cd/m².
+    #[bpaf(argument("NITS"))]
+    hdr_peak: Option<f64>,
+    /// Grade LUT (.cube, normalized input), after the camera LUT.
+    #[bpaf(argument("FILE"))]
+    lut: Option<PathBuf>,
+    /// Look: exposure in stops (display-linear light).
+    #[bpaf(argument("STOPS"), fallback(0.0))]
+    exposure: f32,
+    /// Look: warmth (+ warmer).
+    #[bpaf(argument("W"), fallback(0.0))]
+    warmth: f32,
+    /// Look: tint (+ magenta).
+    #[bpaf(argument("T"), fallback(0.0))]
+    tint: f32,
+    /// Look: S-curve contrast.
+    #[bpaf(argument("C"), fallback(0.0))]
+    contrast: f32,
+    /// Look: gamma (y = x^(1/gamma)).
+    #[bpaf(argument("G"), fallback(1.0))]
+    gamma: f32,
+    /// Look: black level.
+    #[bpaf(argument("L"), fallback(0.0))]
+    lift: f32,
+    /// Look: white level.
+    #[bpaf(argument("G"), fallback(1.0))]
+    gain: f32,
+    /// Look: saturation (Rec.709 luma).
+    #[bpaf(argument("S"), fallback(1.0))]
+    saturation: f32,
+    /// Lattice size.
+    #[bpaf(argument("N"), fallback(ffcine::bake::DEFAULT_SIZE), display_fallback)]
+    size: usize,
+    /// The .cube to write.
+    #[bpaf(positional("OUTPUT"))]
+    output: PathBuf,
+}
+
+impl BakeArgs {
+    fn run(self) -> anyhow::Result<()> {
+        if !(2..=256).contains(&self.size) {
+            anyhow::bail!("--size must be 2..256");
+        }
+        let cam = match (self.camera, self.hdr_peak) {
+            (Some(p), Some(peak)) => p.camera_lut_hdr(peak)?,
+            (Some(p), None) => p.camera_lut(&camera::lut_dirs())?,
+            (None, Some(_)) => anyhow::bail!("--hdr-peak needs --camera"),
+            (None, None) => None,
+        };
+        let lut = self
+            .lut
+            .as_ref()
+            .map(|p| Lut::from_cube_file(p).with_context(|| format!("LUT {}", p.display())))
+            .transpose()?;
+        let look = ffcine::shaders::LookParams {
+            exposure: self.exposure,
+            warmth: self.warmth,
+            tint: self.tint,
+            contrast: self.contrast,
+            gamma: self.gamma,
+            lift: self.lift,
+            gain: self.gain,
+            saturation: self.saturation,
+        };
+        let baked = ffcine::Bake {
+            camera: cam.as_ref().map(|c| &c.lut),
+            lut: lut.as_ref(),
+            look,
+        }
+        .bake(self.size);
+        baked.write_cube(&self.output)?;
+        println!(
+            "{}: {}^3, {}",
+            self.output.display(),
+            baked.size,
+            baked.title.unwrap_or_default()
+        );
+        Ok(())
     }
 }
 
@@ -987,6 +1194,7 @@ pub(crate) fn run(cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Looks(a) => (a.no_cache, None),
         Cmd::Probe { .. }
         | Cmd::FetchLuts { .. }
+        | Cmd::Bake(_)
         | Cmd::Stabilize(_)
         | Cmd::Jitter(_)
         | Cmd::Import(_)
@@ -997,7 +1205,8 @@ pub(crate) fn run(cmd: Cmd) -> anyhow::Result<()> {
         | Cmd::Credits { .. }
         | Cmd::Subs { .. }
         | Cmd::Title(_)
-        | Cmd::Triage(_) => (false, None),
+        | Cmd::Triage(_)
+        | Cmd::Breakdown(_) => (false, None),
     };
     if no_cache {
         ff = ff.with_cache_dir(None);
@@ -1075,6 +1284,7 @@ pub(crate) fn run(cmd: Cmd) -> anyhow::Result<()> {
             );
         }
         Cmd::FetchLuts { dir, force } => fetch_luts(dir, force)?,
+        Cmd::Bake(args) => args.run()?,
         Cmd::Stabilize(args) => args.run()?,
         Cmd::Jitter(args) => args.run()?,
         Cmd::Import(args) => import(&args)?,
@@ -1087,6 +1297,7 @@ pub(crate) fn run(cmd: Cmd) -> anyhow::Result<()> {
             new,
         } => assemble::diff(&profile, render_profile.as_deref(), all, &old, &new)?,
         Cmd::Triage(args) => args.run()?,
+        Cmd::Breakdown(args) => args.run()?,
     }
     Ok(())
 }
@@ -1207,5 +1418,53 @@ mod tests {
         assert_eq!(d.temporal.unwrap().radius, 5);
         assert!((d.spatial.unwrap().chroma - 3.0).abs() < f32::EPSILON);
         assert!((g.grain.unwrap().strength - 3.0).abs() < f32::EPSILON);
+    }
+
+    fn denoise_of(flags: &[&str]) -> Option<ffcine::Denoise> {
+        let mut words = vec!["grade"];
+        words.extend_from_slice(flags);
+        words.extend(["in.mov", "out.mkv"]);
+        let Cmd::Grade(args) = cmd().to_options().run_inner(&words[..]).unwrap() else {
+            panic!("expected grade");
+        };
+        let p = args.into_pipeline().unwrap();
+        let ffcine::Stage::Grade(g) = &p.stages[0] else {
+            panic!("expected grade stage");
+        };
+        g.denoise
+    }
+
+    #[test]
+    fn grade_denoise_preset_and_overrides() {
+        use ffcine::filters::Preset;
+        assert_eq!(denoise_of(&[]), None);
+        let night = Preset::Night.denoise();
+        assert_eq!(denoise_of(&["--denoise-preset", "night"]), Some(night));
+        let d = denoise_of(&[
+            "--denoise-preset",
+            "night",
+            "--temporal-radius",
+            "1",
+            "--denoise",
+            "0.5",
+        ])
+        .unwrap();
+        let (t, want) = (d.temporal.unwrap(), night.temporal.unwrap());
+        assert_eq!(t.radius, 1);
+        assert_eq!(t.strength.to_bits(), want.strength.to_bits());
+        let s = d.spatial.unwrap();
+        assert_eq!(s.luma.to_bits(), 0.5_f32.to_bits());
+        assert_eq!(s.chroma.to_bits(), night.spatial.unwrap().chroma.to_bits());
+        let off = [
+            "--denoise-preset",
+            "night",
+            "--temporal-radius",
+            "0",
+            "--denoise",
+            "0",
+        ];
+        assert_eq!(denoise_of(&off), None);
+        let bad = ["grade", "--denoise-preset", "aurora", "in.mov", "out.mkv"];
+        assert!(cmd().to_options().run_inner(&bad[..]).is_err());
     }
 }
