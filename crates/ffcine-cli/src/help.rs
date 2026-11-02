@@ -52,7 +52,7 @@ pub const PROBE: &str = examples!(
 
 pub const GRADE: &str = concat!(
     examples!(
-        "# Osmo Pocket 4 D-Log: DJI's Rec.709 LUT from the probed profile, 10-bit HEVC master",
+        "# Osmo Pocket 4 D-Log: camera LUT from the probed profile (DJI's after fetch-luts, else analytic)",
         "ffcine grade DJI_20260704112401_0001_D.MP4 graded.mkv",
         "# EOS R10 C-Log 3 through a baked show LUT (camera transform included), 4K, light sharpening",
         "ffcine grade --lut show_clog3.cube --size 3840x2160 --sharpen 0.6 MVI_2884.MP4 graded.mkv",
@@ -348,7 +348,7 @@ pub const CATALOG: &str = concat!(
     examples!(
         "ffcine catalog ~/projects/trip",
         "ffcine catalog --full --histogram always ~/projects/trip",
-        "ffcine catalog --zone +02:00 --clock pocket4=+1h ~/projects/trip",
+        "ffcine catalog --zone +02:00 --clock pocket=+1h ~/projects/trip",
     ),
     see!("ingest.md")
 );

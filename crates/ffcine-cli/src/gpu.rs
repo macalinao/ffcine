@@ -661,7 +661,7 @@ pub(crate) struct GradeArgs {
     adaptive_sharpen: Option<f32>,
     /// Render profile: landscape or 16:9 (3840x2160), hd (1920x1080), reel or 9:16 (1080x1920),
     /// feed or 4:5 (1080x1350), square or 1:1 (1080x1080), WxH or NAME=WxH. Sets the output size
-    /// (--size is ignored) and picks the reframe's per-profile overrides.
+    /// (--size is ignored, except with --deliver) and picks the reframe's per-profile overrides.
     #[bpaf(argument("PROFILE"))]
     render_profile: Option<Profile>,
     /// Reframe: ffcine.geo.reframe/1 parameters as a JSON object (zoom, punch, push, crop_x,

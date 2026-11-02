@@ -116,7 +116,7 @@ struct ClockArgs {
     #[bpaf(argument("FILE"))]
     clocks: Option<PathBuf>,
     /// Per-camera clock fix, CAMERA=SHIFT[@ZONE]; SHIFT like +1h20m, -90s or +9497d, e.g.
-    /// r10=-2m or pocket4=+0h@+08:00. Repeatable.
+    /// r10=-2m or pocket=+0h@+08:00. Repeatable.
     #[bpaf(argument("CAM=SHIFT"), many)]
     clock: Vec<String>,
     /// Zone for cameras whose files don't record one, a fixed offset +HH:MM (default:
