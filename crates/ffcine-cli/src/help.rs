@@ -495,16 +495,13 @@ mod tests {
     #[test]
     fn help_links_resolve() {
         let docs = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs");
-        if !docs.is_dir() {
-            // A packaged source (the nix build, crates.io) has no docs/; the checkout's run checks.
-            eprintln!("skipped: no {}", docs.display());
-            return;
-        }
+        // A packaged source (the nix build, crates.io) has no docs/; the checkout's run checks links.
+        let has_docs = docs.is_dir();
         let mut pages = vec![help(&[], true)];
         pages.extend(commands().iter().map(|(name, _)| help(&[name], true)));
         let mut problems = Vec::new();
         for md in &pages {
-            for (i, _) in md.match_indices("docs/") {
+            for (i, _) in md.match_indices("docs/").filter(|_| has_docs) {
                 let link: String = md[i + 5..]
                     .chars()
                     .take_while(|c| c.is_alphanumeric() || "-_.#".contains(*c))
