@@ -25,6 +25,8 @@ gpu = ["audio", "ffcine/ffmpeg", "ffcine/placebo", "ffcine/nvof", "dep:image"]
 # `sync` (recorder WAVs to camera clips) and `audio` (the mix): libav* only, no GPU, so the Mac
 # build can have them: `--no-default-features --features audio`.
 audio = ["ffcine/audio"]
+# `--stab-source` also reads GoPro, Sony, Insta360, DJI action cameras and others.
+telemetry = ["gpu", "ffcine/telemetry"]
 
 [dependencies]
 ffcine.workspace = true

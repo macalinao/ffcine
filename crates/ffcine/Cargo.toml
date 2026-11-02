@@ -23,6 +23,8 @@ placebo = ["ffcine-render/placebo"]
 # NVIDIA optical flow (NVOFA) for stabilize detect, on NVDEC frames. The driver libraries are
 # loaded at run time, so it builds without them.
 nvof = ["ffmpeg", "ffcine-stabilize/nvof"]
+# Stabilize from any camera gyro telemetry-parser reads (DJI's debug track needs only `nvof`).
+telemetry = ["nvof", "ffcine-stabilize/telemetry"]
 
 [dependencies]
 ffcine-core.workspace = true
