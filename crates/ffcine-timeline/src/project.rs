@@ -155,10 +155,10 @@ pub struct MixParams {
     /// Master true-peak ceiling, dBTP [-1].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub true_peak: Option<f64>,
-    /// Limiter this far under `true_peak`, dB [2].
+    /// Limiter this far under `true_peak`, dB [default: 2].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub headroom: Option<f64>,
-    /// Master fade-out at the end, s [0.6].
+    /// Master fade-out at the end, s [default: 0.6].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fade_out: Option<f64>,
     /// R128 target of `dialogue` clips, LUFS [-18].
@@ -170,7 +170,7 @@ pub struct MixParams {
     /// Clamp of a dialogue clip's R128 gain, dB [-10, 14].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gain_range: Option<[f64; 2]>,
-    /// Crossfade at dialogue cuts, s [0.125].
+    /// Crossfade at dialogue cuts, s [default: 0.125].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub xfade: Option<f64>,
     /// Music dip under `dialogue` clips without their own `duck_db`, dB [-14].
@@ -190,13 +190,13 @@ pub struct MixParams {
     /// Dialogue presence threshold of `sidechain`, dBFS [-40].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duck_threshold: Option<f64>,
-    /// Clean-chain strength of dialogue clips without `ffcine.audio.clean/1` [0.6].
+    /// Clean-chain strength of dialogue clips without `ffcine.audio.clean/1` [default: 0.6].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clean: Option<f64>,
-    /// The same for `nat` clips [0].
+    /// The same for `nat` clips [default: 0].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clean_nat: Option<f64>,
-    /// High-pass of that default chain, Hz [80].
+    /// High-pass of that default chain, Hz [default: 80].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub highpass: Option<f64>,
     /// Fields this version doesn't know, kept as-is.

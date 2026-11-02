@@ -540,7 +540,7 @@ impl Plan {
 /// so a card edit re-renders only the seconds it covers.
 ///
 /// The picture is the first video track. Split-screen `Stack`s render as their first panel until
-/// compositing lands; other video tracks are text ([`TextItem`]) or not yet composited (warned).
+/// compositing lands; other video tracks are text (`TextLayer`) or not yet composited (warned).
 #[allow(clippy::too_many_lines)]
 pub fn plan(
     timeline: &Timeline,

@@ -23,6 +23,7 @@ Builds are heavy: `nice -n 19` is recommended. System libs come from the dev she
 nix develop -c nice -n 19 cargo build
 nix develop -c nice -n 19 cargo test
 nix develop -c nice -n 19 cargo clippy --workspace --all-targets -- -D warnings
+RUSTDOCFLAGS="-D warnings" nix develop -c nice -n 19 cargo doc --no-deps --workspace
 nix fmt
 ```
 
