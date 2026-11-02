@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 
 /// Bump when the render path changes its output for the same recipe (new effect applied, encoder
 /// tweak, ...): every cached unit re-renders.
-pub const RENDER_REVISION: u32 = 6;
+pub const RENDER_REVISION: u32 = 7;
 
 /// Bump when the audio mix changes its output for the same recipe: the mix re-renders, the
 /// picture doesn't.

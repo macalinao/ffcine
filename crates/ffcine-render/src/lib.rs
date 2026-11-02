@@ -4,6 +4,7 @@
 
 pub mod backend;
 pub mod bake;
+pub mod blend;
 pub mod encode;
 pub mod extra;
 pub mod grade;
@@ -14,6 +15,7 @@ pub mod profile;
 pub mod shaders;
 
 pub use bake::Bake;
+pub use blend::BlendMode;
 pub use encode::{Codec, EncoderSettings, PixelFormat, RateControl};
 pub use ffcine_core::color::HdrMetadata;
 pub use ffcine_core::{ColorSpace, Error, Lut, LutType, MediaInfo, Rational, Result};

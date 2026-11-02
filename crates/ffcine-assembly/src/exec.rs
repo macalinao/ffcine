@@ -19,8 +19,8 @@ use std::sync::Arc;
 
 use ffcine_filters::Grain;
 use ffcine_render::{
-    Backend, Codec, Crop, Decode, Device, Grade, Hook, Image, Layer, LayerSource, Lut, LutStage,
-    LutType, Overlay, ParamTrack, Pipeline, Rational, Size, shaders,
+    Backend, BlendMode, Codec, Crop, Decode, Device, Grade, Hook, Image, Layer, LayerSource, Lut,
+    LutStage, LutType, Overlay, ParamTrack, Pipeline, Rational, Size, shaders,
 };
 use serde_json::json;
 
@@ -1005,6 +1005,8 @@ impl Renderer<'_> {
             from,
             to,
             rects,
+            rotation: Vec::new(),
+            blend: BlendMode::Normal,
         })
     }
 
@@ -1104,6 +1106,8 @@ impl Renderer<'_> {
                     height: r.h as f32,
                 })
                 .collect(),
+            rotation: (0..n).map(|j| place.rotation(t(j)) as f32).collect(),
+            blend: place.mode,
         })
     }
 

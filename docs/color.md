@@ -202,5 +202,6 @@ time.
   redistribution terms), so there is no curve to build an analytic transform from.
 - Real-footage checks of the R10 4:2:2, C-Log 3 and Canon PQ paths: no such clips were available
   (the only R10 video is 8-bit H.264 4:2:0), so the synthetic fixtures above stand in.
-- HDR through the timeline renderer (`ffcine render`) and with layers: both composite in BT.709
-  SDR ([assembly.md](assembly.md)); `--hdr` is a `grade` option for now.
+- HDR through the timeline renderer (`ffcine render`): it renders BT.709 SDR; `--hdr` is a
+  `grade` option for now. The render backend already composites layers on an HDR output in the
+  output's colour space and mastering peak ([assembly.md](assembly.md)).

@@ -7,6 +7,7 @@
 use std::f64::consts::FRAC_PI_2;
 
 use ffcine_reframe::Keyed;
+use ffcine_render::BlendMode;
 use serde_json::{Map, Value, json};
 
 fn f(m: &Map<String, Value>, k: &str) -> Option<f64> {
@@ -371,17 +372,26 @@ pub fn cover(sw: f64, sh: f64, w: f64, h: f64, focus: [f64; 2], zoom: f64) -> Re
     }
 }
 
-/// An overlay's placement and opacity over time: `ffcine.geo.transform/1` (`translate_x`,
-/// `translate_y` as fractions of the frame from its middle, `scale_x`, `scale_y` of the picture
-/// fitted inside the frame) and `ffcine.comp.blend/1` (`opacity`, `radius` as a fraction of the
-/// frame height). Each may be keyframes in source time.
+/// An overlay's placement and opacity over time: `ffcine.geo.transform/1` and
+/// `ffcine.comp.blend/1` (`opacity`, `mode`, `radius` as a fraction of the frame height). Each
+/// number may be keyframes in source time.
+///
+/// The picture `P` is the source fitted inside the frame. `translate_x`/`translate_y` and
+/// `anchor` are fractions of `P` (`units: "picture"`) or of the frame (`units: "frame"`, the
+/// default), y down; with `A` the anchor and `T` the translation in pixels, `S` the scale and `R`
+/// the rotation (`rotate_deg`, counter-clockwise on screen), picture point `q` (from its middle)
+/// lands at `A + R·S·(q − A) + T` from the frame's middle (docs/timeline.md).
 #[derive(Debug, Clone)]
 pub struct Placement {
+    picture_units: bool,
     tx: Keyed<f64>,
     ty: Keyed<f64>,
     sx: Keyed<f64>,
     sy: Keyed<f64>,
+    rotate: Keyed<f64>,
+    anchor: Keyed<[f64; 2]>,
     opacity: Keyed<f64>,
+    pub mode: BlendMode,
     pub radius: f64,
 }
 
@@ -400,36 +410,64 @@ impl Placement {
                 Keyed::Const(d)
             }),
         };
-        let p = Self {
-            tx: key(transform, "translate_x", 0.0),
-            ty: key(transform, "translate_y", 0.0),
-            sx: key(transform, "scale_x", 1.0),
-            sy: key(transform, "scale_y", 1.0),
-            opacity: key(blend, "opacity", 1.0),
-            radius: f(blend, "radius").unwrap_or(0.0),
+        let tx = key(transform, "translate_x", 0.0);
+        let ty = key(transform, "translate_y", 0.0);
+        let sx = key(transform, "scale_x", 1.0);
+        let sy = key(transform, "scale_y", 1.0);
+        let rotate = key(transform, "rotate_deg", 0.0);
+        let opacity = key(blend, "opacity", 1.0);
+        let anchor = match transform.get("anchor") {
+            None => Keyed::Const([0.0; 2]),
+            Some(v) => Keyed::parse(v, "anchor").unwrap_or_else(|e| {
+                warn(format!("anchor: {e}"));
+                Keyed::Const([0.0; 2])
+            }),
         };
-        if f(transform, "rotate_deg").is_some_and(|r| r != 0.0) {
-            warn("overlay rotation not rendered yet".into());
+        let mode = match blend.get("mode").and_then(Value::as_str) {
+            None => BlendMode::Normal,
+            Some(m) => m.parse().unwrap_or_else(|_| {
+                warn(format!("blend mode {m} rendered as normal"));
+                BlendMode::Normal
+            }),
+        };
+        Self {
+            picture_units: transform.get("units").and_then(Value::as_str) == Some("picture"),
+            tx,
+            ty,
+            sx,
+            sy,
+            rotate,
+            anchor,
+            opacity,
+            mode,
+            radius: f(blend, "radius").unwrap_or(0.0),
         }
-        if transform
-            .get("anchor")
-            .and_then(Value::as_array)
-            .is_some_and(|a| a.iter().any(|v| v.as_f64().is_some_and(|x| x != 0.0)))
-        {
-            warn("overlay anchor not rendered yet (scaled about its middle)".into());
-        }
-        p
     }
 
-    /// The rectangle of a `sw x sh` picture at source time `t` in a `w x h` frame.
+    /// The unrotated rectangle of a `sw x sh` picture at source time `t` in a `w x h` frame;
+    /// [`Self::rotation`] turns it about its middle.
+    #[allow(clippy::many_single_char_names)]
     pub fn rect(&self, t: f64, sw: f64, sh: f64, w: u32, h: u32) -> Rect {
         let (fw, fh) = (f64::from(w), f64::from(h));
         let fit = (fw / sw).min(fh / sh);
         let ev = |k: &Keyed<f64>, d| k.eval(t).unwrap_or(d);
-        let (pw, ph) = (sw * fit * ev(&self.sx, 1.0), sh * fit * ev(&self.sy, 1.0));
+        let (s0, s1) = (ev(&self.sx, 1.0), ev(&self.sy, 1.0));
+        let picture = [sw * fit, sh * fit];
+        let unit = if self.picture_units {
+            picture
+        } else {
+            [fw, fh]
+        };
+        let [ax, ay] = self.anchor.eval(t).unwrap_or([0.0; 2]);
+        let a = [ax * unit[0], ay * unit[1]];
+        // The picture's middle lands at A − R·S·A + T.
+        let (sin, cos) = self.rotation(t).to_radians().sin_cos();
+        let z = [-a[0] * s0, -a[1] * s1];
+        let turned = [cos * z[0] + sin * z[1], -sin * z[0] + cos * z[1]];
+        let (pw, ph) = (picture[0] * s0, picture[1] * s1);
         let (cx, cy) = (
-            fw / 2.0 + ev(&self.tx, 0.0) * fw,
-            fh / 2.0 + ev(&self.ty, 0.0) * fh,
+            fw / 2.0 + a[0] + turned[0] + ev(&self.tx, 0.0) * unit[0],
+            fh / 2.0 + a[1] + turned[1] + ev(&self.ty, 0.0) * unit[1],
         );
         Rect {
             x: cx - pw / 2.0,
@@ -437,6 +475,11 @@ impl Placement {
             w: pw,
             h: ph,
         }
+    }
+
+    /// Degrees counter-clockwise on screen at source time `t`.
+    pub fn rotation(&self, t: f64) -> f64 {
+        self.rotate.eval(t).unwrap_or(0.0)
     }
 
     pub fn opacity(&self, t: f64) -> f64 {
@@ -544,5 +587,55 @@ mod tests {
         let r = p.rect(0.0, 1920.0, 1080.0, 1920, 1080);
         assert_eq!((r.x, r.y, r.w, r.h), (960.0, 270.0, 960.0, 540.0));
         assert!((p.opacity(0.5) - 0.5).abs() < 1e-9);
+        assert_eq!(p.mode, BlendMode::Normal);
+        assert!(p.rotation(0.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn rotation_pivots_on_the_anchor() {
+        let mut warns = Vec::new();
+        // A half-size picture turned 90° about its top left corner (anchor in picture units).
+        let p = Placement::parse(
+            &obj(
+                json!({"units": "picture", "anchor": [-0.5, -0.5], "scale_x": 0.5,
+                        "scale_y": 0.5, "rotate_deg": 90.0}),
+            ),
+            &obj(json!({"mode": "multiply"})),
+            &mut |w| warns.push(w),
+        );
+        assert_eq!(warns, Vec::<String>::new());
+        assert_eq!(p.mode, BlendMode::Multiply);
+        assert!((p.rotation(0.0) - 90.0).abs() < 1e-12);
+        let r = p.rect(0.0, 1920.0, 1080.0, 1920, 1080);
+        // The anchor (frame point (0, 0)) stays put; counter-clockwise with y down, the
+        // picture's middle (480, 270) from it goes to (270, −480).
+        let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
+        assert!((r.w - 960.0).abs() < 1e-9 && (r.h - 540.0).abs() < 1e-9);
+        assert!((cx - 270.0).abs() < 1e-9, "{cx}");
+        assert!((cy + 480.0).abs() < 1e-9, "{cy}");
+        // Matches the importer's maths (resolve::Placement::apply) at the picture's middle.
+        let q = ffcine_import::resolve::Placement {
+            anchor: [-0.5, -0.5],
+            scale: [0.5, 0.5],
+            rotate_deg: 90.0,
+            ..Default::default()
+        }
+        .apply([1920.0, 1080.0], [0.0, 0.0]);
+        assert!((cx - 960.0 - q[0]).abs() < 1e-9 && (cy - 540.0 - q[1]).abs() < 1e-9);
+        // Keyframed rotation, frame units; a foreign mode falls back to normal with a warning.
+        let k = Placement::parse(
+            &obj(
+                json!({"rotate_deg": [{"t": 0.0, "v": 0.0}, {"t": 1.0, "v": 30.0}],
+                        "anchor": [0.1, 0.0]}),
+            ),
+            &obj(json!({"mode": "resolve:27"})),
+            &mut |w| warns.push(w),
+        );
+        assert!((k.rotation(0.5) - 15.0).abs() < 1e-9);
+        assert_eq!(k.mode, BlendMode::Normal);
+        assert_eq!(warns.len(), 1);
+        // Unturned, the anchor doesn't move the picture.
+        let r0 = k.rect(0.0, 1920.0, 1080.0, 1920, 1080);
+        assert!(r0.x.abs() < 1e-9 && r0.y.abs() < 1e-9);
     }
 }
