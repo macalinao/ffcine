@@ -7,6 +7,9 @@ yanked = "deny"
 ignore = [
   # ttf-parser unmaintained: transitive through cosmic-text (rustybuzz), no fix to take yet.
   { id = "RUSTSEC-2026-0192", reason = "transitive via cosmic-text" },
+  # Unmaintained, transitive through telemetry-parser 0.2.6 (optional feature `telemetry`).
+  { id = "RUSTSEC-2024-0375", reason = "atty via telemetry-parser" },
+  { id = "RUSTSEC-2024-0436", reason = "paste via telemetry-parser" },
 ]
 
 [licenses]
@@ -19,7 +22,8 @@ allow = [
   "ISC",
   "Zlib",
   "WTFPL",
-] # WTFPL: ffmpeg-next
+  "MPL-2.0",
+] # WTFPL: ffmpeg-next; MPL-2.0: mp4parse, through telemetry-parser
 confidence-threshold = 0.9
 
 [bans]
