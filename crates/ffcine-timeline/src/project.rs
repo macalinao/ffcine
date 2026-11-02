@@ -199,9 +199,93 @@ pub struct MixParams {
     /// High-pass of that default chain, Hz [default: 80].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub highpass: Option<f64>,
+    /// Bus settings by name: `dialogue`, `music`, `ambience`, `sfx`, and any other name is an
+    /// aux bus fed by sends.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub buses: BTreeMap<String, BusParams>,
     /// Fields this version doesn't know, kept as-is.
     #[serde(flatten)]
     pub other: Map<String, Value>,
+}
+
+/// One entry of `project.mix.buses`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BusParams {
+    /// Fader, dB (default 0): after the bus's `filter`, before its ducking.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gain_db: Option<f64>,
+    /// libavfilter chain over the bus (on an aux, after its `reverb`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filter: Option<String>,
+    /// Feeds to aux buses (dialogue, music, ambience and sfx only).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sends: Vec<BusSend>,
+    /// Aux only: a reverb return.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reverb: Option<BusReverb>,
+    /// Aux only: a key bus. It isn't heard; while it is loud it ducks its targets.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duck: Option<BusDuck>,
+}
+
+/// A feed from a bus to an aux bus.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BusSend {
+    /// The aux bus.
+    pub to: String,
+    /// Send level, dB (default 0).
+    pub gain_db: f64,
+    /// Tap before the bus's fader and ducking, not after [false].
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub pre: bool,
+}
+
+/// `reverb` of an aux bus.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BusReverb {
+    /// Decay, 0..=1 [0.5].
+    pub room: f64,
+    /// High-frequency damping, 0..=1 [0.5].
+    pub damp: f64,
+}
+
+impl Default for BusReverb {
+    fn default() -> Self {
+        Self {
+            room: 0.5,
+            damp: 0.5,
+        }
+    }
+}
+
+/// `duck` of an aux bus.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BusDuck {
+    /// The buses it ducks (of dialogue, music, ambience and sfx).
+    pub targets: Vec<String>,
+    /// How far, dB [-12].
+    pub depth_db: f64,
+    /// Ducks while the key's 10 ms RMS is over this, dBFS [-40].
+    pub threshold_db: f64,
+    /// Look-ahead and hold, s [0.04, 0.35].
+    pub attack: f64,
+    pub release: f64,
+}
+
+impl Default for BusDuck {
+    fn default() -> Self {
+        Self {
+            targets: Vec::new(),
+            depth_db: -12.0,
+            threshold_db: -40.0,
+            attack: 0.04,
+            release: 0.35,
+        }
+    }
 }
 
 impl MixParams {

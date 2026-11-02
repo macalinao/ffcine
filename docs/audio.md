@@ -78,6 +78,7 @@ ambience gets `highpass=f=60,lowpass=f=14000`; music and SFX nothing.
 |---|---|---|
 | `amount` (`strength`) | 0.6 (`nat`: 0) | `c` below; 0 turns denoise and EQ/de-esser off |
 | `highpass` | 80 | `highpass=f=80` (12 dB/oct), `null` for none |
+| `lowpass` | none | `lowpass=f=...` (12 dB/oct) |
 | `wind` | false | `highpass=f=150:p=2` twice (24 dB/oct), `lowshelf=f=300:g=-6`, `adeclick` |
 | `declick` | false | `adeclick` |
 | `denoise` | `afftdn` | `afftdn nr=6+10c nf=-34+6c tn=1`; `arnndn` with `model` (RNNoise file, `mix=c`); `off` |
@@ -125,6 +126,66 @@ On a 4-minute travel edit (`ffcine
 stem lands within 0.4 LU of the prototype's: dialogue −18.7 (−18.8), music −22.9 (−23.3),
 ambience −39.9 (−39.8), SFX −22.4 (−22.2), master −14.1 LUFS / −3.1 dBTP (−14.1 / −3.0).
 
+### Bus gain, filters and sends
+
+`project.mix.buses` ([timeline.md](timeline.md#buses)) sets a fader and a libavfilter chain per bus,
+and routes sends to aux buses, which are any other name in the map. A bus runs clips, `filter`,
+`gain_db`, ducking; the stem and the master take it after that. A send taps it after the ducking,
+or with `pre: true` before the fader and the ducking.
+
+```json
+"buses": {
+  "music": { "gain_db": -2 },
+  "ambience": { "filter": "lowpass=f=9000" },
+  "dialogue": { "sends": [{ "to": "room", "gain_db": -14 }, { "to": "key" }] },
+  "room": { "reverb": { "room": 0.7, "damp": 0.4 }, "gain_db": -3 },
+  "key": { "duck": { "targets": ["music", "ambience"], "depth_db": -9 } }
+}
+```
+
+An aux bus sums its sends, then runs a `reverb` (Freeverb, wet only) and/or a `filter`, then its
+`gain_db`, into the master; it gets a stem of its own (`room.wav`). The tail stops at the end of the
+timeline. An aux with `duck` is a key bus: it isn't heard, and while its 10 ms RMS is over
+`threshold_db` its targets dip by `depth_db`, on top of the ducking above, with the same envelope
+(`attack` look-ahead, `release` hold, Hann-smoothed). Keys read the buses before any ducking, so
+keys can't chain or feed back. An aux can't send on. A send to a bus that isn't defined, or a name
+that doesn't fit a file name, fails the mix.
+
+## Memory
+
+The mix runs in 64k-frame chunks over scratch files, one clip then one bus at a time: clips decode,
+clean and resample as a stream, are measured and levelled from a file, and each pass of the master
+reads the sum back through a streaming limiter. What stays in memory is a few chunks, the 100 Hz duck
+envelopes and the decoders, so a mix doesn't grow with the timeline:
+
+| Synthetic mix, four buses, `ffcine audio` | Peak RSS in memory | Peak RSS streaming | Time |
+|---|---|---|---|
+| 15 min, with stems | 2336 MB | 106 MB | 30 s -> 44 s |
+| 60 min | 9119 MB | 123 MB | 132 s -> 155 s |
+
+The 15-minute master and stems are bit-identical to the in-memory mix. A test holds the Rust heap
+under 16 MB for a 10-minute mix at 8 kHz.
+
+The cost is disk: about 1.4 GB per hour for each bus, the sum and the master, less for buses with
+few clips (sparse files). `ffcine audio` keeps them in a hidden directory next to the output and
+`ffcine render` under its working directory; the library uses `MixOptions::scratch`, else the system
+temporary directory, which may be RAM. `render_audio` still returns the mix in memory;
+`stream_audio` hands back a `StreamedMix` to write out. A WAV stops at 4 GiB, about 3.1 hours of
+32-bit stereo at 48 kHz: longer mixes fail with an error. `ffcine sync` and `ffcine beats` analyse
+whole recordings and tracks in memory.
+
+## macOS
+
+`nix develop .#audio` (Apple Silicon or Linux) has cargo and libav*, no GPU stack:
+
+```sh
+nix develop .#audio -c cargo build -p ffcine-cli --no-default-features --features audio
+nix develop .#audio -c cargo test -p ffcine-audio
+```
+
+That binary has ingest, catalog, `sync`, `audio` and `beats`. CI builds it and runs the tests on a
+macOS runner.
+
 ## Beats
 
 `ffcine_audio::beats` finds a music track's tempo and beats for cut snapping: librosa's
@@ -144,11 +205,3 @@ keyed by canonical path, size and mtime; `--no-cache` re-analyses. `ffcine impor
 cache for `edit.yaml`'s beat snapping ([timeline.md](timeline.md#edityaml-import)). On the three
 sample music tracks the tempo equals librosa's and every beat is within 23 ms of it; the trimmed
 ends differ by one beat on two of them (resampler differences at the trim threshold).
-
-## Not yet
-
-- Per-bus gain and sends aren't in the schema; `edit.yaml`'s ambience `lowpass`/`pre`/`post` and
-  the mix settings under `music`/`sfx` stay foreign (importer).
-- Memory: the mix is held in RAM (about 350 MB per stereo bus for 15 min at 48 kHz).
-- macOS: `cargo build -p ffcine-cli --no-default-features --features audio` gives ingest,
-  catalog, `sync` and `audio` with libav* only; not yet built on a Mac.
