@@ -129,7 +129,8 @@ uses it.
 | `ffcine-delivery` | YouTube chapters from markers, music credits, the frame under a timeline time ([delivery.md](delivery.md)) | core, timeline |
 | `ffcine-hooks` | step 9: vendored adaptive-sharpen, `ffcine.fx.shader/1` with `//!PARAM`s, hook order ([hooks.md](hooks.md)) | core, timeline, render, reframe |
 | `ffcine-triage` | `ffcine triage`/`search`/`snap`: clip index from proxies (strips, scene cuts, speech map, batched GPU whisper, flags, Immich locations), clip page, word-boundary snapping ([triage.md](triage.md)); feature `ffmpeg` decodes | ingest |
-| `ffcine` | facade: re-exports core, timeline, import, ingest, stabilize, render, reframe, hooks, text, delivery, filters, triage, audio, assembly; features `ffmpeg`, `audio` (libav* only), `placebo`, `nvof` forward to them | all of the above but the skeletons |
+| `ffcine-breakdown` | `ffcine breakdown`: shot list of a reference video (cuts, keyframes, global camera motion, beat alignment, colour, speech, OCR), contact sheet, `shotlist.md` ([breakdown.md](breakdown.md)); feature `ffmpeg` decodes | triage, audio, text |
+| `ffcine` | facade: re-exports core, timeline, import, ingest, stabilize, render, reframe, hooks, text, delivery, filters, triage, breakdown, audio, assembly; features `ffmpeg`, `audio` (libav* only), `placebo`, `nvof` forward to them | all of the above but the skeletons |
 | `ffcine-cli` | the `ffcine` binary (bpaf); feature `gpu` (default) adds the GPU commands, without it only ingest/catalog/doctor/search/snap build; feature `audio` adds `sync` and `audio` (libav*, no GPU, so the Mac build can have them) | ffcine |
 | `libplacebo-sys` | bindgen FFI over libplacebo | - |
 
@@ -141,6 +142,7 @@ ffcine-cli -> ffcine -> ffcine-assembly -> ffcine-text, ffcine-render, ffcine-ti
                      -> ffcine-audio -> ffcine-timeline
                      -> ffcine-render -> libplacebo-sys
                                       -> ffcine-filters
+                     -> ffcine-breakdown -> ffcine-triage, ffcine-audio, ffcine-text
                      -> ffcine-triage -> ffcine-ingest
                                       -----------------> ffcine-core
 ```
