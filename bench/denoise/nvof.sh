@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # NVOF before/after (docs/denoise.md#motion-nvof-default-or-vulkan-block-matching): wall fps and the
 # denoiser's report (GPU ms, wall ms/frame) for no denoise, block matching and NVOF at r2, repeated,
-# for one or two ffcine binaries; then whether their NVOF outputs match (NVENC qp 0, no dither; the old path itself varies run to run, so repeat on a mismatch).
+# for one or two ffcine binaries; then whether their NVOF outputs match (NVENC qp 0, no dither;
+# the old path itself has varied run to run, so repeat on a mismatch).
 # Inside `nix develop`, from the repo root.
 #   bench/denoise/nvof.sh CLIP [SS]
 #   BEFORE=/path/to/old/ffcine bench/denoise/nvof.sh CLIP 428
@@ -41,8 +42,7 @@ for b in "${bins[@]}"; do
       done
     done
   done
-  # Lossless and undithered, so two binaries can be compared frame by frame.
-  # shellcheck disable=SC2046
+  # Near-lossless and undithered, so two binaries can be compared frame by frame.
   for _ in 1 2 3 4 5; do
     # shellcheck disable=SC2046
     nice -n 19 "$bin" grade --no-cache --dither none --rate qp=0 --ss "$ss" --frames "$N" \
