@@ -56,10 +56,27 @@ jobs:
         with:
           command: check advisories bans licenses sources
 
+  # The GPU stack is Linux only; the audio path has to keep building and passing on a Mac.
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: cargo build (audio)
+        run: nix develop .#audio --command cargo build -p ffcine-cli --no-default-features --features audio
+
+      - name: cargo test (audio)
+        run: nix develop .#audio --command cargo test -p ffcine-audio
+
   # The one check branch protection requires.
   ci:
     if: always()
-    needs: [nix, deny]
+    needs: [nix, deny, macos]
     runs-on: ubuntu-latest
     steps:
       - name: All jobs passed

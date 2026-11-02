@@ -126,7 +126,7 @@ impl MixFlags {
 pub struct AudioArgs {
     #[bpaf(external(mix_flags))]
     mix: MixFlags,
-    /// Also write one WAV per bus (dialogue, music, ambience, sfx) here.
+    /// Also write one WAV per bus (dialogue, music, ambience, sfx, aux buses) here.
     #[bpaf(argument("DIR"))]
     stems: Option<PathBuf>,
     #[bpaf(argument("HZ"), fallback(48000), display_fallback)]
@@ -146,12 +146,22 @@ impl AudioArgs {
         let mut opts = MixOptions::for_timeline(&tl, self.timeline.parent())?;
         opts.rate = self.rate;
         self.mix.apply(&mut opts);
-        let mix = audio::render_audio(&tl, &opts)?;
-        audio::write_mix(&mix, &self.output, self.stems.as_deref())?;
+        // Next to the output, where the room for a long mix is; /tmp may be RAM.
+        opts.scratch = self
+            .output
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(Path::to_owned)
+            .or_else(|| Some(".".into()));
+        let mut mix = audio::stream_audio(&tl, &opts, self.stems.is_some())?;
+        mix.write_master(&self.output)?;
+        if let Some(dir) = &self.stems {
+            mix.write_stems(dir)?;
+        }
         eprintln!(
             "{}: {:.1} s, {:.1} LUFS, {:.1} dBTP",
             self.output.display(),
-            mix.master.seconds(),
+            mix.seconds(),
             mix.lufs,
             mix.true_peak
         );
@@ -197,6 +207,7 @@ impl BeatsArgs {
 }
 
 /// The cached beat times of `path`, for importers (`ImportOptions::beats`).
+#[cfg(feature = "gpu")]
 pub fn beat_times(path: &Path) -> Option<Vec<f64>> {
     audio::beats::cached(path, &audio::beats::default_cache_dir())
         .map_err(|e| eprintln!("warning: beats of {}: {e}", path.display()))
