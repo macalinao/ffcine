@@ -12,6 +12,8 @@ pub type CuResult = c_int;
 pub type CuDevice = c_int;
 pub type CuContext = *mut c_void;
 pub type CuDevicePtr = u64;
+pub type CuStream = *mut c_void;
+pub type CuExtSem = *mut c_void;
 
 const MEMORYTYPE_HOST: c_uint = 1;
 const MEMORYTYPE_DEVICE: c_uint = 2;
@@ -63,7 +65,104 @@ pub struct Cuda {
         unsafe extern "C" fn(*mut CuDevicePtr, CuExtMem, *const ExtMemBufferDesc) -> CuResult,
     >,
     destroy_ext: Option<unsafe extern "C" fn(CuExtMem) -> CuResult>,
+    stream_create: unsafe extern "C" fn(*mut CuStream, c_uint) -> CuResult,
+    stream_destroy: unsafe extern "C" fn(CuStream) -> CuResult,
+    stream_sync: unsafe extern "C" fn(CuStream) -> CuResult,
+    memcpy_2d_async: unsafe extern "C" fn(*const Memcpy2D, CuStream) -> CuResult,
+    import_sem: Option<unsafe extern "C" fn(*mut CuExtSem, *const ExtSemHandleDesc) -> CuResult>,
+    signal_sems: Option<
+        unsafe extern "C" fn(*const CuExtSem, *const ExtSemParams, c_uint, CuStream) -> CuResult,
+    >,
+    wait_sems: Option<
+        unsafe extern "C" fn(*const CuExtSem, *const ExtSemParams, c_uint, CuStream) -> CuResult,
+    >,
+    destroy_sem: Option<unsafe extern "C" fn(CuExtSem) -> CuResult>,
     _lib: Library,
+}
+
+/// `CUDA_EXTERNAL_SEMAPHORE_HANDLE_DESC` for an fd.
+#[repr(C)]
+struct ExtSemHandleDesc {
+    kind: c_uint,
+    _pad: c_uint,
+    fd: c_int,
+    _union_rest: [u8; 12],
+    flags: c_uint,
+    reserved: [c_uint; 16],
+    _tail: c_uint,
+}
+
+/// `CUDA_EXTERNAL_SEMAPHORE_SIGNAL_PARAMS` / `_WAIT_PARAMS`: the same layout, and a timeline
+/// semaphore only uses the fence value.
+#[repr(C)]
+struct ExtSemParams {
+    value: u64,
+    _rest: [u64; 8],
+    flags: c_uint,
+    reserved: [c_uint; 16],
+    _tail: c_uint,
+}
+
+impl ExtSemParams {
+    const fn value(value: u64) -> Self {
+        Self {
+            value,
+            _rest: [0; 8],
+            flags: 0,
+            reserved: [0; 16],
+            _tail: 0,
+        }
+    }
+}
+
+/// A CUDA stream in a context; work on it is ordered, asynchronous to the host.
+pub struct Stream {
+    pub raw: CuStream,
+    ctx: CuContext,
+}
+
+impl Drop for Stream {
+    fn drop(&mut self) {
+        if let Ok(cuda) = Cuda::get()
+            && let Ok(_g) = cuda.push(self.ctx)
+        {
+            // SAFETY: created by `Cuda::stream`; pending work finishes before it goes.
+            unsafe {
+                (cuda.stream_sync)(self.raw);
+                (cuda.stream_destroy)(self.raw);
+            }
+        }
+    }
+}
+
+impl Stream {
+    /// Waits for everything queued so far.
+    pub fn synchronize(&self) -> Result<()> {
+        let cuda = Cuda::get()?;
+        let _g = cuda.push(self.ctx)?;
+        // SAFETY: a live stream.
+        cuda.check(
+            unsafe { (cuda.stream_sync)(self.raw) },
+            "cuStreamSynchronize",
+        )
+    }
+}
+
+/// A semaphore another API (Vulkan) exported as an fd: a timeline semaphore CUDA can wait on and
+/// signal from a stream.
+pub struct ExternalSemaphore {
+    sem: CuExtSem,
+}
+
+impl Drop for ExternalSemaphore {
+    fn drop(&mut self) {
+        if let Ok(cuda) = Cuda::get()
+            && let Some(f) = cuda.destroy_sem
+        {
+            // SAFETY: imported once by `import_semaphore_fd`.
+            unsafe { f(self.sem) };
+        }
+    }
 }
 
 pub type CuExtMem = *mut c_void;
@@ -161,6 +260,14 @@ impl Cuda {
                 import_ext: sym(&lib, "cuImportExternalMemory").ok(),
                 ext_buffer: sym(&lib, "cuExternalMemoryGetMappedBuffer").ok(),
                 destroy_ext: sym(&lib, "cuDestroyExternalMemory").ok(),
+                stream_create: sym(&lib, "cuStreamCreate")?,
+                stream_destroy: sym(&lib, "cuStreamDestroy_v2")?,
+                stream_sync: sym(&lib, "cuStreamSynchronize")?,
+                memcpy_2d_async: sym(&lib, "cuMemcpy2DAsync_v2")?,
+                import_sem: sym(&lib, "cuImportExternalSemaphore").ok(),
+                signal_sems: sym(&lib, "cuSignalExternalSemaphoresAsync").ok(),
+                wait_sems: sym(&lib, "cuWaitExternalSemaphoresAsync").ok(),
+                destroy_sem: sym(&lib, "cuDestroyExternalSemaphore").ok(),
                 _lib: lib,
             }
         };
@@ -255,53 +362,154 @@ impl Cuda {
         Ok(buf)
     }
 
+    /// A non-blocking stream (no implicit sync with the legacy default stream) in `ctx`.
+    pub fn stream(&self, ctx: CuContext) -> Result<Stream> {
+        let _g = self.push(ctx)?;
+        let mut raw = std::ptr::null_mut();
+        // SAFETY: out-pointer; CU_STREAM_NON_BLOCKING.
+        self.check(
+            unsafe { (self.stream_create)(&raw mut raw, 1) },
+            "cuStreamCreate",
+        )?;
+        Ok(Stream { raw, ctx })
+    }
+
+    /// Imports a timeline semaphore exported as an fd (CUDA takes ownership of `fd` on success).
+    /// Needs a current context.
+    ///
+    /// # Safety
+    /// `fd` must be an opaque fd export of a Vulkan timeline semaphore on this device.
+    pub unsafe fn import_semaphore_fd(&self, fd: c_int) -> Result<ExternalSemaphore> {
+        let Some(import) = self.import_sem else {
+            return Err(Error::Gpu {
+                api: "CUDA",
+                msg: "driver lacks external semaphores".into(),
+            });
+        };
+        let desc = ExtSemHandleDesc {
+            kind: 9, // CU_EXTERNAL_SEMAPHORE_HANDLE_TYPE_TIMELINE_SEMAPHORE_FD
+            _pad: 0,
+            fd,
+            _union_rest: [0; 12],
+            flags: 0,
+            reserved: [0; 16],
+            _tail: 0,
+        };
+        let mut sem = std::ptr::null_mut();
+        // SAFETY: valid descriptor.
+        self.check(
+            unsafe { import(&raw mut sem, &raw const desc) },
+            "cuImportExternalSemaphore",
+        )?;
+        Ok(ExternalSemaphore { sem })
+    }
+
+    /// Queues a wait on `stream` until `sem` reaches `value`. Needs a current context.
+    pub fn wait_async(&self, sem: &ExternalSemaphore, value: u64, stream: &Stream) -> Result<()> {
+        let f = self.wait_sems.ok_or_else(|| Error::Gpu {
+            api: "CUDA",
+            msg: "no cuWaitExternalSemaphoresAsync".into(),
+        })?;
+        let p = ExtSemParams::value(value);
+        // SAFETY: one live semaphore and its parameters.
+        self.check(
+            unsafe { f(&raw const sem.sem, &raw const p, 1, stream.raw) },
+            "cuWaitExternalSemaphoresAsync",
+        )
+    }
+
+    /// Queues a signal of `sem` to `value` on `stream`. Needs a current context.
+    pub fn signal_async(&self, sem: &ExternalSemaphore, value: u64, stream: &Stream) -> Result<()> {
+        let f = self.signal_sems.ok_or_else(|| Error::Gpu {
+            api: "CUDA",
+            msg: "no cuSignalExternalSemaphoresAsync".into(),
+        })?;
+        let p = ExtSemParams::value(value);
+        // SAFETY: one live semaphore and its parameters.
+        self.check(
+            unsafe { f(&raw const sem.sem, &raw const p, 1, stream.raw) },
+            "cuSignalExternalSemaphoresAsync",
+        )
+    }
+
     /// Synchronous pitched copy of `height` rows of `width_bytes`. Needs a current context.
     ///
     /// # Safety
     /// Both sides must be valid for `height` rows of `pitch` bytes (`width_bytes` on the last).
     pub unsafe fn copy_2d(
         &self,
-        (src, src_pitch): (Mem, usize),
-        (dst, dst_pitch): (Mem, usize),
+        src: (Mem, usize),
+        dst: (Mem, usize),
         width_bytes: usize,
         height: usize,
     ) -> Result<()> {
-        let mut p = Memcpy2D {
-            src_x_in_bytes: 0,
-            src_y: 0,
-            src_memory_type: 0,
-            src_host: std::ptr::null(),
-            src_device: 0,
-            src_array: std::ptr::null_mut(),
-            src_pitch,
-            dst_x_in_bytes: 0,
-            dst_y: 0,
-            dst_memory_type: 0,
-            dst_host: std::ptr::null_mut(),
-            dst_device: 0,
-            dst_array: std::ptr::null_mut(),
-            dst_pitch,
-            width_in_bytes: width_bytes,
-            height,
-        };
-        match src {
-            Mem::Host(h) => (p.src_memory_type, p.src_host) = (MEMORYTYPE_HOST, h.cast()),
-            Mem::HostMut(h) => (p.src_memory_type, p.src_host) = (MEMORYTYPE_HOST, h.cast()),
-            Mem::Device(d) => (p.src_memory_type, p.src_device) = (MEMORYTYPE_DEVICE, d),
-        }
-        match dst {
-            Mem::HostMut(h) => (p.dst_memory_type, p.dst_host) = (MEMORYTYPE_HOST, h.cast()),
-            Mem::Device(d) => (p.dst_memory_type, p.dst_device) = (MEMORYTYPE_DEVICE, d),
-            Mem::Host(_) => {
-                return Err(Error::Invalid {
-                    what: "copy destination",
-                    value: "read-only host memory".into(),
-                });
-            }
-        }
+        let p = memcpy_params(src, dst, width_bytes, height)?;
         // SAFETY: the caller guarantees the extents.
         self.check(unsafe { (self.memcpy_2d)(&raw const p) }, "cuMemcpy2D")
     }
+
+    /// [`Self::copy_2d`], queued on `stream`. Host memory should be pinned for it to be
+    /// asynchronous.
+    ///
+    /// # Safety
+    /// As [`Self::copy_2d`], and both sides must stay valid until the stream gets there.
+    pub unsafe fn copy_2d_async(
+        &self,
+        src: (Mem, usize),
+        dst: (Mem, usize),
+        width_bytes: usize,
+        height: usize,
+        stream: &Stream,
+    ) -> Result<()> {
+        let p = memcpy_params(src, dst, width_bytes, height)?;
+        // SAFETY: the caller guarantees the extents and lifetimes.
+        self.check(
+            unsafe { (self.memcpy_2d_async)(&raw const p, stream.raw) },
+            "cuMemcpy2DAsync",
+        )
+    }
+}
+
+fn memcpy_params(
+    (src, src_pitch): (Mem, usize),
+    (dst, dst_pitch): (Mem, usize),
+    width_bytes: usize,
+    height: usize,
+) -> Result<Memcpy2D> {
+    let mut p = Memcpy2D {
+        src_x_in_bytes: 0,
+        src_y: 0,
+        src_memory_type: 0,
+        src_host: std::ptr::null(),
+        src_device: 0,
+        src_array: std::ptr::null_mut(),
+        src_pitch,
+        dst_x_in_bytes: 0,
+        dst_y: 0,
+        dst_memory_type: 0,
+        dst_host: std::ptr::null_mut(),
+        dst_device: 0,
+        dst_array: std::ptr::null_mut(),
+        dst_pitch,
+        width_in_bytes: width_bytes,
+        height,
+    };
+    match src {
+        Mem::Host(h) => (p.src_memory_type, p.src_host) = (MEMORYTYPE_HOST, h.cast()),
+        Mem::HostMut(h) => (p.src_memory_type, p.src_host) = (MEMORYTYPE_HOST, h.cast()),
+        Mem::Device(d) => (p.src_memory_type, p.src_device) = (MEMORYTYPE_DEVICE, d),
+    }
+    match dst {
+        Mem::HostMut(h) => (p.dst_memory_type, p.dst_host) = (MEMORYTYPE_HOST, h.cast()),
+        Mem::Device(d) => (p.dst_memory_type, p.dst_device) = (MEMORYTYPE_DEVICE, d),
+        Mem::Host(_) => {
+            return Err(Error::Invalid {
+                what: "copy destination",
+                value: "read-only host memory".into(),
+            });
+        }
+    }
+    Ok(p)
 }
 
 pub struct CtxGuard<'a> {
@@ -330,5 +538,22 @@ impl Drop for PrimaryContext {
             // SAFETY: balances the retain in `primary_context`.
             unsafe { (cuda.primary_ctx_release)(self.dev) };
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The hand-written driver structs match cuda.h's sizes (x86-64).
+    #[test]
+    fn struct_sizes() {
+        assert_eq!(std::mem::size_of::<Memcpy2D>(), 128);
+        assert_eq!(std::mem::size_of::<ExtMemHandleDesc>(), 104);
+        assert_eq!(std::mem::size_of::<ExtSemHandleDesc>(), 96);
+        assert_eq!(std::mem::size_of::<ExtSemParams>(), 144);
+        assert_eq!(std::mem::offset_of!(ExtSemHandleDesc, fd), 8);
+        assert_eq!(std::mem::offset_of!(ExtSemHandleDesc, flags), 24);
+        assert_eq!(std::mem::offset_of!(ExtSemParams, flags), 72);
     }
 }
