@@ -185,8 +185,52 @@ fn contain_places_the_whole_picture() {
     let p = f.place.unwrap();
     assert!(close(p.w, 1080.0) && close(p.h, 608.0));
     assert!(close(p.y, (1920.0f64 * 0.42 - 607.5 / 2.0).round()));
+    // A blurred fill around it, in pixels of the placed picture; `fill_blur: 0` is black.
+    assert!(close(f.blur.unwrap(), 0.04 * 608.0));
+    let mut g = Grade::default();
+    pass::apply(
+        &mut g,
+        &[f],
+        &[],
+        (3840, 2160),
+        &Profile::preset("reel").unwrap(),
+    );
+    assert_eq!(g.border, ffcine_render::Border::Blur(0.04 * 608.0));
+    let black = reframe(json!({"fit": "contain", "fill_blur": 0}), None);
+    assert_eq!(
+        black.frame(0, &UHD, &Profile::preset("reel").unwrap()).blur,
+        None
+    );
+    assert!(Reframe::parse(json!({"fill_blur": -1}).as_object().unwrap(), None).is_err());
+    // Cover has nothing around it.
+    assert_eq!(
+        reframe(json!({}), None)
+            .frame(0, &UHD, &Profile::preset("reel").unwrap())
+            .blur,
+        None
+    );
     // Resolve's sizing mode maps onto the same.
     assert_eq!(reframe(json!({"mode": "fit"}), None).fit, Fit::Contain);
+}
+
+#[test]
+fn panel_focus_defaults_the_window() {
+    let r = reframe(json!({"focus": [0.2, 0.7], "zoom": 1.2}), None).focused();
+    let panel = Profile::new("panel", 954, 1080);
+    let f = r.frame(0, &UHD, &panel);
+    // The panel-aspect window slid to 0.2 of the slack, then zoomed about the focus.
+    let aw = 2160.0 * 954.0 / 1080.0;
+    let ax = (3840.0 - aw) * 0.2;
+    assert!(close(f.crop.w, aw / 1.2));
+    assert!(close(f.crop.x, ax + (aw - aw / 1.2) * 0.2));
+    assert!(close(f.crop.y, (2160.0 - 2160.0 / 1.2) * 0.7));
+    // Explicit fields win over the focus; without one nothing changes.
+    let explicit = reframe(json!({"focus": [0.2, 0.7], "crop_x": 0.9}), None).focused();
+    assert_eq!(
+        explicit.crop_x,
+        crate::Slide::Keyed(crate::Keyed::Const(0.9))
+    );
+    assert_eq!(reframe(json!({}), None).focused(), reframe(json!({}), None));
 }
 
 #[test]

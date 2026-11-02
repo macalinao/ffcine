@@ -6,7 +6,7 @@
 use std::fmt::Write as _;
 
 use ffcine_core::geom::{self, Mat3};
-use ffcine_render::{Grade, Hook, ParamTrack, Size};
+use ffcine_render::{Border, Grade, Hook, ParamTrack, Size};
 use ffcine_stabilize::hook::WARP_GLSL;
 
 use crate::profile::{Profile, SafeArea};
@@ -41,6 +41,9 @@ pub fn apply(
         height: out.height,
     });
     grade.place = frames.first().and_then(|f| f.place).map(|r| r.to_crop());
+    #[allow(clippy::cast_possible_truncation)]
+    let blur = frames.first().and_then(|f| f.blur).map(|r| r as f32);
+    grade.border = blur.map_or(Border::Black, Border::Blur);
     if warps.is_empty() {
         grade.crop = None;
         grade.crops = frames.iter().map(|f| f.crop.to_crop()).collect();

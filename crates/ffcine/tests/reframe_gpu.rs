@@ -160,7 +160,7 @@ fn reel_window_matches_cpu_and_warp_path() {
                 x: f.crop.x + 40.5,
                 ..f.crop
             },
-            place: f.place,
+            ..*f
         })
         .collect();
     let e = d.join("shifted.mkv");

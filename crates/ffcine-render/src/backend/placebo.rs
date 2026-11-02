@@ -665,6 +665,10 @@ impl RenderParams {
         p.tile_colors = [[0.93; 3], [0.87; 3]];
         p.tile_size = 32;
         p.blur_radius = 16.0;
+        if let crate::Border::Blur(r) = grade.border {
+            p.border = pl::pl_clear_mode::PL_CLEAR_BLUR;
+            p.blur_radius = r;
+        }
         // vf_libplacebo
         p.background_transparency = 1.0;
         p.upscaler = scaler(grade.scaling.upscaler)?;

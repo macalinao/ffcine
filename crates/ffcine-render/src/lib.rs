@@ -14,8 +14,8 @@ pub mod shaders;
 pub use encode::{Codec, EncoderSettings, PixelFormat, RateControl};
 pub use ffcine_core::{ColorSpace, Error, Lut, LutType, MediaInfo, Rational, Result};
 pub use grade::{
-    ColorMapTuning, ColorOverride, Crop, Deband, Dither, DitherMethod, GamutMapping, Grade, Hook,
-    LutStage, ParamTrack, Scaler, Scaling, Size, ToneMapping, Warp,
+    Border, ColorMapTuning, ColorOverride, Crop, Deband, Dither, DitherMethod, GamutMapping, Grade,
+    Hook, LutStage, ParamTrack, Scaler, Scaling, Size, ToneMapping, Warp,
 };
 pub use layer::{Image, Layer, LayerSource};
 pub use overlay::{Mask, Overlay, OverlayPart};
