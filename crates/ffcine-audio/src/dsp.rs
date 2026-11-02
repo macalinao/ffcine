@@ -1,5 +1,5 @@
 //! Small DSP kit: windowed-sinc resampling, FFT cross-correlation, biquads, the 4x true-peak
-//! estimate and a lookahead limiter.
+//! estimate, a lookahead limiter and a reverb.
 
 use std::f64::consts::PI;
 use std::sync::OnceLock;
@@ -250,37 +250,205 @@ pub fn true_peak_trace(channels: &[Vec<f32>]) -> Vec<f32> {
 /// Lookahead brickwall limiter on the 4x true-peak trace: gain ramps down linearly over
 /// `lookahead` seconds before a peak and recovers exponentially over `release` seconds.
 pub fn limit(channels: &mut [Vec<f32>], rate: u32, ceiling_db: f64, lookahead: f64, release: f64) {
-    let ceiling = 10f64.powf(ceiling_db / 20.0) as f32;
-    let peak = true_peak_trace(channels);
-    let n = peak.len();
-    if n == 0 {
-        return;
+    let n = channels.first().map_or(0, Vec::len);
+    Limiter::new(rate, ceiling_db, lookahead, release).process(channels, 0, n);
+}
+
+/// [`limit`] over a stream: feed consecutive runs of frames, each with [`Limiter::context`] frames
+/// of the signal around it (fewer only at its ends), and the output is the same.
+#[derive(Debug, Clone)]
+pub struct Limiter {
+    ceiling: f32,
+    la: f64,
+    step: f32,
+    coeff: f32,
+    env: f32,
+}
+
+impl Limiter {
+    pub fn new(rate: u32, ceiling_db: f64, lookahead: f64, release: f64) -> Self {
+        let la = (lookahead * f64::from(rate)).max(1.0);
+        Self {
+            ceiling: 10f64.powf(ceiling_db / 20.0) as f32,
+            la,
+            step: (1.0 / la) as f32,
+            coeff: (1.0 - (-1.0 / (release * f64::from(rate))).exp()) as f32,
+            env: 1.0,
+        }
     }
-    let mut g: Vec<f32> = peak
-        .iter()
-        .map(|&p| if p > ceiling { ceiling / p } else { 1.0 })
-        .collect();
-    // The interpolated peak at sample i spans samples i-1..=i+1 of the input.
-    let spread = g.clone();
-    for (i, gi) in g.iter_mut().enumerate() {
-        let lo = i.saturating_sub(1);
-        let hi = (i + 1).min(n - 1);
-        *gi = spread[lo..=hi].iter().copied().fold(1.0, f32::min);
+
+    /// Frames needed before and after a run: the interpolator's reach plus the spread below, and
+    /// after it also the gain ramp (a peak further on can't pull the gain under 1 here).
+    pub fn context(&self) -> (usize, usize) {
+        (9, self.la.ceil() as usize + 9)
     }
-    let la = (lookahead * f64::from(rate)).max(1.0);
-    let step = (1.0 / la) as f32;
-    for i in (0..n - 1).rev() {
-        g[i] = g[i].min(g[i + 1] + step);
+
+    /// Limits `channels[..][pre..pre + len]`; the rest of `channels` is context, left alone.
+    pub fn process(&mut self, channels: &mut [Vec<f32>], pre: usize, len: usize) {
+        let peak = true_peak_trace(channels);
+        let n = peak.len();
+        if n == 0 {
+            return;
+        }
+        let mut g: Vec<f32> = peak
+            .iter()
+            .map(|&p| {
+                if p > self.ceiling {
+                    self.ceiling / p
+                } else {
+                    1.0
+                }
+            })
+            .collect();
+        // The interpolated peak at sample i spans samples i-1..=i+1 of the input.
+        let spread = g.clone();
+        for (i, gi) in g.iter_mut().enumerate() {
+            let lo = i.saturating_sub(1);
+            let hi = (i + 1).min(n - 1);
+            *gi = spread[lo..=hi].iter().copied().fold(1.0, f32::min);
+        }
+        for i in (0..n - 1).rev() {
+            g[i] = g[i].min(g[i + 1] + self.step);
+        }
+        let run = &mut g[pre..pre + len];
+        for gi in run.iter_mut() {
+            self.env = (self.env + (1.0 - self.env) * self.coeff).min(*gi);
+            *gi = self.env;
+        }
+        for ch in channels {
+            for (s, gi) in ch[pre..pre + len].iter_mut().zip(run.iter()) {
+                *s *= gi;
+            }
+        }
     }
-    let coeff = (1.0 - (-1.0 / (release * f64::from(rate))).exp()) as f32;
-    let mut e = 1.0f32;
-    for gi in &mut g {
-        e = (e + (1.0 - e) * coeff).min(*gi);
-        *gi = e;
+}
+
+/// [`warp`] from position 0 over a stream, for drift correction of a clip too long to hold.
+#[derive(Debug, Clone)]
+pub struct Warper {
+    step: f64,
+    half: usize,
+    /// Input not yet out of the kernel's reach, and the input frame its first sample is.
+    buf: Vec<Vec<f32>>,
+    base: usize,
+    /// Output frames so far.
+    done: usize,
+}
+
+impl Warper {
+    pub fn new(channels: usize, step: f64) -> Self {
+        Self {
+            step,
+            half: (SINC_HALF as f64 * step.max(1.0)).ceil() as usize,
+            buf: vec![Vec::new(); channels],
+            base: 0,
+            done: 0,
+        }
     }
-    for ch in channels {
-        for (s, gi) in ch.iter_mut().zip(&g) {
-            *s *= gi;
+
+    fn emit(&mut self, m: usize) -> Vec<Vec<f32>> {
+        let start = self.done as f64 * self.step - self.base as f64;
+        let out = self
+            .buf
+            .iter()
+            .map(|c| warp(c, start, self.step, m))
+            .collect();
+        self.done += m;
+        out
+    }
+
+    /// Takes more input; returns the output frames it completes.
+    pub fn push(&mut self, chunk: &[Vec<f32>]) -> Vec<Vec<f32>> {
+        for (b, c) in self.buf.iter_mut().zip(chunk) {
+            b.extend_from_slice(c);
+        }
+        let end = self.base + self.buf.first().map_or(0, Vec::len);
+        let ready = ((end as f64 - self.half as f64) / self.step)
+            .ceil()
+            .max(0.0) as usize;
+        let out = self.emit(ready.saturating_sub(self.done));
+        let keep_from = ((self.done as f64 * self.step) as usize).saturating_sub(self.half + 1);
+        if keep_from > self.base {
+            for b in &mut self.buf {
+                b.drain(..keep_from - self.base);
+            }
+            self.base = keep_from;
+        }
+        out
+    }
+
+    /// The input is over: output frames up to `total` in all.
+    pub fn finish(&mut self, total: usize) -> Vec<Vec<f32>> {
+        self.emit(total.saturating_sub(self.done))
+    }
+}
+
+/// Freeverb (Schroeder-Moorer): eight damped combs into four allpasses per side, wet only, the
+/// kind of return a send feeds. `room` and `damp` run 0..=1.
+#[derive(Debug, Clone)]
+pub struct Reverb {
+    sides: Vec<ReverbSide>,
+    feedback: f32,
+    damp: f32,
+}
+
+#[derive(Debug, Clone)]
+struct ReverbSide {
+    combs: Vec<(Vec<f32>, usize, f32)>,
+    allpasses: Vec<(Vec<f32>, usize)>,
+}
+
+impl Reverb {
+    pub fn new(rate: u32, channels: usize, room: f64, damp: f64) -> Self {
+        const COMBS: [usize; 8] = [1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617];
+        const ALLPASSES: [usize; 4] = [556, 441, 341, 225];
+        // Freeverb's stereo spread, and its tunings are in samples at 44.1 kHz.
+        const SPREAD: usize = 23;
+        let scale = |n: usize| ((n as f64 * f64::from(rate) / 44100.0) as usize).max(1);
+        let sides = (0..channels)
+            .map(|c| ReverbSide {
+                combs: COMBS
+                    .iter()
+                    .map(|n| (vec![0.0; scale(n + c * SPREAD)], 0, 0.0))
+                    .collect(),
+                allpasses: ALLPASSES
+                    .iter()
+                    .map(|n| (vec![0.0; scale(n + c * SPREAD)], 0))
+                    .collect(),
+            })
+            .collect();
+        Self {
+            sides,
+            feedback: (room.clamp(0.0, 1.0) * 0.28 + 0.7) as f32,
+            damp: (damp.clamp(0.0, 1.0) * 0.4) as f32,
+        }
+    }
+
+    /// Replaces `chunk` with the wet signal: the channels' average in, a decorrelated tail out.
+    pub fn process(&mut self, chunk: &mut [Vec<f32>]) {
+        const INPUT: f32 = 0.015;
+        const WET: f32 = 3.0;
+        let n = chunk.first().map_or(0, Vec::len);
+        let k = INPUT / chunk.len().max(1) as f32;
+        for i in 0..n {
+            let input = chunk.iter().map(|c| c[i]).sum::<f32>() * k;
+            for (side, c) in self.sides.iter_mut().zip(chunk.iter_mut()) {
+                let mut out = 0.0;
+                for (buf, pos, low) in &mut side.combs {
+                    let y = buf[*pos];
+                    *low = y * (1.0 - self.damp) + *low * self.damp;
+                    buf[*pos] = input + *low * self.feedback;
+                    *pos = (*pos + 1) % buf.len();
+                    out += y;
+                }
+                for (buf, pos) in &mut side.allpasses {
+                    let y = buf[*pos];
+                    buf[*pos] = out + y * 0.5;
+                    *pos = (*pos + 1) % buf.len();
+                    out = y - out;
+                }
+                c[i] = out * WET;
+            }
         }
     }
 }
@@ -338,6 +506,72 @@ mod tests {
             .map(|(a, b)| (a - b).abs())
             .fold(0.0f32, f32::max);
         assert!(err < 2e-3, "err {err}");
+    }
+
+    #[test]
+    fn warper_matches_warp() {
+        let x = sine(997.0, 48000.0, 50000);
+        for step in [1.00003, 0.99997, 1.5] {
+            let total = (x.len() as f64 / step) as usize;
+            let want = warp(&x, 0.0, step, total);
+            let mut w = Warper::new(1, step);
+            let mut got = Vec::new();
+            for c in x.chunks(4096) {
+                got.extend(w.push(&[c.to_vec()]).remove(0));
+            }
+            got.extend(w.finish(total).remove(0));
+            assert_eq!(got.len(), total);
+            let err = got
+                .iter()
+                .zip(&want)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0f32, f32::max);
+            assert!(err < 1e-3, "step {step}: err {err}");
+        }
+    }
+
+    /// In runs with [`Limiter::context`] around them, the same output as all at once.
+    #[test]
+    fn limiter_streams() {
+        let mut x: Vec<f32> = sine(997.0, 48000.0, 20000);
+        for (i, s) in x.iter_mut().enumerate() {
+            *s *= 0.5 + 1.5 * (i as f32 / 3000.0).sin().abs();
+        }
+        let mut want = vec![x.clone()];
+        limit(&mut want, 48000, -3.0, 0.002, 0.06);
+        let mut lim = Limiter::new(48000, -3.0, 0.002, 0.06);
+        let (before, after) = lim.context();
+        let mut got = Vec::new();
+        for at in (0..x.len()).step_by(1000) {
+            let lo = at.saturating_sub(before);
+            let hi = (at + 1000 + after).min(x.len());
+            let mut w = vec![x[lo..hi].to_vec()];
+            lim.process(&mut w, at - lo, 1000);
+            got.extend_from_slice(&w[0][at - lo..at - lo + 1000]);
+        }
+        let err = got
+            .iter()
+            .zip(&want[0])
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(err < 1e-6, "err {err}");
+    }
+
+    #[test]
+    fn reverb_rings_and_decays() {
+        let tail = |room: f64| {
+            let mut r = Reverb::new(48000, 2, room, 0.5);
+            let mut x = vec![vec![0.0f32; 96000]; 2];
+            x[0][0] = 1.0;
+            x[1][0] = 1.0;
+            r.process(&mut x);
+            let e = |s: &[f32]| s.iter().map(|v| v * v).sum::<f32>();
+            (e(&x[0][..4800]), e(&x[0][24000..48000]), x[0] != x[1])
+        };
+        let (early, late, wide) = tail(0.5);
+        assert!(early > 0.0 && late > 0.0 && late < early, "{early} {late}");
+        assert!(wide);
+        assert!(tail(0.9).1 > late);
     }
 
     #[test]
