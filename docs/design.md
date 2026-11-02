@@ -92,11 +92,11 @@ demux (libavformat)
   safe-area overlay) and user `.hook` files are parsed with `pl_mpv_user_shader_parse` and passed
   as `pl_render_params.hooks`, with `//!PARAM`s set per frame from the timeline. libplacebo's
   `OUTPUT` stage is after the encode to YCbCr, so RGB shaders run at `PREOUTPUT`
-  ([hooks.md](hooks.md)). Third-party hooks are vendored under `crates/ffcine-hooks/shaders/` with
-  their licence headers:
-  `adaptive-sharpen` (BSD-2-Clause), KrigBilateral (LGPL-3.0+), ArtCNN (MIT), FSRCNNX (GPL-3.0,
-  fine while ffcine is private), `filmgrain.glsl` (haasn, no licence stated: rewrite before
-  shipping).
+  ([hooks.md](hooks.md)). Permissive third-party hooks are vendored under
+  `crates/ffcine-hooks/shaders/` with their licence headers: `adaptive-sharpen` (BSD-2-Clause),
+  ArtCNN (MIT). Copyleft ones (KrigBilateral, LGPL-3.0+; FSRCNNX, GPL-3.0) are loaded by name from
+  user-downloaded files. `filmgrain.glsl` (haasn, no licence stated) isn't used: grain is our own
+  compute pass in `ffcine-filters`.
 - **Per-frame crop expressions** (punch-ins/push) become keyframed crops evaluated in Rust per
   frame rather than ffmpeg expression strings: `Grade::crops`, sub-pixel and unrounded, or with a
   stabilizer warp one `MAIN` hook sampling `warp * window` ([reframe.md](reframe.md)).
@@ -378,5 +378,5 @@ crate that uses them ([Crates](#crates)).
 9. **`.hook` shaders**: vendored `adaptive-sharpen` (replacing the unsharp hook as default),
    KrigBilateral chroma for 4:2:0 sources, FSRCNNX/ArtCNN for 1080p clips in a 4K timeline,
    `filmgrain.glsl`, all through `pl_mpv_user_shader_parse` in the grade pass. adaptive-sharpen
-   and `ffcine.fx.shader/1` with `//!PARAM`s are done ([hooks.md](hooks.md)); the other shaders
-   load by path but aren't vendored yet.
+   and `ffcine.fx.shader/1` with `//!PARAM`s are done ([hooks.md](hooks.md)), ArtCNN is vendored,
+   and KrigBilateral/FSRCNNX load by name from user-supplied files (their licences keep them out).

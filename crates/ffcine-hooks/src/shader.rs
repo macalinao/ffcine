@@ -17,8 +17,8 @@ pub const MAJOR: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShaderEffect {
-    /// An alias in `project.shaders`, a vendored name ([`crate::vendored`]) or a path (relative to
-    /// the timeline).
+    /// An alias in `project.shaders`, a vendored name ([`crate::vendored`]), an external name
+    /// ([`crate::EXTERNAL`], from [`crate::shader_path`]) or a path (relative to the timeline).
     pub shader: String,
     /// `//!PARAM` values: constants, or keyframes (`t` in the clip's source time).
     pub params: Vec<(String, Keyed<f64>)>,
@@ -59,7 +59,8 @@ impl ShaderEffect {
         Ok(out)
     }
 
-    /// The shader's name and text: `project.shaders` alias first, then vendored, then a path.
+    /// The shader's name and text: `project.shaders` alias first, then vendored, then external,
+    /// then a path.
     /// Relative paths resolve against `base` (the timeline's directory). `OUTPUT` passes move to
     /// `PREOUTPUT` ([`crate::retarget_output`]).
     pub fn load(&self, project: &Project, base: &Path) -> Result<(String, String)> {
@@ -69,6 +70,10 @@ impl ShaderEffect {
             .map_or(self.shader.as_str(), String::as_str);
         if let Some(text) = crate::vendored(name) {
             return Ok((name.to_owned(), text.to_owned()));
+        }
+        if let Some(found) = crate::external(name, &crate::shader_path()) {
+            let (path, text) = found?;
+            return Ok((path.display().to_string(), crate::retarget_output(&text)));
         }
         let path = base.join(name);
         let text = std::fs::read_to_string(&path).map_err(|source| Error::Io {
