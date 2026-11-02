@@ -327,9 +327,9 @@ fn mapped_hook_takes_the_whole_frame() {
             crate::geo::Crop::parse(json!({"left": 0.1, "feather": 0.01}).as_object().unwrap())
                 .unwrap(),
         ),
-        transform: Some(
+        transforms: vec![
             crate::geo::Transform::parse(json!({"rotate_deg": 5.0}).as_object().unwrap()).unwrap(),
-        ),
+        ],
     };
     let r = reframe(json!({"fit": "contain", "push": [1.0, 1.1]}), None);
     let mapped: Vec<_> = (0..120).map(|i| geo.frame(&r, i, &UHD, &reel).1).collect();
@@ -348,9 +348,9 @@ fn mapped_hook_takes_the_whole_frame() {
     assert_eq!(g.hooks.len(), 2);
     let h = &g.hooks[0];
     assert_eq!(h.name, GEOMETRY_HOOK);
-    // Output aspect at the source's scale: 3840 source px over 1080 output px.
+    // The source's scale per axis: 3840 px over 1080, 2160 over the placed 608.
     let (iw, ih) = pass::mapped_size(&mapped, (1080, 1920));
-    assert_eq!((iw, ih), (3840, 6827));
+    assert_eq!((iw, ih), (3840, 6822));
     assert!(
         h.source
             .contains(&format!("//!WIDTH {iw}\n//!HEIGHT {ih}\n"))

@@ -276,7 +276,7 @@ fn contain_fill_and_nle_geometry() {
     });
     let geo = |crop: Option<serde_json::Value>, tf: serde_json::Value| ffcine::reframe::Geo {
         crop: crop.map(|c| Crop::parse(c.as_object().expect("object")).expect("crop")),
-        transform: Some(Transform::parse(tf.as_object().expect("object")).expect("tf")),
+        transforms: vec![Transform::parse(tf.as_object().expect("object")).expect("tf")],
     };
     let mapped = |g: &ffcine::reframe::Geo| -> Vec<_> {
         (0..N).map(|i| g.frame(&r, i, &shot, &hd).1).collect()

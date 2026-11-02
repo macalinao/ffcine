@@ -56,11 +56,12 @@ pub struct Transform {
     pub flip: [bool; 2],
 }
 
-/// A clip's NLE crop and transform.
+/// A clip's NLE crop and transforms.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Geo {
     pub crop: Option<Crop>,
-    pub transform: Option<Transform>,
+    /// Applied in effect order (Resolve's Transform, then its Dynamic Zoom).
+    pub transforms: Vec<Transform>,
 }
 
 /// One output frame's mapping.
@@ -190,7 +191,7 @@ impl Transform {
 }
 
 impl Geo {
-    /// The clip's `ffcine.geo.crop/1` and `ffcine.geo.transform/1` (the first of each).
+    /// The clip's first `ffcine.geo.crop/1` and every `ffcine.geo.transform/1`.
     pub fn from_effects(effects: &[ffcine_timeline::schema::Effect]) -> Result<Self> {
         let mut geo = Self::default();
         for e in effects {
@@ -201,22 +202,20 @@ impl Geo {
                 && let Some(p) = g.ffcine_params::<Map<String, Value>>(CROP_SCHEMA, 1)
             {
                 geo.crop = Some(Crop::parse(&p?)?);
-            } else if geo.transform.is_none()
-                && let Some(p) = g.ffcine_params::<Map<String, Value>>(TRANSFORM_SCHEMA, 1)
-            {
-                geo.transform = Some(Transform::parse(&p?)?);
+            } else if let Some(p) = g.ffcine_params::<Map<String, Value>>(TRANSFORM_SCHEMA, 1) {
+                geo.transforms.push(Transform::parse(&p?)?);
             }
         }
         Ok(geo)
     }
 
     pub fn is_empty(&self) -> bool {
-        self.crop.is_none() && self.transform.is_none()
+        self.crop.is_none() && self.transforms.is_empty()
     }
 
     pub fn is_animated(&self) -> bool {
         self.crop.as_ref().is_some_and(Crop::is_animated)
-            || self.transform.as_ref().is_some_and(Transform::is_animated)
+            || self.transforms.iter().any(Transform::is_animated)
     }
 
     /// Output frame `i`'s window (in the cropped picture with `fill`) and its full mapping.
@@ -241,21 +240,24 @@ impl Geo {
             [0.0, ky, frame.crop.y - at.y * ky],
             [0.0, 0.0, 1.0],
         ];
-        let m = match &self.transform {
-            None => window,
-            Some(tf) => {
+        let m = if self.transforms.is_empty() {
+            window
+        } else {
+            {
                 // The picture's middle and size in output pixels.
                 let inv = geom::inverse(&window).unwrap_or(geom::IDENTITY);
                 let mid = geom::apply(
                     &inv,
                     [picture.x + picture.w / 2.0, picture.y + picture.h / 2.0],
                 );
-                let unit = if tf.frame_units {
-                    [ow, oh]
-                } else {
-                    [picture.w / kx, picture.h / ky]
-                };
-                let fwd = tf.forward(t, unit);
+                let fwd = self.transforms.iter().fold(geom::IDENTITY, |acc, tf| {
+                    let unit = if tf.frame_units {
+                        [ow, oh]
+                    } else {
+                        [picture.w / kx, picture.h / ky]
+                    };
+                    geom::mul(&tf.forward(t, unit), &acc)
+                });
                 let back = geom::inverse(&fwd).unwrap_or(geom::IDENTITY);
                 // Output pixel -> frame point -> picture point -> output pixel of the picture.
                 let g = geom::mul(
@@ -296,7 +298,10 @@ mod tests {
     fn geo(crop: Option<Value>, transform: Option<Value>) -> Geo {
         Geo {
             crop: crop.map(|v| Crop::parse(v.as_object().unwrap()).unwrap()),
-            transform: transform.map(|v| Transform::parse(v.as_object().unwrap()).unwrap()),
+            transforms: transform
+                .map(|v| Transform::parse(v.as_object().unwrap()).unwrap())
+                .into_iter()
+                .collect(),
         }
     }
 
@@ -382,5 +387,20 @@ mod tests {
         // Half a second in: a quarter picture right, so output 960 + 480 shows the middle.
         assert!(near(geom::apply(&m.m, [1440.0, 540.0]), [960.0, 540.0]));
         assert!(Transform::parse(json!({"units": "inches"}).as_object().unwrap()).is_err());
+        // Several transforms chain in effect order: x2 then x0.5 is the identity.
+        let mut two = geo(
+            None,
+            Some(json!({"scale_x": 2.0, "scale_y": 2.0, "translate_x": 0.1})),
+        );
+        two.transforms.push(
+            Transform::parse(json!({"scale_x": 0.5, "scale_y": 0.5}).as_object().unwrap()).unwrap(),
+        );
+        let (_, m) = two.frame(&Reframe::default(), 0, &HD, &out);
+        // The first's translation is halved by the second: 0.1 picture widths x 0.5 = 96 px.
+        assert!(near(
+            geom::apply(&m.m, [960.0 + 96.0, 540.0]),
+            [960.0, 540.0]
+        ));
+        assert!(near(geom::apply(&m.m, [96.0, 0.0]), [0.0, 0.0]));
     }
 }

@@ -1928,7 +1928,7 @@ mod tests {
         let Unit::Shot(c) = &p.segments[2].unit else {
             panic!("shot")
         };
-        assert!(c.filters.geo.transform.is_some() && c.filters.geo.crop.is_some());
+        assert!(!c.filters.geo.transforms.is_empty() && c.filters.geo.crop.is_some());
         // Animated: keyed by where the piece sits in its clip.
         assert!(c.filters.whole_clip());
         let mut bad = base_fx();

@@ -155,23 +155,19 @@ pub fn apply_mapped(
     }
 }
 
-/// Intermediate size for [`apply_mapped`]: the output's aspect at the largest source scale (at
-/// least the output size, at most 8192 wide).
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
+/// Intermediate size for [`apply_mapped`]: the output size at the largest source scale along
+/// each axis (at least the output size, at most 8192 each way).
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub fn mapped_size(mapped: &[Mapped], (ow, oh): (u32, u32)) -> (u32, u32) {
-    let k = mapped
-        .iter()
-        .map(|m| m.m[0][0].hypot(m.m[1][0]))
-        .fold(1.0_f64, f64::max);
-    let iw = (f64::from(ow) * k).ceil().clamp(1.0, 8192.0);
-    (
-        iw as u32,
-        (iw * f64::from(oh) / f64::from(ow)).round().max(1.0) as u32,
-    )
+    // Source pixels per output pixel along each output axis.
+    let k = |c: usize| {
+        mapped
+            .iter()
+            .map(|m| m.m[0][c].hypot(m.m[1][c]))
+            .fold(1.0_f64, f64::max)
+    };
+    let side = |o: u32, k: f64| (f64::from(o) * k).ceil().clamp(1.0, 8192.0) as u32;
+    (side(ow, k(0)), side(oh, k(1)))
 }
 
 const MASK: [&str; 5] = ["mx0", "my0", "mx1", "my1", "feather"];
