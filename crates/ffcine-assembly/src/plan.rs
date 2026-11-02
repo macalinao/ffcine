@@ -16,7 +16,7 @@ use ffcine_timeline::{
 use serde_json::{Map, Value, json};
 
 use ffcine_filters::{Denoise, Motion, Spatial, Temporal};
-use ffcine_reframe::Reframe;
+use ffcine_reframe::{Geo, Reframe};
 use ffcine_stabilize::{DetectParams, StabilizeParams};
 
 use crate::comp::{Finish, TransitionKind};
@@ -136,13 +136,18 @@ pub struct Filters {
     pub reframe: Option<Reframe>,
     /// `ffcine.time.ramp/1`: the clip is retimed through the ramp, not its average speed.
     pub ramp: Option<Ramp>,
+    /// `ffcine.geo.crop/1` and `ffcine.geo.transform/1` (keyed through the clip's `fx`).
+    pub geo: Geo,
 }
 
 impl Filters {
     /// Whether a piece of the clip depends on where it sits in the clip (stabilized path,
     /// animated reframe, ramp).
     fn whole_clip(&self) -> bool {
-        self.stabilize.is_some() || self.reframe.is_some() || self.ramp.is_some()
+        self.stabilize.is_some()
+            || self.reframe.is_some()
+            || self.ramp.is_some()
+            || self.geo.is_animated()
     }
 
     /// Everything about the filters that changes pixels, including the inputs they derive
@@ -1025,6 +1030,11 @@ impl Planner<'_> {
                 Effect::Unknown(m) => fx.push(Value::Object(m.clone())),
             }
         }
+        filters.geo = Geo::from_effects(&c.effects).map_err(|e| PlanError::Effect {
+            clip: c.name.clone(),
+            effect: "geo",
+            msg: e.to_string(),
+        })?;
         let kind = match c
             .ffcine_value("source")
             .and_then(|s| s.get("kind"))
@@ -1947,6 +1957,48 @@ mod tests {
             _ => None,
         };
         assert_ne!(reframe(&reel), reframe(&land));
+    }
+
+    #[test]
+    fn nle_geometry_is_read_and_keyed() {
+        let at = |fx: &[(usize, &str, Value)]| {
+            plan(
+                &timeline(filtered(fx), vec![]),
+                Path::new("/proj"),
+                &Profile::preview(),
+                &Fake,
+                None,
+            )
+            .unwrap()
+        };
+        let mut fx = base_fx();
+        fx.push((
+            2,
+            "ffcine.geo.transform/1",
+            json!({"units": "picture", "y": "down",
+                   "scale_x": [{"t": 0.0, "v": 1.0}, {"t": 1.0, "v": 0.5}]}),
+        ));
+        fx.push((2, "ffcine.geo.crop/1", json!({"left": 0.1})));
+        let p = at(&fx);
+        assert_eq!(changed(&at(&base_fx()), &p), ["c"]);
+        let Unit::Shot(c) = &p.segments[2].unit else {
+            panic!("shot")
+        };
+        assert!(!c.filters.geo.transforms.is_empty() && c.filters.geo.crop.is_some());
+        // Animated: keyed by where the piece sits in its clip.
+        assert!(c.filters.whole_clip());
+        let mut bad = base_fx();
+        bad.push((2, "ffcine.geo.transform/1", json!({"units": "inches"})));
+        assert!(
+            plan(
+                &timeline(filtered(&bad), vec![]),
+                Path::new("/proj"),
+                &Profile::preview(),
+                &Fake,
+                None,
+            )
+            .is_err()
+        );
     }
 
     #[test]

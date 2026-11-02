@@ -317,6 +317,16 @@ impl Grade {
     }
 }
 
+/// What fills the output around a placed picture ([`Grade::place`]).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum Border {
+    #[default]
+    Black,
+    /// A blurred copy of the picture scaled to cover the frame (libplacebo's `PL_CLEAR_BLUR`, in
+    /// the same pass); the radius is in pixels of the placed picture.
+    Blur(f32),
+}
+
 /// One libplacebo render pass: colour conversion (incl. tone and gamut mapping), crop/scale, LUT
 /// and user shaders, ending in `output`.
 #[derive(Debug, Clone, PartialEq)]
@@ -345,6 +355,8 @@ pub struct Grade {
     /// Where the picture lands in the output, in output pixels (`fit: contain`); the rest of the
     /// frame is black. `None` fills the frame.
     pub place: Option<Crop>,
+    /// What fills the frame around a `place`d picture.
+    pub border: Border,
     /// `None` keeps the input size.
     pub size: Option<Size>,
     pub scaling: Scaling,
@@ -379,6 +391,7 @@ impl Default for Grade {
             warp: None,
             crops: Vec::new(),
             place: None,
+            border: Border::Black,
             size: None,
             scaling: Scaling::default(),
             sharpen: 0.0,
