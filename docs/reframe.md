@@ -26,7 +26,11 @@ The window is built in the prototype's order, each step inside the previous one:
    same easing.
 
 `fit: contain` (or Resolve's `mode: fit`) instead shows the whole (zoomed) picture at the output's
-width, centred at `fit_y` (0.42 of the height), black around it.
+width, centred at `fit_y` (0.42 of the height), over a blurred copy of itself scaled to cover
+the frame (`render.py` `contain`). The fill is libplacebo's `PL_CLEAR_BLUR` border, in the same
+`pl_render_image` call (`Grade::border`): a dual-Kawase blur of the graded, placed picture with
+radius `fill_blur` (0.04) of its height, sampled at the output's aspect. It isn't darkened, as the
+prototype's was: libplacebo's border has no gain. `fill_blur: 0` gives black.
 
 Zooms below 1 count as 1, so the window never leaves the picture.
 
@@ -54,6 +58,8 @@ over unchanged), all optional:
 | `crop_x`, `crop_y` | number; `[from, to]` (eased pan over the clip); the prototype's `[[t, x], ...]` (eased, held outside); or keyframes | 0.5 |
 | `fit` | `cover` (crop to the output aspect), `contain` | `cover` |
 | `fit_y` | `contain`: picture centre, 0..1 of the output height | 0.42 |
+| `fill_blur` | `contain`: blur radius of the fill, fraction of the picture's height; 0 = black | 0.04 |
+| `focus` | split-screen panels: `[x, y]`, the default `crop_x`, `crop_y` and `zoom_center` | |
 | `profiles` | `{profile: {any field above}}`: replaces those fields when rendering that profile | none |
 | `mode` | Resolve's sizing: `fit` = `contain`, else `cover` | |
 
@@ -116,6 +122,46 @@ compose with the windows in the same pass (`pass::apply` with non-empty `warps`)
 That is two resamples (a ~1:1 Catmull-Rom, then the main scaler) against one on the crop-only path.
 At whole-pixel offsets the first is exact.
 
+## NLE crop and transform
+
+`ffcine.geo.crop/1` and `ffcine.geo.transform/1` ([timeline.md](timeline.md#effect-schemas), from
+the Resolve, FCPXML, FCP7, MLT, CapCut and AAF importers) apply to the main picture in
+`ffcine render` (`ffcine_reframe::geo`). Per output frame they become one map, output pixel ->
+source pixel, composed with the reframe window and the stabilizer warp, and a crop mask in
+source pixels:
+
+- **Picture**: the reframed picture, as the window shows it, extended past the window at the same
+  scale: zooming out or moving it shows what the window cut off, and black past the source.
+  `"units": "picture"` anchor and translation are that picture's size (for a centred window,
+  Resolve's picture: the source sized into the frame), `"units": "frame"` the output's.
+- **Transform**: picture point `q` (from the picture's middle, after the flips) lands at
+  `A + R·S·(q − A) + T` from the frame's middle (`import::resolve::Placement::apply`); `y: "up"`
+  negates the positions. Every field may be keyframed (source time).
+- **Crop**: the sides cut the source before the transform, black outside, `feather` (picture
+  widths) a linear ramp inside the edge; `fill: true` makes the kept part the picture the window
+  fits to the frame.
+
+`pass::apply_mapped` samples it in one `MAIN` hook (Catmull-Rom, like the warp path) at the
+output's aspect and the largest source scale, so it is one resample more than the crop-only
+path, as with the stabilizer. The picture fills the frame there, so a `contain` picture with a
+transform or crop has black around it, not the blurred fill. An overlay's transform places its
+layer instead ([assembly.md](assembly.md)).
+
+## Panels and overlays
+
+`ffcine render` reframes and stabilizes every picture, not just the main one:
+
+- **Split-screen panels**: the clip's reframe and stabilizer render into the panel's rectangle
+  (the profile is the panel's size), so a panel gets the aspect window, zooms, punches, pushes
+  and pans of a full-frame shot. A panel's `focus` stands in for `crop_x`, `crop_y` and
+  `zoom_center` where those aren't set. Panel pushes ease like the main picture's (they were
+  linear before).
+- **Picture-in-picture**: the overlay clip's reframe and stabilizer render into its layer (the
+  profile is the layer's size, at the clip's aspect, so only zooms, punches, pushes and pans
+  change it); its `ffcine.geo.transform/1` and `ffcine.comp.blend/1` still place and fade it.
+
+The stabilizer's detect is per clip and cached, as for the main picture.
+
 ## CLI
 
 ```sh
@@ -131,16 +177,10 @@ or the probed duration, the rate from `--fps` or the stream. A static `--crop` s
 
 - `ffcine-reframe` unit tests: prototype equivalence of the zoom crop, push smoothness and aspect,
   punch timing and capping, aspect windows and pans (both keyframe forms agree), keyframed zoom and
-  centre, per-profile overrides, contain placement, warp composition, the generated hooks.
+  centre, per-profile overrides, contain placement and its blurred fill, panel focus, warp
+  composition, the generated hooks; `geo`: the importer's worked transform example, zoom-out
+  past the window, frame units, crop masks and `fill`, keyframes.
 - `crates/ffcine/tests/reframe_gpu.rs` (`--ignored`, needs the GPU and `ffmpeg`): luma PSNR of a
   9:16 window against ffmpeg's CPU `crop,scale=lanczos` (55.6 dB), and of the warp path against
   the crop path: identity (82 dB), a half-pixel translation against the moved window (55.7 dB),
   and an animated push and pan frame by frame (≥ 45 dB).
-
-## Not yet
-
-- `fit: contain`'s blurred, darkened fill (`render.py` `contain`): black bars for now.
-- A timeline renderer that walks clips and calls `Reframe::from_effects` + `pass::apply` per shot
-  (the CLI does it per shot).
-- `ffcine.geo.transform/1` / `ffcine.geo.crop/1` from the NLE importers are not applied yet; they
-  map onto the same window + `Mat3` machinery.

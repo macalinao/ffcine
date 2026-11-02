@@ -11,12 +11,14 @@
 //! - [`pass::apply`]: puts the frames into a [`ffcine_render::Grade`], composed with the
 //!   stabilizer's warp ([`ffcine_core::geom::Mat3`]) when there is one.
 
+pub mod geo;
 pub mod keyframe;
 pub mod pass;
 pub mod profile;
 pub mod reframe;
 pub mod window;
 
+pub use geo::{Geo, Mapped};
 pub use keyframe::{Interp, Key, Keyed};
 pub use profile::{Profile, SafeArea};
 pub use reframe::{Fit, Frame, Punch, Reframe, Shot, Slide};

@@ -23,10 +23,30 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: release-plz/action@v0.5
+      - uses: cachix/install-nix-action@v31
         with:
-          command: release-pr
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - uses: cachix/cachix-action@v17
+        with:
+          name: nix-community
+          skipPush: true
+      # cargo-semver-checks comes from the flake's nixpkgs so it reads the
+      # rustdoc JSON of the dev shell's rustc.
+      - name: Install release-plz
+        run: |
+          nix profile install nixpkgs#release-plz
+          nix profile install --inputs-from . nixpkgs#cargo-semver-checks
+      - uses: release-plz/git-config@59144859caf016f8b817a2ac9b051578729173c4
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
+      # The semver check builds the published crates, which link libav* and
+      # libplacebo, so this also runs in the nix dev shell.
+      - name: release-plz release-pr
+        run: >-
+          nix develop --command release-plz release-pr
+          --git-token "$GITHUB_TOKEN"
+          --repo-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
 
