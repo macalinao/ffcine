@@ -397,35 +397,39 @@ fn hdr_output_puts_stills_at_reference_white() {
         matrix: ffcine::color::Matrix::Bt2020Ncl,
         range: ffcine::color::Range::Limited,
     };
-    let out = d.join("hdr.mkv");
-    Pipeline::new(&base, &out)
-        .range(Duration::ZERO, Some(1))
-        .grade(Grade {
-            dither: None,
-            peak_detect: false,
-            output: pq,
-            ..Grade::default()
-        })
-        .layers(vec![image_layer([255; 4].repeat(4), 2, 0, None)])
-        .encoder(EncoderSettings {
-            color: pq,
-            ..EncoderSettings::nvenc_hevc_master()
-        })
-        .run(&backend::Ffmpeg::new().expect("backend"))
-        .expect("render");
-    // 10-bit luma of the middle pixel.
-    let y = ffmpeg(&[
-        "-i",
-        out.to_str().expect("utf-8"),
-        "-f",
-        "rawvideo",
-        "-pix_fmt",
-        "gray10le",
-        "-",
-    ]);
-    let i = ((H / 2 * W + W / 2) * 2) as usize;
-    let v = i32::from(u16::from_le_bytes([y[i], y[i + 1]]));
-    // libplacebo's SDR reference white (PQ 0.58-0.61; an SDR white video lands at 593 here),
-    // not PQ 1.0 (940, 10000 nits) as when the still was taken as the output's space.
-    assert!((560..=620).contains(&v), "luma {v}");
+    // Without mastering metadata, and with the HDR10 default (layers share the output's peak).
+    for output_hdr in [None, Some(ffcine::HdrMetadata::P3_D65_1000)] {
+        let out = d.join("hdr.mkv");
+        Pipeline::new(&base, &out)
+            .range(Duration::ZERO, Some(1))
+            .grade(Grade {
+                dither: None,
+                peak_detect: false,
+                output: pq,
+                output_hdr,
+                ..Grade::default()
+            })
+            .layers(vec![image_layer([255; 4].repeat(4), 2, 0, None)])
+            .encoder(EncoderSettings {
+                color: pq,
+                ..EncoderSettings::nvenc_hevc_master()
+            })
+            .run(&backend::Ffmpeg::new().expect("backend"))
+            .expect("render");
+        // 10-bit luma of the middle pixel.
+        let y = ffmpeg(&[
+            "-i",
+            out.to_str().expect("utf-8"),
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "gray10le",
+            "-",
+        ]);
+        let i = ((H / 2 * W + W / 2) * 2) as usize;
+        let v = i32::from(u16::from_le_bytes([y[i], y[i + 1]]));
+        // libplacebo's SDR reference white (PQ 0.58-0.61; an SDR white video lands at 593 here),
+        // not PQ 1.0 (940, 10000 nits) as when the still was taken as the output's space.
+        assert!((560..=620).contains(&v), "luma {v} ({output_hdr:?})");
+    }
 }
