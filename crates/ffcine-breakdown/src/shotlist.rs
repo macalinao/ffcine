@@ -138,7 +138,7 @@ mod tests {
             shots: vec![shot],
             music: None,
             transcript: None,
-            contact_sheet: None,
+            contact_sheets: vec![],
             shotlist: "shotlist.md".into(),
         };
         let md = render(&b);

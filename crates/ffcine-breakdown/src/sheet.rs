@@ -7,6 +7,11 @@ use image::{Rgb, RgbImage};
 
 use crate::{Error, Result};
 
+/// Most columns in a sheet.
+pub const MAX_COLUMNS: u32 = 24;
+/// Most rows on one page, so a long video's sheet stays a sane image (and under JPEG's 65535 px).
+pub const MAX_ROWS: u32 = 12;
+
 /// Columns for `n` cells of `aspect` (width / height) in a sheet: more for portrait frames.
 pub fn columns(n: usize, aspect: f64) -> u32 {
     let n = u32::try_from(n.max(1)).unwrap_or(1);
@@ -46,7 +51,9 @@ fn label(
                     if a <= 0.0 || cx < 0 || cy < 0 || cx >= i64::from(w) || cy >= i64::from(h) {
                         continue;
                     }
-                    let p = canvas.get_pixel_mut(x + cx as u32, y + cy as u32);
+                    let Some(p) = canvas.get_pixel_mut_checked(x + cx as u32, y + cy as u32) else {
+                        continue;
+                    };
                     for c in 0..3 {
                         let v = f32::from(p.0[c]) * (1.0 - a) + 255.0 * part.colour[c] * a;
                         p.0[c] = v.round().clamp(0.0, 255.0) as u8;
@@ -60,7 +67,7 @@ fn label(
 /// A grid of `cells` (label, image), `width` px wide, `cols` across, with `title` on top.
 pub fn render(title: &str, cells: &[(String, RgbImage)], width: u32, cols: u32) -> RgbImage {
     let mut ts = Typesetter::new(".");
-    let cols = cols.max(1);
+    let cols = cols.clamp(1, MAX_COLUMNS);
     let gap = (width / 160).max(4);
     let cell_w = (width.saturating_sub(gap * (cols + 1)) / cols).max(16);
     let (sw, sh) = cells
@@ -103,11 +110,21 @@ pub fn save_jpeg(img: &RgbImage, path: &Path, quality: u8) -> Result<u64> {
     Ok(buf.len() as u64)
 }
 
-/// Saves at the best quality (from 88 down) under `cap` bytes, so chat uploads take it.
+/// Saves at the best quality (from 88 down) under `cap` bytes, so chat uploads take it; an error
+/// (and no file) if even the lowest quality is over.
 pub fn save_under(img: &RgbImage, path: &Path, cap: u64) -> Result<u8> {
     let mut q = 88;
-    while save_jpeg(img, path, q)? > cap && q > 40 {
+    let mut size = save_jpeg(img, path, q)?;
+    while size > cap && q > 40 {
         q -= 12;
+        size = save_jpeg(img, path, q)?;
+    }
+    if size > cap {
+        let _ = std::fs::remove_file(path);
+        return Err(Error::Invalid(format!(
+            "{}: {size} bytes at quality {q}, over {cap}",
+            path.display()
+        )));
     }
     Ok(q)
 }
@@ -133,5 +150,21 @@ mod tests {
         // Two rows of 9:16 cells plus labels and the title.
         assert!(s.height() > 2 * 160);
         assert_eq!(columns(2, 1.78), 2);
+    }
+
+    #[test]
+    fn many_columns_and_a_tiny_cap() {
+        let cells: Vec<(String, RgbImage)> = (0..80)
+            .map(|i| (format!("{i}"), RgbImage::from_pixel(16, 9, Rgb([9, 9, 9]))))
+            .collect();
+        // Clamped, and labels never draw past the edge.
+        let s = render("x", &cells, 1800, 200);
+        assert_eq!(s.width(), 1800);
+        let dir = std::env::temp_dir().join(format!("ffcine-sheet-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let p = dir.join("s.jpg");
+        assert!(save_under(&s, &p, 10).is_err());
+        assert!(!p.exists());
+        std::fs::remove_dir_all(&dir).expect("cleanup");
     }
 }

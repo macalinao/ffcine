@@ -49,17 +49,19 @@ pub fn nearest(beats: &[f64], t: f64) -> Option<f64> {
 /// [`Music`] for `cuts` against `beats` at `tempo`.
 #[allow(clippy::cast_precision_loss)]
 pub fn align(tempo: f64, beats: &[f64], cuts: &[f64], tolerance: f64) -> Music {
+    // Rounded once, so the count matches what is stored and checked per shot.
+    let beats: Vec<f64> = beats
+        .iter()
+        .map(|b| (b * 1000.0).round() / 1000.0)
+        .collect();
     let on_beat = cuts
         .iter()
-        .filter(|&&c| nearest(beats, c).is_some_and(|d| d.abs() <= tolerance))
+        .filter(|&&c| nearest(&beats, c).is_some_and(|d| d.abs() <= tolerance))
         .count();
     let chance = (2.0 * tolerance * tempo / 60.0).min(1.0);
     Music {
         tempo: (tempo * 10.0).round() / 10.0,
-        beats: beats
-            .iter()
-            .map(|b| (b * 1000.0).round() / 1000.0)
-            .collect(),
+        beats,
         tolerance,
         on_beat,
         cuts: cuts.len(),

@@ -16,7 +16,7 @@ Output goes to `NAME-breakdown/` beside the video (`-o` to change it):
 |---|---|
 | `breakdown.json` | every shot's analysis ([schema](#breakdownjson)), for agents and scripts |
 | `shotlist.md` | `#`, time, length, motion, speech/text, an empty notes column, keyframe path |
-| `contact-sheet.jpg` | the keyframes in a grid, numbered, with each shot's length; under 5 MB for chat |
+| `contact-sheet.jpg` | the keyframes in a grid, numbered, with each shot's length; under 5 MB for chat. Over 12 rows, more pages: `contact-sheet-2.jpg`, ... |
 | `keyframes/NNN.jpg` | each shot's representative frame (960 px long side); `NNN-first.jpg`, `NNN-last.jpg` |
 
 ## What it does
@@ -75,12 +75,12 @@ Phone files with a rotation tag are analysed unrotated; downloads from the platf
   "music": {"tempo": 120.2, "beats": [0.49, 0.99], "tolerance": 0.07, "on_beat": 7,
             "cuts": 8, "chance": 0.28},
   "transcript": {"language": "en", "model": "large-v3-turbo", "segments": []},
-  "contact_sheet": "contact-sheet.jpg",
+  "contact_sheets": ["contact-sheet.jpg"],
   "shotlist": "shotlist.md"
 }
 ```
 
-Times are seconds from the first frame; `end` is the next shot's `start`; `frames` is the first
+Times are seconds from the first frame (beats and words shifted onto it when the audio starts elsewhere); `end` is the next shot's `start`; `frames` is the first
 frame and one past the last. `cut_on_beat` and `beat_offset` (nearest beat minus the cut) are
 absent for the first shot and without music; `beats` is the shot's length in beats. `speech` and
 `text` are absent when empty. `transcript` is triage's format.

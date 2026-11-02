@@ -18,6 +18,8 @@ pub struct Info {
     /// Seconds, from the frames (the last one's time plus its length).
     pub duration: f64,
     pub gpu: bool,
+    /// The first frame's time in the file, seconds (frame times count from it).
+    pub start: f64,
 }
 
 fn err(path: &Path, what: &str, e: impl std::fmt::Display) -> Error {
@@ -63,7 +65,10 @@ pub fn frames(
     let index = st.index();
     let tb = st.time_base();
     let tbf = f64::from(tb.numerator()) / f64::from(tb.denominator().max(1));
-    let fps = rate(st.avg_frame_rate());
+    let fps = match rate(st.avg_frame_rate()) {
+        r if r > 0.0 => r,
+        _ => rate(st.rate()),
+    };
     let params = st.parameters();
     // SAFETY: codecpar of a live stream.
     let (src_w, src_h, codec_id) = unsafe {
@@ -110,9 +115,11 @@ pub fn frames(
     let mut handle = |frame: &ff::frame::Video| -> Result<()> {
         let i = n;
         n += 1;
-        let raw = frame
-            .timestamp()
-            .map_or(i as f64 / fps.max(1.0), |p| p as f64 * tbf);
+        let raw = match frame.timestamp() {
+            Some(p) => p as f64 * tbf,
+            None if fps > 0.0 => t0.unwrap_or(0.0) + i as f64 / fps,
+            None => return Err(err(path, "timing", "no timestamps and no frame rate")),
+        };
         let t = raw - *t0.get_or_insert(raw);
         last_t = t;
         if !want(i) {
@@ -176,7 +183,18 @@ pub fn frames(
         frames: n,
         duration: if n == 0 { 0.0 } else { last_t + 1.0 / fps },
         gpu,
+        start: t0.unwrap_or(0.0),
     })
+}
+
+/// Start of the first audio stream in the file, seconds; `None` without audio.
+pub fn audio_start(path: &Path) -> Option<f64> {
+    let ictx = ff::format::input(path).ok()?;
+    let st = ictx.streams().best(ff::media::Type::Audio)?;
+    let tb = st.time_base();
+    let s = st.start_time();
+    (s != ff::ffi::AV_NOPTS_VALUE)
+        .then(|| s as f64 * f64::from(tb.numerator()) / f64::from(tb.denominator().max(1)))
 }
 
 #[cfg(test)]

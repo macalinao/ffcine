@@ -142,8 +142,8 @@ pub struct Breakdown {
     pub music: Option<Music>,
     /// None without speech or with `--no-transcribe`.
     pub transcript: Option<Transcript>,
-    /// Paths relative to the output directory.
-    pub contact_sheet: Option<String>,
+    /// Contact sheet pages, relative to the output directory (empty if none was written).
+    pub contact_sheets: Vec<String>,
     pub shotlist: String,
 }
 
@@ -200,6 +200,16 @@ pub fn spans(n: usize, cuts: &[usize], sharpness: &[f32]) -> Vec<Span> {
     out
 }
 
+/// Median of sorted values: the mean of the middle two for an even count.
+fn median(sorted: &[f64]) -> f64 {
+    let n = sorted.len();
+    match n {
+        0 => 0.0,
+        _ if n % 2 == 0 => f64::midpoint(sorted[n / 2 - 1], sorted[n / 2]),
+        _ => sorted[n / 2],
+    }
+}
+
 /// Shot-length statistics.
 pub fn pacing(shots: &[Shot], duration: f64) -> Pacing {
     let mut d: Vec<f64> = shots.iter().map(|s| s.duration).collect();
@@ -213,7 +223,7 @@ pub fn pacing(shots: &[Shot], duration: f64) -> Pacing {
         } else {
             d.iter().sum::<f64>() / n as f64
         }),
-        median: r2(d.get(n / 2).copied().unwrap_or(0.0)),
+        median: r2(median(&d)),
         shortest: r2(d.first().copied().unwrap_or(0.0)),
         longest: r2(d.last().copied().unwrap_or(0.0)),
         cuts_per_minute: r2(if duration > 0.0 {
@@ -224,31 +234,32 @@ pub fn pacing(shots: &[Shot], duration: f64) -> Pacing {
     }
 }
 
-/// The words of `t` whose middle falls in `[start, end)`.
+/// The words of `t` whose middle falls in `[start, end)`, with the text of segments that have
+/// no word times, in time order.
 pub fn words_in(t: &Transcript, start: f64, end: f64) -> String {
-    let mut s = String::new();
-    for w in t.words() {
-        let mid = f64::midpoint(w.start, w.end);
-        if mid >= start && mid < end {
-            if !s.is_empty() {
-                s.push(' ');
+    let inside = |a: f64, b: f64| (start..end).contains(&f64::midpoint(a, b));
+    let mut parts: Vec<(f64, &str)> = Vec::new();
+    for seg in &t.segments {
+        if seg.words.is_empty() {
+            if inside(seg.start, seg.end) {
+                parts.push((seg.start, seg.text.trim()));
             }
-            s.push_str(w.text.trim());
+        } else {
+            parts.extend(
+                seg.words
+                    .iter()
+                    .filter(|w| inside(w.start, w.end))
+                    .map(|w| (w.start, w.text.trim())),
+            );
         }
     }
-    if s.is_empty() {
-        // No word times: whole segments.
-        for seg in &t.segments {
-            let mid = f64::midpoint(seg.start, seg.end);
-            if seg.words.is_empty() && mid >= start && mid < end {
-                if !s.is_empty() {
-                    s.push(' ');
-                }
-                s.push_str(seg.text.trim());
-            }
-        }
-    }
-    s
+    parts.sort_by(|a, b| a.0.total_cmp(&b.0));
+    parts
+        .iter()
+        .map(|p| p.1)
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// `m:ss.cc`.
@@ -280,5 +291,43 @@ mod tests {
     fn clocks() {
         assert_eq!(clock(0.0), "0:00.00");
         assert_eq!(clock(83.456), "1:23.46");
+    }
+
+    #[test]
+    fn even_median() {
+        assert!((median(&[1.0, 3.0]) - 2.0).abs() < 1e-9);
+        assert!((median(&[1.0, 2.0, 9.0]) - 2.0).abs() < 1e-9);
+        assert!(median(&[]).abs() < 1e-9);
+    }
+
+    #[test]
+    fn speech_keeps_untimed_segments() {
+        use ffcine_triage::index::{Segment, Word};
+        let w = |s: f64, t: &str| Word {
+            start: s,
+            end: s + 0.2,
+            text: format!(" {t}"),
+            prob: 1.0,
+        };
+        let t = Transcript {
+            language: "en".into(),
+            model: "m".into(),
+            segments: vec![
+                Segment {
+                    start: 0.0,
+                    end: 0.5,
+                    text: " a b".into(),
+                    words: vec![w(0.0, "a"), w(0.3, "b")],
+                },
+                Segment {
+                    start: 0.6,
+                    end: 0.9,
+                    text: " untimed".into(),
+                    words: vec![],
+                },
+            ],
+        };
+        assert_eq!(words_in(&t, 0.0, 1.0), "a b untimed");
+        assert_eq!(words_in(&t, 0.25, 1.0), "b untimed");
     }
 }

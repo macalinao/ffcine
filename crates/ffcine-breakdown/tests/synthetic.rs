@@ -85,7 +85,8 @@ fn make_clip(path: &Path) -> bool {
         stdin.write_all(&frame(i)).expect("write frame");
     }
     drop(stdin);
-    child.wait().expect("ffmpeg").success()
+    assert!(child.wait().expect("ffmpeg").success(), "ffmpeg failed");
+    true
 }
 
 #[test]
@@ -143,6 +144,7 @@ fn breaks_down_a_synthetic_clip() {
             assert!(out.join(f).is_file(), "{f}");
         }
     }
+    assert_eq!(b.contact_sheets, ["contact-sheet.jpg"]);
     let sheet = image::open(out.join("contact-sheet.jpg")).expect("sheet");
     assert!(sheet.width() > 1000);
     let md = std::fs::read_to_string(out.join("shotlist.md")).expect("shotlist");

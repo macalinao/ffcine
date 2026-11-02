@@ -126,7 +126,7 @@ pub const BREAKDOWN: &str = concat!(
         "Writes, in DIR:",
         "breakdown.json      every shot: in/out, frames, keyframes, motion, colour, beat, speech, text",
         "shotlist.md         # | Time | Dur | Motion | Notes | Keyframe (♪: cut on the beat)",
-        "contact-sheet.jpg   the keyframes in a grid, numbered, with each shot's length",
+        "contact-sheet.jpg   the keyframes in a grid, numbered, with each shot's length (-2, -3... past 12 rows)",
         "keyframes/NNN.jpg   each shot's sharpest middle frame; NNN-first.jpg, NNN-last.jpg",
     ),
     examples!(

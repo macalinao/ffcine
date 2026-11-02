@@ -57,6 +57,14 @@ pub struct BreakdownArgs {
 
 impl BreakdownArgs {
     pub fn run(self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.beat_tolerance >= 0.0,
+            "--beat-tolerance must be 0 or more"
+        );
+        anyhow::ensure!(
+            (0.0..=1.0).contains(&self.threshold),
+            "--threshold must be 0..1"
+        );
         let out = self.out.clone().unwrap_or_else(|| {
             let stem = self
                 .video

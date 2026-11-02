@@ -349,9 +349,15 @@ impl Default for MotionParams {
     }
 }
 
-/// Sums a shot's frame-pair steps (at `fps`) into its [`Motion`].
+/// Sums a shot's frame-pair steps, over `seconds`, into its [`Motion`]; `aspect` is the frame's
+/// width over its height.
 #[allow(clippy::cast_precision_loss)]
-pub fn classify(steps: &[Step], fps: f64, p: &MotionParams) -> Motion {
+pub fn classify(steps: &[Step], seconds: f64, aspect: f64, p: &MotionParams) -> Motion {
+    let fps = if seconds > 0.0 {
+        steps.len() as f64 / seconds
+    } else {
+        30.0
+    };
     // Camera moves opposite to the content.
     let pan = -steps.iter().map(|s| s.dx).sum::<f32>();
     let tilt = steps.iter().map(|s| s.dy).sum::<f32>();
@@ -376,11 +382,11 @@ pub fn classify(steps: &[Step], fps: f64, p: &MotionParams) -> Motion {
         let (mx, my) = path[lo..=hi]
             .iter()
             .fold((0.0, 0.0), |a, b| (a.0 + b.0 / n, a.1 + b.1 / n));
-        // Heights in widths, assuming a 16:9-ish frame either way is fine for a threshold.
-        sq += (path[i].0 - mx).powi(2) + (path[i].1 - my).powi(2);
+        // Vertical shake in frame widths, like the horizontal.
+        sq += (path[i].0 - mx).powi(2) + ((path[i].1 - my) / aspect as f32).powi(2);
     }
     let shake = 100.0 * (sq / path.len().max(1) as f32).sqrt();
-    let dur = (steps.len() as f64 / fps.max(1.0)) as f32;
+    let dur = seconds as f32;
     let travel: f32 = steps.iter().map(|s| s.dx.hypot(s.dy)).sum();
     let speed = if dur > 0.0 { travel / dur } else { 0.0 };
     let handheld = shake >= p.shake_min;
@@ -483,7 +489,10 @@ mod tests {
     fn classifies() {
         let p = MotionParams::default();
         let still = vec![Step::default(); 60];
-        assert_eq!(classify(&still, 30.0, &p).kind, MotionKind::Static);
+        assert_eq!(
+            classify(&still, 2.0, 16.0 / 9.0, &p).kind,
+            MotionKind::Static
+        );
         let pan = vec![
             Step {
                 dx: -0.01,
@@ -491,7 +500,7 @@ mod tests {
             };
             60
         ];
-        let m = classify(&pan, 30.0, &p);
+        let m = classify(&pan, 2.0, 16.0 / 9.0, &p);
         assert_eq!(
             (m.kind, m.direction.as_deref()),
             (MotionKind::Pan, Some("right"))
@@ -504,7 +513,7 @@ mod tests {
             };
             60
         ];
-        assert_eq!(classify(&tilt, 30.0, &p).label(), "tilt up");
+        assert_eq!(classify(&tilt, 2.0, 16.0 / 9.0, &p).label(), "tilt up");
         let push = vec![
             Step {
                 zoom: 0.003,
@@ -512,7 +521,7 @@ mod tests {
             };
             60
         ];
-        assert_eq!(classify(&push, 30.0, &p).kind, MotionKind::Push);
+        assert_eq!(classify(&push, 2.0, 16.0 / 9.0, &p).kind, MotionKind::Push);
         let shake: Vec<Step> = (0..60)
             .map(|i| Step {
                 dx: if i % 4 < 2 { 0.008 } else { -0.008 },
@@ -520,7 +529,7 @@ mod tests {
                 zoom: 0.0,
             })
             .collect();
-        let m = classify(&shake, 30.0, &p);
+        let m = classify(&shake, 2.0, 16.0 / 9.0, &p);
         assert_eq!(m.kind, MotionKind::Handheld, "{m:?}");
     }
 

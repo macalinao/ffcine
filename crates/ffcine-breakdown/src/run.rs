@@ -184,16 +184,18 @@ pub fn run(o: &Options) -> Result<Breakdown> {
         }
     }
     let keys: Vec<usize> = spans.iter().map(|s| s.key).collect();
-    let thumbs = keyframes(o, &names, &keys)?;
+    let mut thumbs = keyframes(o, &names, &keys)?;
 
     let end_of = |b: usize| fr.times.get(b).copied().unwrap_or(info.duration);
     let cut_times: Vec<f64> = spans.iter().skip(1).map(|s| fr.times[s.a]).collect();
 
+    // Audio times count from the audio's start, frame times from the first frame.
+    let av = decode::audio_start(&o.input).map_or(0.0, |a| a - info.start);
     let music = if o.beats && ffcine_audio::decode::has_audio(&o.input) {
         match ffcine_audio::beats::detect(&o.input) {
             Ok(b) if b.tempo > 0.0 && b.beats.len() >= 4 => Some(rhythm::align(
                 b.tempo,
-                &b.beats,
+                &b.beats.iter().map(|t| t + av).collect::<Vec<_>>(),
                 &cut_times,
                 o.beat_tolerance,
             )),
@@ -209,12 +211,24 @@ pub fn run(o: &Options) -> Result<Breakdown> {
 
     let transcript = match &o.whisper {
         Some(wp) => {
-            let scratch = o.out.join(".scratch");
+            // Our own, so a re-run never touches files someone left in the output.
+            let scratch = o.out.join(format!(".scratch-{}", std::process::id()));
             let t = transcribe(&o.input, wp, &scratch);
             let _ = std::fs::remove_dir_all(&scratch);
             t.unwrap_or_else(|e| {
                 eprintln!("no transcript: {e}");
                 None
+            })
+            .map(|mut t| {
+                for seg in &mut t.segments {
+                    seg.start += av;
+                    seg.end += av;
+                    for w in &mut seg.words {
+                        w.start += av;
+                        w.end += av;
+                    }
+                }
+                t
             })
         }
         None => None,
@@ -223,6 +237,7 @@ pub fn run(o: &Options) -> Result<Breakdown> {
     let tesseract = if o.ocr { ocr::find() } else { None };
 
     let r3 = |v: f64| (v * 1000.0).round() / 1000.0;
+    let aspect = f64::from(info.width) / f64::from(info.height.max(1));
     let mut shots = Vec::with_capacity(spans.len());
     for (k, s) in spans.iter().enumerate() {
         let (start, end) = (fr.times[s.a], end_of(s.b));
@@ -255,7 +270,7 @@ pub fn run(o: &Options) -> Result<Breakdown> {
             duration: r3(end - start),
             frames: [s.a, s.b],
             keyframes: kf,
-            motion: motion::classify(steps, info.fps, &o.motion),
+            motion: motion::classify(steps, end - start, aspect, &o.motion),
             colour: colour::average(&fr.colour[s.a..s.b]),
             cut_on_beat,
             beat_offset,
@@ -282,7 +297,7 @@ pub fn run(o: &Options) -> Result<Breakdown> {
         shots,
         music,
         transcript,
-        contact_sheet: None,
+        contact_sheets: Vec::new(),
         shotlist: "shotlist.md".into(),
     };
 
@@ -292,26 +307,42 @@ pub fn run(o: &Options) -> Result<Breakdown> {
         .zip(&keys)
         .filter_map(|(s, k)| {
             thumbs
-                .get(k)
-                .map(|img| (format!("{}  ·  {:.1}s", s.n, s.duration), img.clone()))
+                .remove(k)
+                .map(|img| (format!("{}  ·  {:.1}s", s.n, s.duration), img))
         })
         .collect();
     if !cells.is_empty() {
-        let aspect = f64::from(info.width) / f64::from(info.height.max(1));
         let cols = o
             .sheet_columns
-            .unwrap_or_else(|| sheet::columns(cells.len(), aspect));
-        let title = format!(
-            "{}  ·  {} shots  ·  {}",
-            o.input
-                .file_name()
-                .map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
-            b.shots.len(),
-            crate::clock(b.duration)
-        );
-        let img = sheet::render(&title, &cells, o.sheet_width, cols);
-        sheet::save_under(&img, &o.out.join("contact-sheet.jpg"), 5_000_000)?;
-        b.contact_sheet = Some("contact-sheet.jpg".into());
+            .unwrap_or_else(|| sheet::columns(cells.len(), aspect))
+            .clamp(1, sheet::MAX_COLUMNS);
+        let name = o
+            .input
+            .file_name()
+            .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+        let per_page = (cols * sheet::MAX_ROWS) as usize;
+        let pages = cells.len().div_ceil(per_page);
+        for (i, page) in cells.chunks(per_page).enumerate() {
+            let file = if i == 0 {
+                "contact-sheet.jpg".to_owned()
+            } else {
+                format!("contact-sheet-{}.jpg", i + 1)
+            };
+            let mut title = format!(
+                "{name}  ·  {} shots  ·  {}",
+                b.shots.len(),
+                crate::clock(b.duration)
+            );
+            if pages > 1 {
+                title.push_str(&format!("  ·  {}/{pages}", i + 1));
+            }
+            let img = sheet::render(&title, page, o.sheet_width, cols);
+            // The sheet is a convenience: its failure mustn't cost the shot list.
+            match sheet::save_under(&img, &o.out.join(&file), 5_000_000) {
+                Ok(_) => b.contact_sheets.push(file),
+                Err(e) => eprintln!("no contact sheet: {e}"),
+            }
+        }
     }
     std::fs::write(o.out.join(&b.shotlist), shotlist::render(&b))?;
     let json = o.out.join("breakdown.json");
