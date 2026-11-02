@@ -116,8 +116,7 @@ timeline's text over the clip, `S` being the timeline time of the first output f
 `review`: the video bitrate is `budget × 8 × 0.96 / duration − 160 kb/s` (audio is muxed in later;
 the 4 % covers the container and rate-control error). After encoding, if the file plus the audio
 share is over the budget, it encodes once more at the bitrate scaled down by the overshoot: a
-second pass that only runs when needed. A 10 min video in 50 MB
- gets about 480 kb/s at 540p; a
+second pass that only runs when needed. A 10 min video in 50 MB gets about 480 kb/s at 540p; a
 90 s reel 4 Mb/s at 1080p.
 
 HEVC in `.mp4`/`.mov` is tagged `hvc1` (always, not only for these profiles): Apple players
@@ -127,5 +126,5 @@ HTTP before it has downloaded.
 
 ## Not yet
 
-- Audio: renders are video only until the audio step muxes the mix in (`AUDIO_BITRATE` is
-  reserved in the budget).
+- Audio in `grade --deliver`: `grade` writes video only (`AUDIO_BITRATE` is reserved in the
+  budget); `ffcine render` muxes the timeline's mix.

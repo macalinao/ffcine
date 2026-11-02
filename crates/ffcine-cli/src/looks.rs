@@ -138,7 +138,7 @@ pub struct LooksArgs {
     /// Timeline time of a shot to compare: seconds, M:SS or H:MM:SS. Repeatable.
     #[bpaf(argument("TIME"), many)]
     at: Vec<String>,
-    /// Also compare N shots spread evenly over the timeline.
+    /// Also compare N shots spread evenly over the timeline (default: 0, none).
     #[bpaf(argument("N"))]
     sample: Option<usize>,
     /// A clip outside the timeline at a time, FILE@SECONDS (photos: any time). Repeatable.

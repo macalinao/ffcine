@@ -37,8 +37,9 @@ libplacebo) and exits non-zero if anything is missing.
 ## Quickstart
 
 ```sh
-ffcine probe clip.mov
-ffcine grade --lut grade.cube --size 3840x2160 --sharpen 0.6 clip.mov out.mkv
+ffcine probe MVI_2884.MP4                                  # Canon EOS R10
+ffcine grade MVI_2884.MP4 out.mkv                          # Rec.709 from the probe
+ffcine grade --lut show.cube --sharpen 0.6 DJI_0001_D.MP4 out.mkv   # Osmo Pocket 4, a baked LUT
 
 ffcine import project.otio -o timeline.otio     # from Resolve, FCPXML, Kdenlive, ...
 ffcine render --profile master -o master.mp4 timeline.otio
@@ -57,13 +58,14 @@ ffcine render --profile master -o master.mp4 timeline.otio
 | `stabilize`, `jitter` | optical-flow or gyro stabilization; measure residual jitter |
 | `import`, `subs`, `title` | other editors' projects to an ffcine timeline; `.ass` subtitles as text clips; title sequences and end screens |
 | `render`, `diff` | render a timeline to a master with a segment cache; what changed between renders |
-| `audio`, `sync` | the timeline's audio mix (R128, buses, ducking); line up recorder WAVs |
+| `audio`, `sync`, `beats` | the timeline's audio mix (R128, buses, ducking); line up recorder WAVs; a song's tempo and beats |
 | `ingest`, `catalog`, `fetch-luts`, `bake` | verified card offload; clip catalog with picture profiles; camera LUTs; camera LUT + LUT + look baked to one `.cube` |
 | `triage`, `search`, `snap` | index a card (strips, scene cuts, transcripts); find words; snap cuts to words |
 | `breakdown` | shot list of a reference video: cuts, keyframes, camera motion, beat, colour, speech, contact sheet |
 | `chapters`, `tag`, `credits`, `still`, `publish` | YouTube chapters, chapters and cover art in the MP4, music credits, stills, upload to Immich |
 
-`ffcine <command> --help` has the details; [docs/](docs) has one page per area.
+`ffcine <command> --help` has every flag with its default, examples and the docs page to read
+next (`-h` is the brief form); [docs/](docs) has one page per area.
 [skills/](skills) has agent skills: [shot-breakdown](skills/shot-breakdown/SKILL.md) turns a
 TikTok, reel or YouTube link into a shot list to recreate it.
 
