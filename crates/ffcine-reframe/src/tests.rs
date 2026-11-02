@@ -315,3 +315,49 @@ fn reads_the_effect_from_a_clip() {
     assert!(matches!(r.crop_x, crate::Slide::Keyed(crate::Keyed::Const(x)) if close(x, 0.1)));
     assert!(Reframe::from_effects(&[], None).unwrap().is_none());
 }
+
+#[test]
+fn mapped_hook_takes_the_whole_frame() {
+    let reel = Profile {
+        safe_area: Some(crate::SafeArea::REELS),
+        ..Profile::preset("reel").unwrap()
+    };
+    let geo = crate::Geo {
+        crop: Some(
+            crate::geo::Crop::parse(json!({"left": 0.1, "feather": 0.01}).as_object().unwrap())
+                .unwrap(),
+        ),
+        transform: Some(
+            crate::geo::Transform::parse(json!({"rotate_deg": 5.0}).as_object().unwrap()).unwrap(),
+        ),
+    };
+    let r = reframe(json!({"fit": "contain", "push": [1.0, 1.1]}), None);
+    let mapped: Vec<_> = (0..120).map(|i| geo.frame(&r, i, &UHD, &reel).1).collect();
+    let mut g = Grade {
+        crop: Some(ffcine_render::Crop {
+            x: 1.0,
+            y: 1.0,
+            width: 2.0,
+            height: 2.0,
+        }),
+        ..Grade::default()
+    };
+    pass::apply_mapped(&mut g, &mapped, &[], (3840, 2160), &reel);
+    assert_eq!((g.crop, g.place, g.warp.as_ref()), (None, None, None));
+    assert_eq!(g.crops, []);
+    assert_eq!(g.hooks.len(), 2);
+    let h = &g.hooks[0];
+    assert_eq!(h.name, GEOMETRY_HOOK);
+    // Output aspect at the source's scale: 3840 source px over 1080 output px.
+    let (iw, ih) = pass::mapped_size(&mapped, (1080, 1920));
+    assert_eq!((iw, ih), (3840, 6827));
+    assert!(
+        h.source
+            .contains(&format!("//!WIDTH {iw}\n//!HEIGHT {ih}\n"))
+    );
+    assert_eq!(h.tracks.len(), 23);
+    assert!(h.tracks.iter().all(|t| t.values.len() == 120));
+    let mx0 = h.tracks.iter().find(|t| t.name == "mx0").unwrap();
+    assert!((f64::from(mx0.values[0]) - 384.0).abs() < 1e-3);
+    assert_eq!(g.hooks[1].name, SAFE_AREA_HOOK);
+}

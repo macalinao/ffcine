@@ -9,6 +9,7 @@ use ffcine_core::geom::{self, Mat3};
 use ffcine_render::{Border, Grade, Hook, ParamTrack, Size};
 use ffcine_stabilize::hook::WARP_GLSL;
 
+use crate::geo::Mapped;
 use crate::profile::{Profile, SafeArea};
 use crate::reframe::Frame;
 
@@ -116,6 +117,146 @@ vec4 hook() {{
             values: mats.iter().map(|m| m[k / 3][k % 3] as f32).collect(),
         })
         .collect();
+    Hook {
+        name: GEOMETRY_HOOK.to_owned(),
+        source: s,
+        params: Vec::new(),
+        tracks,
+    }
+}
+
+/// Puts frames with an NLE crop / transform ([`crate::geo`]) into `grade`: one `MAIN` hook
+/// samples the source at `warp_i · mapped_i` (Catmull-Rom), black outside the source and the
+/// crop mask, into an intermediate at the output's aspect that the grade's scaler takes to the
+/// output size. The picture fills the frame (a placed `contain` picture is part of the map),
+/// so the fill around it is black.
+pub fn apply_mapped(
+    grade: &mut Grade,
+    mapped: &[Mapped],
+    warps: &[Mat3],
+    source: (u32, u32),
+    out: &Profile,
+) {
+    grade.size = Some(Size {
+        width: out.width,
+        height: out.height,
+    });
+    grade.place = None;
+    grade.border = Border::Black;
+    grade.crop = None;
+    grade.crops.clear();
+    grade.warp = None;
+    grade.hooks.insert(
+        0,
+        mapped_hook(mapped, warps, source, (out.width, out.height)),
+    );
+    if let Some(area) = out.safe_area {
+        grade.hooks.push(safe_area_hook(&area));
+    }
+}
+
+/// Intermediate size for [`apply_mapped`]: the output's aspect at the largest source scale (at
+/// least the output size, at most 8192 wide).
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
+pub fn mapped_size(mapped: &[Mapped], (ow, oh): (u32, u32)) -> (u32, u32) {
+    let k = mapped
+        .iter()
+        .map(|m| m.m[0][0].hypot(m.m[1][0]))
+        .fold(1.0_f64, f64::max);
+    let iw = (f64::from(ow) * k).ceil().clamp(1.0, 8192.0);
+    (
+        iw as u32,
+        (iw * f64::from(oh) / f64::from(ow)).round().max(1.0) as u32,
+    )
+}
+
+const MASK: [&str; 5] = ["mx0", "my0", "mx1", "my1", "feather"];
+
+/// The `MAIN` hook of [`apply_mapped`]: per frame, the intermediate -> source map (`a00` ..
+/// `a22`), the stabilizer's warp (`m00` .. `m22`) and the crop mask, as dynamic `//!PARAM`s.
+#[allow(clippy::cast_possible_truncation)]
+pub fn mapped_hook(
+    mapped: &[Mapped],
+    warps: &[Mat3],
+    (sw, sh): (u32, u32),
+    (ow, oh): (u32, u32),
+) -> Hook {
+    let (iw, ih) = mapped_size(mapped, (ow, oh));
+    let to_out = [
+        [f64::from(ow) / f64::from(iw), 0.0, 0.0],
+        [0.0, f64::from(oh) / f64::from(ih), 0.0],
+        [0.0, 0.0, 1.0],
+    ];
+    let n = mapped.len().max(warps.len()).max(1);
+    let at = |i: usize| mapped.get(i).or(mapped.last());
+    let maps: Vec<Mat3> = (0..n)
+        .map(|i| at(i).map_or(to_out, |m| geom::mul(&m.m, &to_out)))
+        .collect();
+    let stab: Vec<Mat3> = (0..n)
+        .map(|i| *warps.get(i).or(warps.last()).unwrap_or(&geom::IDENTITY))
+        .collect();
+    let full = [0.0, 0.0, f64::from(sw), f64::from(sh), 0.0];
+    let masks: Vec<[f64; 5]> = (0..n)
+        .map(|i| {
+            at(i).map_or(full, |m| {
+                [
+                    m.mask.x,
+                    m.mask.y,
+                    m.mask.x + m.mask.w,
+                    m.mask.y + m.mask.h,
+                    m.feather,
+                ]
+            })
+        })
+        .collect();
+    let mut s = String::with_capacity(4096);
+    let mut tracks = Vec::new();
+    for (prefix, mats) in [("a", &maps), ("m", &stab)] {
+        for (k, name) in M.iter().enumerate() {
+            let name = format!("{prefix}{}", &name[1..]);
+            let init = if k % 4 == 0 { "1.0" } else { "0.0" };
+            let _ = write!(s, "//!PARAM {name}\n//!TYPE DYNAMIC float\n{init}\n\n");
+            tracks.push(ParamTrack {
+                name,
+                values: mats.iter().map(|m| m[k / 3][k % 3] as f32).collect(),
+            });
+        }
+    }
+    for (k, name) in MASK.iter().enumerate() {
+        let _ = write!(s, "//!PARAM {name}\n//!TYPE DYNAMIC float\n{}\n\n", full[k]);
+        tracks.push(ParamTrack {
+            name: (*name).to_owned(),
+            values: masks.iter().map(|m| m[k] as f32).collect(),
+        });
+    }
+    let _ = write!(
+        s,
+        "//!HOOK MAIN
+//!BIND HOOKED
+//!WIDTH {iw}
+//!HEIGHT {ih}
+//!DESC ffcine crop + transform ({sw}x{sh} -> {iw}x{ih})
+#define WARP_TEX HOOKED_tex
+#define WARP_PT HOOKED_pt
+#define WARP_SIZE vec2({sw}.0, {sh}.0)
+{WARP_GLSL}
+vec4 hook() {{
+    vec3 d = vec3(HOOKED_pos * vec2({iw}.0, {ih}.0), 1.0);
+    vec3 h = vec3(dot(vec3(a00, a01, a02), d), dot(vec3(a10, a11, a12), d),
+                  dot(vec3(a20, a21, a22), d));
+    vec2 q = h.xy / h.z;
+    vec2 e = min(q - vec2(mx0, my0), vec2(mx1, my1) - q);
+    float k = min(e.x, e.y);
+    float a = feather > 0.0 ? clamp(k / feather, 0.0, 1.0) : step(0.0, k);
+    vec4 c = ffcine_warp(vec3(m00, m01, m02), vec3(m10, m11, m12), vec3(m20, m21, m22), q);
+    return vec4(c.rgb * a, 1.0);
+}}
+"
+    );
     Hook {
         name: GEOMETRY_HOOK.to_owned(),
         source: s,
