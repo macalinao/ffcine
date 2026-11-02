@@ -1,7 +1,7 @@
 //! Assembly (roadmap step 8, `docs/design.md#roadmap`, [`docs/assembly.md`]): renders a whole
 //! timeline into one master with a content-keyed segment cache.
 //!
-//! - [`plan`] flattens the picture track into segments (one per shot, dissolve overlap and gap)
+//! - [`plan`](mod@plan) flattens the picture track into segments (one per shot, dissolve overlap and gap)
 //!   and the audio tracks into one `ffcine_audio` mix, each keyed by a hash of its content
 //!   ([`recipe`]), never by position. The mix key has nothing of the picture in it.
 //! - [`exec`] renders only segments missing from the cache, joins them by stream copy (one shared
@@ -9,6 +9,7 @@
 //!   is a remux of the cached picture. Every cache entry is written atomically, so an interrupted
 //!   render resumes where it stopped.
 //! - [`diff`] lists which segments an edit re-renders.
+//! - [`proxy`] finds or makes the low-res copies `review` renders decode.
 //!
 //! Text (`ffcine.text`, via `ffcine-text`) is drawn in the segments it overlaps: segments are cut
 //! at text in/out points and keyed by the text they show.
@@ -20,6 +21,7 @@ pub mod diff;
 pub mod exec;
 pub mod plan;
 pub mod profile;
+pub mod proxy;
 pub mod recipe;
 
 pub use diff::Diff;

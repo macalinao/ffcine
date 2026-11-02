@@ -76,14 +76,8 @@ impl Gpu {
             _ => &self.devices.vulkan,
         };
         let input = Input::open(&p.input, p.start, dec_device)?;
-        let (in_w, in_h, chroma) = {
-            let d = input.decoder();
-            (
-                u32::try_from(d.width).unwrap_or(0),
-                u32::try_from(d.height).unwrap_or(0),
-                d.chroma_sample_location,
-            )
-        };
+        let (in_w, in_h) = input.size();
+        let chroma = input.decoder().chroma_sample_location;
         let (w, h) = grade.size.map_or((in_w, in_h), |s| (s.width, s.height));
         let rate = p.frame_rate.map(|r| Q::new(r.num.into(), r.den.into()));
         let out_rate = rate.unwrap_or_else(|| {
@@ -155,13 +149,7 @@ impl Gpu {
             let (src, lw, lh) = match &l.source {
                 LayerSource::Video { input, start } => {
                     let inp = Input::open(input, *start, dec_device)?;
-                    let (lw, lh) = {
-                        let d = inp.decoder();
-                        (
-                            u32::try_from(d.width).unwrap_or(0),
-                            u32::try_from(d.height).unwrap_or(0),
-                        )
-                    };
+                    let (lw, lh) = inp.size();
                     let (tx, rx) = sync_channel::<Frame>(DEPTH);
                     let want = u64::try_from(l.to - l.from).unwrap_or(0);
                     layer_inputs.push((inp, want, tx, &l.grade));

@@ -1,7 +1,7 @@
 //! Final Cut Pro X `.fcpxml` / `.fcpxmld` reader (FCPXML 1.8–1.11), straight from the XML: the
 //! OTIO FCPXML adapter drops transitions and every filter (`docs/import.md`).
 //!
-//! What maps (fields and units: [`common`](super::common)):
+//! What maps (fields and units: `common.rs`):
 //! - The first `project`'s sequence. The primary storyline is lane 0 (`V1`); connected clips and
 //!   secondary storylines go to tracks by `lane`, audio-only items (`audio`, `srcEnable="audio"`,
 //!   assets without video) to audio tracks. Compound clips (`ref-clip`) become nested `Stack`s.
