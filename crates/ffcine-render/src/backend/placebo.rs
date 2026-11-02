@@ -392,6 +392,14 @@ impl RgbaTex {
         }
         f
     }
+
+    /// [`Self::frame`] with the alpha channel ignored (an opaque picture).
+    pub(crate) fn frame_opaque(&self, color: pl::pl_color_space) -> pl::pl_frame {
+        let mut f = self.frame(color);
+        f.repr.alpha = pl::pl_alpha_mode::PL_ALPHA_NONE;
+        f.planes[0].components = 3;
+        f
+    }
 }
 
 impl Drop for RgbaTex {
@@ -708,5 +716,157 @@ impl RenderParams {
             };
         }
         Ok(this)
+    }
+}
+
+/// One layer of a [`Compositor`] pass, in target pixels: its texture's middle at `centre`,
+/// `half` its half size, turned by `(cos, sin)` counter-clockwise on screen.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CompositeLayer {
+    pub tex: pl::pl_tex,
+    pub centre: [f32; 2],
+    pub half: [f32; 2],
+    pub rot: [f32; 2],
+    pub mode: i32,
+}
+
+/// The layer composite pass (`pl_dispatch` with a custom shader): reads the backdrop and one
+/// layer texture (not premultiplied alpha) and writes `mix(b, B(b, s), a)` to an opaque target,
+/// `B` the layer's blend mode ([`crate::blend::glsl`]). Pixels outside the turned rectangle
+/// keep the backdrop; its edges are antialiased over one target pixel.
+#[derive(Debug)]
+pub(crate) struct Compositor {
+    dp: pl::pl_dispatch,
+    header: CString,
+    body: CString,
+}
+
+// SAFETY: used from one thread at a time.
+unsafe impl Send for Compositor {}
+
+impl Compositor {
+    pub(crate) fn new(log: &Log, vk: &Vulkan) -> Result<Self> {
+        // SAFETY: valid log and gpu.
+        let dp = unsafe { pl::pl_dispatch_create(log.0, vk.gpu) };
+        if dp.is_null() {
+            return Err(err("pl_dispatch_create failed"));
+        }
+        let cs = |s: &str| CString::new(s).map_err(|_| err("NUL in shader"));
+        Ok(Self {
+            dp,
+            header: cs(crate::blend::glsl())?,
+            body: cs(r"
+    ivec2 px = ivec2(gl_FragCoord.xy);
+    vec3 b = texelFetch(fc_backdrop, px, 0).rgb;
+    vec2 d = gl_FragCoord.xy - fc_centre;
+    vec2 z = vec2(fc_rot.x * d.x - fc_rot.y * d.y, fc_rot.y * d.x + fc_rot.x * d.y);
+    vec2 e = fc_half - abs(z);
+    float cover = clamp(min(e.x, e.y) + 0.5, 0.0, 1.0);
+    vec4 s = texture(fc_layer, z / (2.0 * fc_half) + 0.5);
+    color = vec4(mix(b, blend_mode(fc_mode, b, s.rgb), clamp(s.a, 0.0, 1.0) * cover), 1.0);
+")?,
+        })
+    }
+
+    /// Call once per output frame, before its passes.
+    pub(crate) fn reset_frame(&mut self) {
+        // SAFETY: our dispatch.
+        unsafe { pl::pl_dispatch_reset_frame(self.dp) };
+    }
+
+    /// Composites `layer` over `backdrop` into `target` (same size as `backdrop`, renderable).
+    pub(crate) fn run(
+        &mut self,
+        backdrop: pl::pl_tex,
+        layer: &CompositeLayer,
+        target: pl::pl_tex,
+    ) -> Result<()> {
+        let tex = |name: &std::ffi::CStr, t: pl::pl_tex, sample| pl::pl_shader_desc {
+            desc: pl::pl_desc {
+                name: name.as_ptr(),
+                type_: pl::pl_desc_type::PL_DESC_SAMPLED_TEX,
+                ..Default::default()
+            },
+            binding: pl::pl_desc_binding {
+                object: t.cast(),
+                address_mode: pl::pl_tex_address_mode::PL_TEX_ADDRESS_CLAMP,
+                sample_mode: sample,
+            },
+            ..Default::default()
+        };
+        let descs = [
+            tex(
+                c"fc_backdrop",
+                backdrop,
+                pl::pl_tex_sample_mode::PL_TEX_SAMPLE_NEAREST,
+            ),
+            tex(
+                c"fc_layer",
+                layer.tex,
+                pl::pl_tex_sample_mode::PL_TEX_SAMPLE_LINEAR,
+            ),
+        ];
+        let var = |name: &std::ffi::CStr, type_, dim_v, data: *const std::ffi::c_void| {
+            pl::pl_shader_var {
+                var: pl::pl_var {
+                    name: name.as_ptr(),
+                    type_,
+                    dim_v,
+                    dim_m: 1,
+                    dim_a: 1,
+                },
+                data,
+                dynamic: true,
+            }
+        };
+        let f = pl::pl_var_type::PL_VAR_FLOAT;
+        let vars = [
+            var(c"fc_centre", f, 2, layer.centre.as_ptr().cast()),
+            var(c"fc_half", f, 2, layer.half.as_ptr().cast()),
+            var(c"fc_rot", f, 2, layer.rot.as_ptr().cast()),
+            var(
+                c"fc_mode",
+                pl::pl_var_type::PL_VAR_SINT,
+                1,
+                (&raw const layer.mode).cast(),
+            ),
+        ];
+        let custom = pl::pl_custom_shader {
+            header: self.header.as_ptr(),
+            body: self.body.as_ptr(),
+            description: c"ffcine layer composite".as_ptr(),
+            input: pl::pl_shader_sig::PL_SHADER_SIG_NONE,
+            output: pl::pl_shader_sig::PL_SHADER_SIG_COLOR,
+            descriptors: descs.as_ptr(),
+            num_descriptors: 2,
+            variables: vars.as_ptr(),
+            num_variables: 4,
+            ..Default::default()
+        };
+        // SAFETY: our dispatch; the descriptors, variables and strings outlive the calls (the
+        // shader copies the variables' data); the textures are valid and the target renderable.
+        unsafe {
+            let mut sh = pl::pl_dispatch_begin(self.dp);
+            if !pl::pl_shader_custom(sh, &raw const custom) {
+                pl::pl_dispatch_abort(self.dp, &raw mut sh);
+                return Err(err("pl_shader_custom (composite) failed"));
+            }
+            let params = pl::pl_dispatch_params {
+                shader: &raw mut sh,
+                target,
+                ..Default::default()
+            };
+            if !pl::pl_dispatch_finish(self.dp, &raw const params) {
+                return Err(err("pl_dispatch_finish (composite) failed"));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Drop for Compositor {
+    fn drop(&mut self) {
+        // SAFETY: we own the dispatch.
+        unsafe { pl::pl_dispatch_destroy(&raw mut self.dp) };
     }
 }
