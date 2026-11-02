@@ -22,9 +22,12 @@ allow = [
   "ISC",
   "Zlib",
   "WTFPL",
-  "MPL-2.0",
-] # WTFPL: ffmpeg-next; MPL-2.0: mp4parse, through telemetry-parser
+] # WTFPL: ffmpeg-next
 confidence-threshold = 0.9
+# mp4parse comes in through telemetry-parser (optional feature `telemetry`).
+[[licenses.exceptions]]
+crate = "mp4parse"
+allow = ["MPL-2.0"]
 
 [bans]
 multiple-versions = "warn"

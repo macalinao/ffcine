@@ -191,7 +191,8 @@ warning, which is why it isn't on by default. The Pocket 4 reader needs none of 
 
 Pocket 4, six clips picked at random, 240 frames each, default smoothing, `--stab-max-zoom
 1.5`, rendered at 1080p with `ffcine grade --stabilize --stab-source ...`, then `ffcine jitter` on
-each render (flow's estimator, so it favours flow slightly). Lower is steadier.
+each render (flow's estimator, so it favours flow slightly). Lower is steadier. One clip's row:
+`bench/stab-gyro.sh CLIP` (240 frames by default).
 
 | clip (flow confidence) | unstabilized tx / ty / angle | flow tx / ty / angle (zoom) | gyro tx / ty / angle (zoom) |
 |---|---|---|---|
