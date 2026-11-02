@@ -24,7 +24,7 @@ and `ffcine.fx.grain/1 {strength, size, chroma}` ([timeline.md](timeline.md#effe
 
 Per output frame, all compute on the grade's `pl_gpu` (ffmpeg's `VkDevice`), queued on
 libplacebo's dispatch right before `pl_render_image`, which reads the result as its source frame.
-Frames never leave VRAM and the CPU never waits on the GPU.
+Frames never leave VRAM and the CPU never waits on the GPU (NVOF included, below).
 
 1. **Ingest** (each decoded frame): copy the planes into a ring of `2r+1` slots (r16/rg16, so the
    decoder's pool is released at once) and write a quarter-size luma.
@@ -51,20 +51,51 @@ encoder gets the same frames and timestamps.
 - **NVOF** (default): NVIDIA's optical-flow engine through ffcine-stabilize's session
   (`OpticalFlow::with_slots`, a ring of `2r+1` input frames, temporal hints off since the pairs
   aren't consecutive), medium preset, half-resolution 8-bit luma, 4x4 grid (one vector per 8x8
-  luma pixels). The hop from Vulkan to CUDA stays on the GPU:
-  - a Vulkan pass writes the half-res luma into an `r8` texture, downloaded into a `pl_buf`
-    exported as an opaque fd and imported once by CUDA (`cuImportExternalMemory`);
-  - per frame, `pl_buf_export` + poll, then a device-to-device `cuMemcpy2D` into the NVOF slot;
-  - per neighbour, `nvOFExecute`, and the flow (S10.5 shorts, ~130 KB at 4K) comes back
-    through the host and is uploaded as an `rg32f` texture (as in the stabilizer).
+  luma pixels). Asynchronous: the render thread only queues work, and nothing passes through
+  the host:
+  - all CUDA work (copies, `nvOFExecute`) goes on one CUDA stream (`nvOFSetIOCudaStreams`);
+  - Vulkan and CUDA order each other with two timeline semaphores made by libplacebo
+    (`pl_vulkan_sem_create`, exported as fds, `cuImportExternalSemaphore`). Vulkan signals by
+    holding a texture (`pl_vulkan_hold_ex`), which fires once every earlier use of it is done;
+    CUDA's signal is waited on by releasing it (`pl_vulkan_release_ex`), so libplacebo waits for
+    it before the texture's next use;
+  - per pushed frame, a Vulkan pass writes the half-res luma into an `r8` texture, downloaded
+    into an exported `pl_buf`; the texture is held, the stream waits for that, copies the buffer
+    into the NVOF input slot (`cuMemcpy2DAsync`) and signals; the release waits for the copy, so
+    the next frame's luma can't overwrite the buffer early;
+  - once a frame's last neighbour is in, its `2r` flows are queued on the stream, each copied
+    device to device into one of two exported flow buffers (by frame parity), then a signal;
+  - NVOF runs one frame ahead: frame `c` renders once `c+r+1` is in (so `2r+2` ring slots), and
+    its flows compute while frame `c-1` renders. A Vulkan pass then unpacks the flow buffer
+    (S10.5 shorts) into `rg32f` textures (`x / 16`, exactly as the old host path), the
+    confidence passes read them, and holding one of them tells the stream when it may rewrite
+    that buffer, two frames later.
+  - Before (until this change), the CPU polled the luma buffer (`pl_buf_poll`), and each
+    `nvOFExecute` was followed by a synchronous readback through the host and a texture upload.
   - A Vulkan **confidence** pass then rescores it: for each 8x8 cell, NVOF's vector, its four
     neighbours' vectors and zero, keeping the lowest full-resolution MAD. NVOF regularises flat
     dark areas into arbitrary vectors; without the rescoring it lost to block matching
     everywhere (0038: 0.544 vs 0.406 temporal noise), with it it wins on ground truth.
-  - Cost: GPU 4.6 ms/frame at 4K r2 (half of block matching), but the NVOF calls and the poll
-    are synchronous on the render thread: 16-25 ms wall/frame at 4K. Making them asynchronous
-    (CUDA stream + external semaphores) is the next step.
-  - Falls back to block matching (with a log line) when there is no CUDA device or NVOF.
+  - Cost: GPU 4.6 ms/frame at 4K r2 (half of block matching). Before/after,
+    `bench/denoise/nvof.sh` on the DJI night clip (4K 10-bit HEVC, 96 frames, r2, 3 runs each,
+    values in run order; other jobs came back onto the GPU during the run, so wall fps swing
+    2-4x between runs, even without denoise):
+
+    | | render-thread ms/frame in NVOF | steady fps | GPU ms/frame (libplacebo) |
+    |---|---|---|---|
+    | before: poll, execute, readback | 39.2 / 17.0 / 58.9 | 23.4 / 47.6 / 14.4 | 3.2-5.6 |
+    | after: queueing only | 5.5 / 7.2 / 6.4 | 32.7 / 10.6 / 27.0 | 3.5-6.5 |
+    | blocks, before / after | - | 16.0 / 26.3 / 43.6, 13.6 / 18.6 / 9.1 | 4.4-17.5 |
+    | no denoise, before / after | - | 10.4 / 27.9 / 41.5, 18.5 / 12.1 / 17.4 | - |
+
+    The render thread spends 3-9x less time in NVOF (17-59 -> 5.5-7 ms/frame; what's left is
+    libplacebo's submissions for the holds and CUDA's queueing), and the outputs are
+    bit-identical (same frame md5s at NVENC QP 0 without dither, PSNR inf, at 4K and at 540p).
+    On this shared GPU the fps are inside the noise, the baseline included; a quiet GPU is
+    needed to see what the overlap buys end to end. Reproduce with
+    `BEFORE=old/ffcine bench/denoise/nvof.sh CLIP SS`.
+  - Falls back to block matching (with a log line) when there is no CUDA device, NVOF, or
+    exportable timeline semaphore.
 - **Blocks**: Vulkan block matching, one vector per 16x16 block: exhaustive SAD at quarter
   resolution, +-6 quarter pixels around a predictor (the vector to the nearer neighbour on that
   side, scaled by distance) plus +-1 around zero, then a full-resolution refine (2 px then 1 px).
@@ -192,8 +223,8 @@ same nlmeans_vulkan pass caps a 4K render near 18 fps.
   most); the strengths here are per-clip choices.
 - `ffcine render` applies `ffcine.fx.denoise/1` and the grade's `denoise` number
   ([assembly.md](assembly.md#per-clip-filters)); `ffcine.fx.grain/1` isn't wired into it yet.
-- NVOF asynchronous (CUDA stream, Vulkan/CUDA semaphores instead of the poll) so its wall time
-  overlaps the render.
+- Re-run `bench/denoise/nvof.sh` on a quiet GPU for end-to-end fps (the numbers above were
+  measured alongside other jobs).
 - Scene cuts within a shot are handled by the merge's rejection; a ring reset on detected cuts
   would save the work.
 - Dolby Vision metadata is carried over per frame; ICC profiles and AV1 film-grain side data
