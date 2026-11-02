@@ -24,7 +24,7 @@ use mp4_atom::{
 
 use crate::Chapter;
 
-/// What [`write`] puts in the file.
+/// What [`write()`] puts in the file.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Tags {
     /// In order, the first at 0. Starts past the end are dropped; titles are cut to 255 bytes
@@ -614,7 +614,7 @@ pub fn write(input: &Path, output: &Path, tags: &Tags) -> Result<()> {
     Ok(())
 }
 
-/// [`write`] to `<path>.partial.<ext>`, then renamed over `path`.
+/// [`write()`] to `<path>.partial.<ext>`, then renamed over `path`.
 pub fn write_in_place(path: &Path, tags: &Tags) -> Result<()> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("mp4");
     let partial = path.with_extension(format!("tags.partial.{ext}"));
@@ -631,7 +631,7 @@ pub fn faststart(path: &Path) -> Result<()> {
     write_in_place(path, &read(path)?)
 }
 
-/// The chapters (`chpl`) and cover (`covr`) in an MP4, as [`write`] puts them.
+/// The chapters (`chpl`) and cover (`covr`) in an MP4, as [`write()`] puts them.
 pub fn read(path: &Path) -> Result<Tags> {
     let mut f = File::open(path).map_err(io(path))?;
     let top = top_level(&mut f, path)?;
