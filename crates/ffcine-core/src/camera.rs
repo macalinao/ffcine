@@ -184,7 +184,7 @@ impl Profile {
     }
 
     /// The camera LUT for an HDR deliverable: log -> BT.2020 PQ, mastered to `peak` cd/m², from
-    /// the analytic curves ([`analytic_pq`]); vendor LUTs only reach Rec.709. `None` for
+    /// the analytic curves; vendor LUTs only reach Rec.709. `None` for
     /// profiles libplacebo maps from the tags; an error for D-Log M (no published curve).
     pub fn camera_lut_hdr(self, peak: f64) -> Result<Option<CameraLut>> {
         let lut = match self {
@@ -430,7 +430,7 @@ const HDR_GREY_NITS: f64 = 26.0;
 /// Where the highlight roll-off starts: BT.2408's diffuse white.
 const HDR_KNEE_NITS: f64 = 203.0;
 
-/// Scene linear (0.18 = grey) -> display cd/m²: grey at [`HDR_GREY_NITS`], linear to the knee,
+/// Scene linear (0.18 = grey) -> display cd/m²: grey at 26 cd/m², linear to the knee,
 /// then an exponential shoulder that reaches `peak` asymptotically.
 pub fn hdr_display_nits(x: f64, peak: f64) -> f64 {
     let l = x.max(0.0) * HDR_GREY_NITS / 0.18;
