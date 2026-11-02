@@ -12,9 +12,10 @@ use ffcine::{Decode, Device, backend};
 
 #[derive(Debug, Clone, Bpaf)]
 // Doc comments are --help text, not rustdoc.
-#[allow(clippy::doc_markdown)]
+#[allow(clippy::doc_markdown, clippy::struct_excessive_bools)]
 pub(crate) struct RenderArgs {
-    /// Render profile: preview (1080 px short side) or master (2160 px).
+    /// Render profile: preview (1080 px short side), master (2160 px) or review (720 px, decoded
+    /// from proxies: the camera's .LRF, else one made once into the cache).
     #[bpaf(argument("NAME"), fallback("preview".to_owned()), display_fallback)]
     profile: String,
     /// Output aspect: landscape (16:9), reel (9:16), feed (4:5), square (1:1), WxH or NAME=WxH.
@@ -22,18 +23,24 @@ pub(crate) struct RenderArgs {
     /// profiles.<NAME> overrides.
     #[bpaf(argument("ASPECT"))]
     render_profile: Option<String>,
-    /// Segment cache (default: .ffcine-cache next to the timeline).
+    /// Segment cache directory (default: .ffcine-cache next to the timeline).
     #[bpaf(argument("DIR"))]
     cache: Option<PathBuf>,
-    /// Print the plan and what would render, render nothing.
+    /// Print the plan and what would render; render nothing.
     dry_run: bool,
     /// Leave out ffcine.text clips (titles, cards, captions).
     no_text: bool,
     #[bpaf(external(crate::audio::mix_flags))]
     mix: crate::audio::MixFlags,
-    /// Progress as JSON lines on stdout.
+    /// Cover art written into the MP4: a JPEG or PNG file, or a time in the render (seconds,
+    /// M:SS or H:MM:SS) to grab it from.
+    #[bpaf(argument("FILE|TIME"))]
+    cover: Option<String>,
+    /// Leave the chapters out of the MP4 (default: chapters from the timeline's markers).
+    no_chapters: bool,
+    /// Progress as JSON lines on stdout instead of text on stderr.
     json: bool,
-    /// CUDA device; Vulkan is derived from it.
+    /// CUDA device index; Vulkan is derived from it (default: picked automatically).
     #[bpaf(argument("N"))]
     cuda: Option<u32>,
     /// Hardware decode API: vulkan or cuda.
@@ -42,6 +49,7 @@ pub(crate) struct RenderArgs {
     /// Output master (.mp4).
     #[bpaf(short('o'), long("output"), argument("FILE"))]
     output: PathBuf,
+    /// Timeline to render (.otio).
     #[bpaf(positional("TIMELINE"))]
     timeline: PathBuf,
 }
@@ -56,16 +64,35 @@ fn profile(
     assembly::Profile::resolve(name, &output, aspect).map_err(|e| anyhow::anyhow!(e))
 }
 
-/// Plans a timeline file; also returns its text layer (`None` with `no_text`).
+/// The segment cache: `--cache`, else `.ffcine-cache` next to the timeline.
+fn cache_dir(timeline: &Path, cache: Option<&Path>) -> PathBuf {
+    cache.map_or_else(
+        || {
+            timeline
+                .parent()
+                .unwrap_or(Path::new("."))
+                .join(".ffcine-cache")
+        },
+        Path::to_owned,
+    )
+}
+
+/// Plans a timeline file (made proxies in `cache`); also returns its text layer (`None` with
+/// `no_text`).
 fn plan_file(
     path: &Path,
     profile_name: &str,
     aspect: Option<&str>,
     no_text: bool,
+    cache: &Path,
 ) -> anyhow::Result<(assembly::Plan, Option<assembly::TextLayer>)> {
     let t = ffcine::timeline::Timeline::from_file(path)
         .with_context(|| format!("reading {}", path.display()))?;
-    let profile = &profile(&t, profile_name, aspect)?;
+    let mut profile = profile(&t, profile_name, aspect)?;
+    if profile.proxies {
+        profile.proxy_dir = Some(cache.join("proxy"));
+    }
+    let profile = &profile;
     let dir = path.parent().unwrap_or(Path::new("."));
     let text = if no_text {
         None
@@ -88,8 +115,8 @@ pub(crate) fn diff(
     new: &Path,
 ) -> anyhow::Result<()> {
     let (old, new) = (
-        plan_file(old, profile, aspect, false)?.0,
-        plan_file(new, profile, aspect, false)?.0,
+        plan_file(old, profile, aspect, false, &cache_dir(old, None))?.0,
+        plan_file(new, profile, aspect, false, &cache_dir(new, None))?.0,
     );
     print!("{}", assembly::Diff::new(&old, &new).report(&new, all));
     Ok(())
@@ -97,12 +124,13 @@ pub(crate) fn diff(
 
 impl RenderArgs {
     /// The plan, with the mix flags over the timeline's mix settings.
-    fn plan(&self) -> anyhow::Result<(assembly::Plan, Option<assembly::TextLayer>)> {
+    fn plan(&self, cache: &Path) -> anyhow::Result<(assembly::Plan, Option<assembly::TextLayer>)> {
         let (mut plan, text) = plan_file(
             &self.timeline,
             &self.profile,
             self.render_profile.as_deref(),
             self.no_text,
+            cache,
         )?;
         if let Some(a) = &mut plan.audio {
             let mut o = a.options.clone();
@@ -112,15 +140,77 @@ impl RenderArgs {
         Ok((plan, text))
     }
 
+    /// Makes the proxies a `review` render is missing (sources on video tracks without a camera
+    /// proxy).
+    fn make_proxies(&self, dir: &Path) -> anyhow::Result<()> {
+        let t = ffcine::timeline::Timeline::from_file(&self.timeline)?;
+        let base = self.timeline.parent().unwrap_or(Path::new("."));
+        let fp = assembly::FsFingerprinter;
+        let mut todo: Vec<(PathBuf, PathBuf)> = Vec::new();
+        for p in t.placed_clips() {
+            if p.kind != ffcine::timeline::track_kind::VIDEO {
+                continue;
+            }
+            let Some(ffcine::timeline::MediaReference::External(r)) = p.clip.media_reference()
+            else {
+                continue;
+            };
+            let Some(src) = r.path().map(|m| base.join(m)) else {
+                continue;
+            };
+            if let Some(out) = assembly::proxy::needed(&src, dir, &fp) {
+                if !todo.iter().any(|(s, _)| *s == src) {
+                    todo.push((src, out));
+                }
+            }
+        }
+        let ffmpeg = std::env::var_os("FFMPEG").unwrap_or_else(|| "ffmpeg".into());
+        let n = todo.len();
+        for (i, (src, out)) in todo.iter().enumerate() {
+            let t0 = std::time::Instant::now();
+            assembly::proxy::make(&ffmpeg, src, out).map_err(|e| anyhow::anyhow!(e))?;
+            if !self.json {
+                eprintln!(
+                    "[proxy {}/{n}] {} in {:.1} s",
+                    i + 1,
+                    src.display(),
+                    t0.elapsed().as_secs_f64()
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Chapters (from the markers, unless `--no-chapters`) and `--cover` into the output.
+    fn tag(&self, t: &ffcine::timeline::Timeline) -> anyhow::Result<()> {
+        let tags = ffcine::delivery::mp4::Tags {
+            chapters: if self.no_chapters {
+                Vec::new()
+            } else {
+                // Quiet without markers: most timelines have no chapters.
+                let c = ffcine::delivery::chapters(t, "Intro");
+                if !c.chapters.is_empty() {
+                    for w in &c.warnings {
+                        eprintln!("warning: {w}");
+                    }
+                }
+                c.chapters
+            },
+            cover: match &self.cover {
+                Some(c) => Some(super::deliver::cover(c, &self.output)?),
+                None => None,
+            },
+        };
+        super::deliver::write_tags(&self.output, &tags)
+    }
+
     pub(crate) fn run(self, ff: &backend::Ffmpeg) -> anyhow::Result<()> {
-        let (plan, mut text) = self.plan()?;
+        let cache = cache_dir(&self.timeline, self.cache.as_deref());
+        if !self.dry_run && assembly::Profile::by_name(&self.profile).is_some_and(|p| p.proxies) {
+            self.make_proxies(&cache.join("proxy"))?;
+        }
+        let (plan, mut text) = self.plan(&cache)?;
         let profile = &plan.profile;
-        let cache = self.cache.unwrap_or_else(|| {
-            self.timeline
-                .parent()
-                .unwrap_or(Path::new("."))
-                .join(".ffcine-cache")
-        });
         if self.dry_run {
             let cached = |k: &assembly::Key| cache.join("seg").join(format!("{k}.mp4")).exists();
             let empty = assembly::Plan {
@@ -190,6 +280,7 @@ impl RenderArgs {
             },
         };
         let rep = r.render(&plan, text.as_mut(), &self.output)?;
+        self.tag(&t)?;
         if !self.json {
             let s = |d: Option<std::time::Duration>| {
                 d.map_or_else(

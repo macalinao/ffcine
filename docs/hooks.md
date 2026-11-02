@@ -57,7 +57,42 @@ generated `unsharp=5:5:amount` hook, which stays for diffs against the prototype
 BSD-2-Clause: the copyright and licence header is kept in place and unchanged (clause 1). The
 changes are listed in a comment below the header: `curve_height` and `overshoot_ctrl` became
 `//!PARAM`s, and `//!HOOK OUTPUT` became `PREOUTPUT`. Binary distributions must reproduce the
-notice (clause 2). ffcine is private for now; reproduce it in the release notes if that changes.
+notice (clause 2).
+
+## Upscaling and chroma shaders
+
+ffcine is Apache-2.0, so only permissively licensed shaders are vendored. The rest are known by
+name but loaded from files you download.
+
+| Name | Shader | Stage | Licence | Shipped |
+|---|---|---|---|---|
+| `artcnn-c4f16` | ArtCNN C4F16, luma doubler | `LUMA` | MIT | vendored |
+| `artcnn-c4f16-ds` | ArtCNN C4F16_DS (also denoises and sharpens) | `LUMA` | MIT | vendored |
+| `krigbilateral` | KrigBilateral (Shiandow), chroma upsampling | `CHROMA` | LGPL-3.0-or-later | user-supplied |
+| `fsrcnnx` | FSRCNNX_x2_8-0-4-1 (igv), luma doubler | `LUMA` | GPL-3.0 | user-supplied |
+| `fsrcnnx-16` | FSRCNNX_x2_16-0-4-1 | `LUMA` | GPL-3.0 | user-supplied |
+
+ArtCNN: `crates/ffcine-hooks/shaders/artcnn-*.glsl`, unchanged from
+<https://github.com/Artoriuz/ArtCNN> `GLSL/` at `0837e53`, with the MIT header in each file and the
+repository's licence in `shaders/LICENSE-ArtCNN`. The doublers only run when the output is more
+than 1.3x the source on both axes (their `//!WHEN`), so they do nothing on a downscale.
+
+KrigBilateral and FSRCNNX are copyleft and stay out of the repository and the crates. ffcine
+looks for their files (names as in the table: `KrigBilateral.glsl`, `FSRCNNX_x2_8-0-4-1.glsl`,
+`FSRCNNX_x2_16-0-4-1.glsl`) in each directory of `FFCINE_SHADER_PATH` (`:`-separated), then in
+`$XDG_DATA_HOME/ffcine/shaders` (default `~/.local/share/ffcine/shaders`). A missing file is an
+error naming the download:
+
+```sh
+mkdir -p ~/.local/share/ffcine/shaders && cd ~/.local/share/ffcine/shaders
+curl -LO https://gist.githubusercontent.com/igv/a015fc885d5c22e6891820ad89555637/raw/KrigBilateral.glsl
+# FSRCNNX_x2_*.glsl: from a release at https://github.com/igv/FSRCNN-TensorFlow/releases
+```
+
+KrigBilateral hooks `CHROMA`, so it only runs on subsampled (4:2:0/4:2:2) sources.
+
+Every name works as `ffcine.fx.shader/1`'s `shader` and as `ffcine grade --shader NAME` (a path
+that exists wins over a name).
 
 ## `ffcine.fx.shader/1`
 
@@ -70,7 +105,8 @@ notice (clause 2). ffcine is private for now; reproduce it in the release notes 
 ```
 
 - `shader`: an alias in `metadata.ffcine.project.shaders` (`{alias: path}`, relative to the
-  timeline, like `luts`), a vendored name (`adaptive-sharpen`), or a path.
+  timeline, like `luts`), a vendored or user-supplied name (`adaptive-sharpen`, see the table
+  above), or a path.
 - `params`: `//!PARAM` values, as constants or keyframes (`t` in the clip's source time).
   Constants are set once before the first frame. Keyframes become a per-frame track that the
   renderer writes into the parameter's live value (`pl_hook_par.data`) before each frame, which
@@ -88,8 +124,5 @@ libplacebo's `frame` counter (which counts hook passes, not video frames).
 
 ## Not yet
 
-- KrigBilateral (LGPL-3.0+), FSRCNNX (GPL-3.0) and ArtCNN (MIT) aren't vendored yet. They load
-  today through `ffcine.fx.shader/1` with a path. KrigBilateral hooks `CHROMA` and needs the source
-  to be 4:2:0.
 - `ffcine.fx.sharpen/1` and `GradeParams.sharpen` aren't resolved into a `Grade` yet, because
   there is no timeline renderer; `hooks::sharpen` is the call it will make.

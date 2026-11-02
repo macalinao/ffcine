@@ -159,10 +159,19 @@ fn fixture_clips() {
     let giggle = clip(&t, "b/sfx2");
     assert_eq!(giggle.ffcine_value("private"), Some(&json!(true)));
     assert!(clip(&t, "music1").source_range.is_some());
-    assert_eq!(
-        clip(&t, "ambience1").foreign("edit_yaml"),
-        Some(&json!({"lowpass": 9000}))
-    );
+    let bed = clip(&t, "ambience1");
+    assert_eq!(bed.foreign("edit_yaml"), None);
+    let clean = bed
+        .effects
+        .iter()
+        .find_map(|e| match e {
+            ffcine_timeline::Effect::Effect(g) if g.effect_name == "ffcine.audio.clean" => {
+                g.ffcine()
+            }
+            _ => None,
+        })
+        .expect("clean");
+    assert_eq!(clean.get("lowpass"), Some(&json!(9000.0)));
 
     let p = t.project().expect("project").expect("valid");
     assert_eq!(p.default_look.as_deref(), Some("day"));

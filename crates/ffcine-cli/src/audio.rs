@@ -12,27 +12,27 @@ const VIDEO_EXT: &[&str] = &["mp4", "mov", "mxf", "mkv", "m4v", "mts", "avi", "l
 
 #[derive(Debug, Clone, Bpaf)]
 pub struct SyncArgs {
-    /// Recorder files (Zoom H2essential WAVs): a directory or one file.
+    /// Recorder audio (WAV, BWF, FLAC, AIFF): a directory or one file.
     #[bpaf(argument("DIR"))]
     audio: PathBuf,
-    /// Camera clips: a directory or one file.
+    /// Camera clips with scratch audio (MP4, MOV, MXF, MKV, ...): a directory or one file.
     #[bpaf(argument("DIR"))]
     video: PathBuf,
     /// Add the recorder track to this timeline (default: a new one, clips in name order).
     #[bpaf(argument("FILE"))]
     timeline: Option<PathBuf>,
-    /// J-cut: recorder audio starts this long before its video (s).
-    #[bpaf(argument("SECONDS"), fallback(0.0))]
+    /// J-cut: recorder audio starts this many seconds before its video.
+    #[bpaf(argument("SECONDS"), fallback(0.0), display_fallback)]
     lead: f64,
-    /// L-cut: recorder audio runs this long past its video (s).
-    #[bpaf(argument("SECONDS"), fallback(0.0))]
+    /// L-cut: recorder audio runs this many seconds past its video.
+    #[bpaf(argument("SECONDS"), fallback(0.0), display_fallback)]
     tail: f64,
     /// Leave matches under this confidence (0..1) out of the timeline.
     #[bpaf(argument("C"), fallback(0.15), display_fallback)]
     min_confidence: f64,
     /// Clean chain with the outdoor wind preset on every recorder clip.
     wind: bool,
-    /// Output .otio file.
+    /// Output timeline (.otio).
     #[bpaf(short('o'), long("output"), argument("FILE"))]
     output: PathBuf,
 }
@@ -87,13 +87,14 @@ impl SyncArgs {
 /// Mix, overriding the timeline's project.mix:
 #[derive(Debug, Clone, Bpaf)]
 pub struct MixFlags {
-    /// Master loudness (LUFS; default -14).
+    /// Master loudness in LUFS (default: -14).
     #[bpaf(argument("LUFS"))]
     lufs: Option<f64>,
-    /// Master true-peak ceiling (dBTP; default -1).
+    /// Master true-peak ceiling in dBTP (default: -1).
     #[bpaf(argument("DB"))]
     true_peak: Option<f64>,
-    /// Limiter ceiling this far under the true peak, for the AAC encode's overshoot (default 2).
+    /// Limiter ceiling this many dB under the true peak, for the AAC encode's overshoot
+    /// (default: 2).
     #[bpaf(argument("DB"))]
     headroom: Option<f64>,
     /// Leave the master loudness as mixed (still limited).
@@ -126,15 +127,16 @@ impl MixFlags {
 pub struct AudioArgs {
     #[bpaf(external(mix_flags))]
     mix: MixFlags,
-    /// Also write one WAV per bus (dialogue, music, ambience, sfx) here.
+    /// Also write one WAV per bus (dialogue, music, ambience, sfx, aux buses) into DIR.
     #[bpaf(argument("DIR"))]
     stems: Option<PathBuf>,
+    /// Sample rate in Hz.
     #[bpaf(argument("HZ"), fallback(48000), display_fallback)]
     rate: u32,
     /// Output WAV (32-bit float, stereo).
     #[bpaf(short('o'), long("output"), argument("FILE"))]
     output: PathBuf,
-    /// Timeline (.otio).
+    /// Timeline to mix (.otio).
     #[bpaf(positional("TIMELINE"))]
     timeline: PathBuf,
 }
@@ -146,12 +148,22 @@ impl AudioArgs {
         let mut opts = MixOptions::for_timeline(&tl, self.timeline.parent())?;
         opts.rate = self.rate;
         self.mix.apply(&mut opts);
-        let mix = audio::render_audio(&tl, &opts)?;
-        audio::write_mix(&mix, &self.output, self.stems.as_deref())?;
+        // Next to the output, where the room for a long mix is; /tmp may be RAM.
+        opts.scratch = self
+            .output
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(Path::to_owned)
+            .or_else(|| Some(".".into()));
+        let mut mix = audio::stream_audio(&tl, &opts, self.stems.is_some())?;
+        mix.write_master(&self.output)?;
+        if let Some(dir) = &self.stems {
+            mix.write_stems(dir)?;
+        }
         eprintln!(
             "{}: {:.1} s, {:.1} LUFS, {:.1} dBTP",
             self.output.display(),
-            mix.master.seconds(),
+            mix.seconds(),
             mix.lufs,
             mix.true_peak
         );
@@ -166,6 +178,7 @@ pub struct BeatsArgs {
     no_cache: bool,
     /// Print JSON (`{tempo, beats, duration}`).
     json: bool,
+    /// Music file (anything ffmpeg decodes).
     #[bpaf(positional("FILE"))]
     file: PathBuf,
 }
@@ -197,6 +210,7 @@ impl BeatsArgs {
 }
 
 /// The cached beat times of `path`, for importers (`ImportOptions::beats`).
+#[cfg(feature = "gpu")]
 pub fn beat_times(path: &Path) -> Option<Vec<f64>> {
     audio::beats::cached(path, &audio::beats::default_cache_dir())
         .map_err(|e| eprintln!("warning: beats of {}: {e}", path.display()))

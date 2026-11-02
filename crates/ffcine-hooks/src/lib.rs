@@ -4,7 +4,9 @@
 //!
 //! - Vendored: [`ADAPTIVE_SHARPEN`] (BSD-2-Clause, header kept), the default sharpen, replacing
 //!   the generated unsharp hook (`ffcine_render::shaders::unsharp`), which stays for prototype
-//!   diffs ([`Sharpen::Unsharp`]).
+//!   diffs ([`Sharpen::Unsharp`]); ArtCNN's luma doublers ([`ARTCNN_C4F16`], MIT).
+//! - Not vendored (GPL/LGPL): KrigBilateral and FSRCNNX are known by name ([`EXTERNAL`]) and
+//!   loaded from user-supplied files on the shader path ([`shader_path`]).
 //! - Timeline: `ffcine.fx.shader/1 {shader, params}` with `shader` an alias in
 //!   `metadata.ffcine.project.shaders`, a vendored name or a path; `params` constants or
 //!   keyframes ([`shader`]).
@@ -16,6 +18,9 @@
 pub mod parse;
 pub mod shader;
 
+use std::path::{Path, PathBuf};
+
+use ffcine_core::{Error, Result};
 use ffcine_render::{Grade, Hook};
 
 pub use parse::{HookInfo, ParamInfo, ParamKind, parse};
@@ -25,12 +30,106 @@ pub use shader::ShaderEffect;
 /// `overshoot_ctrl` as `//!PARAM`s. Licence: BSD-2-Clause (header in the file).
 pub const ADAPTIVE_SHARPEN: &str = include_str!("../shaders/adaptive-sharpen.glsl");
 
+/// ArtCNN C4F16 (Artoriuz), a CNN luma doubler at `LUMA`: runs when the output is more than
+/// 1.3x the source on both axes. Licence: MIT (header in the file, `shaders/LICENSE-ArtCNN`).
+pub const ARTCNN_C4F16: &str = include_str!("../shaders/artcnn-c4f16.glsl");
+
+/// [`ARTCNN_C4F16`] trained to also denoise and sharpen.
+pub const ARTCNN_C4F16_DS: &str = include_str!("../shaders/artcnn-c4f16-ds.glsl");
+
 /// Vendored shaders by name.
 pub fn vendored(name: &str) -> Option<&'static str> {
     match name {
         "adaptive-sharpen" => Some(ADAPTIVE_SHARPEN),
+        "artcnn-c4f16" => Some(ARTCNN_C4F16),
+        "artcnn-c4f16-ds" => Some(ARTCNN_C4F16_DS),
         _ => None,
     }
+}
+
+/// A shader known by name whose licence keeps it out of ffcine (Apache-2.0): the user downloads
+/// `file` from `url` into a [`shader_path`] directory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct External {
+    pub name: &'static str,
+    pub file: &'static str,
+    pub url: &'static str,
+    pub licence: &'static str,
+}
+
+/// Shaders loaded by name from the [`shader_path`], not shipped.
+pub const EXTERNAL: &[External] = &[
+    External {
+        name: "krigbilateral",
+        file: "KrigBilateral.glsl",
+        url: "https://gist.github.com/igv/a015fc885d5c22e6891820ad89555637",
+        licence: "LGPL-3.0-or-later",
+    },
+    External {
+        name: "fsrcnnx",
+        file: "FSRCNNX_x2_8-0-4-1.glsl",
+        url: "https://github.com/igv/FSRCNN-TensorFlow/releases",
+        licence: "GPL-3.0",
+    },
+    External {
+        name: "fsrcnnx-16",
+        file: "FSRCNNX_x2_16-0-4-1.glsl",
+        url: "https://github.com/igv/FSRCNN-TensorFlow/releases",
+        licence: "GPL-3.0",
+    },
+];
+
+/// Directories searched for [`EXTERNAL`] shaders: `FFCINE_SHADER_PATH` (`:`-separated), then
+/// `$XDG_DATA_HOME/ffcine/shaders` (default `~/.local/share/ffcine/shaders`).
+pub fn shader_path() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = std::env::var_os("FFCINE_SHADER_PATH")
+        .map(|p| std::env::split_paths(&p).collect())
+        .unwrap_or_default();
+    let data = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".local/share")));
+    dirs.extend(data.map(|d| d.join("ffcine/shaders")));
+    dirs
+}
+
+/// The [`EXTERNAL`] shader `name`'s path and text, from the first of `dirs` holding its file.
+/// `None` if `name` isn't external; an error naming the download if no directory has it.
+pub fn external(name: &str, dirs: &[PathBuf]) -> Option<Result<(PathBuf, String)>> {
+    let e = EXTERNAL.iter().find(|e| e.name == name)?;
+    let Some(path) = dirs.iter().map(|d| d.join(e.file)).find(|p| p.is_file()) else {
+        let dirs: Vec<String> = dirs.iter().map(|d| d.display().to_string()).collect();
+        return Some(Err(Error::Import {
+            path: PathBuf::from(e.file),
+            msg: format!(
+                "{} is {} and not bundled with ffcine: download it from {} into one of [{}] \
+                 (or a directory on FFCINE_SHADER_PATH)",
+                e.name,
+                e.licence,
+                e.url,
+                dirs.join(", ")
+            ),
+        }));
+    };
+    Some(
+        std::fs::read_to_string(&path)
+            .map(|t| (path.clone(), t))
+            .map_err(|source| Error::Io { path, source }),
+    )
+}
+
+/// A shader by name, vendored or [`EXTERNAL`] (on the [`shader_path`]), as a [`Hook`] named
+/// after it. `None` if the name is neither.
+pub fn named(name: &str) -> Option<Result<Hook>> {
+    let source = match vendored(name) {
+        Some(t) => Ok(t.to_owned()),
+        None => external(name, &shader_path())?.map(|(_, t)| retarget_output(&t)),
+    };
+    Some(source.map(|source| Hook {
+        name: name.to_owned(),
+        source,
+        ..Hook::default()
+    }))
 }
 
 pub const SHARPEN_HOOK: &str = "ffcine:sharpen";
@@ -105,7 +204,7 @@ fn role(h: &Hook) -> u8 {
     }
 }
 
-/// Sorts hooks by their first stage ([`parse::STAGES`]), then [`role`]; stable otherwise.
+/// Sorts hooks by their first stage ([`parse::STAGES`]), then by role; stable otherwise.
 /// libplacebo runs each hook at its own stage regardless, so this only decides the order of
 /// hooks sharing a stage, and makes the array read in pipeline order.
 pub fn order(hooks: &mut [Hook]) {
@@ -142,6 +241,31 @@ mod tests {
         assert!(ADAPTIVE_SHARPEN.starts_with("// Copyright (c) 2015-2021, bacondither\n"));
         assert!(ADAPTIVE_SHARPEN.contains("THIS SOFTWARE IS PROVIDED BY THE AUTHORS ``AS IS''"));
         assert_eq!(vendored("adaptive-sharpen"), Some(ADAPTIVE_SHARPEN));
+        for s in [ARTCNN_C4F16, ARTCNN_C4F16_DS] {
+            assert!(s.starts_with("// MIT License\n"));
+            assert!(s.contains("The above copyright notice and this permission notice"));
+            assert!(parse(s).unwrap().stages.iter().all(|s| s == "LUMA"));
+        }
+        assert_eq!(vendored("artcnn-c4f16-ds"), Some(ARTCNN_C4F16_DS));
+    }
+
+    #[test]
+    fn external_from_shader_path() {
+        let dir =
+            std::env::temp_dir().join(format!("ffcine-hooks-external-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dirs = [dir.join("missing"), dir.clone()];
+        assert!(external("adaptive-sharpen", &dirs).is_none());
+        let err = external("krigbilateral", &dirs).unwrap().unwrap_err();
+        assert!(err.to_string().contains("LGPL-3.0-or-later"), "{err}");
+        assert!(err.to_string().contains("gist.github.com/igv"), "{err}");
+        let src = "//!HOOK CHROMA\n//!BIND HOOKED\nvec4 hook() { return HOOKED_texOff(0); }\n";
+        std::fs::write(dir.join("KrigBilateral.glsl"), src).unwrap();
+        let (path, text) = external("krigbilateral", &dirs).unwrap().unwrap();
+        assert_eq!((path, text.as_str()), (dir.join("KrigBilateral.glsl"), src));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(named("artcnn-c4f16").unwrap().unwrap().source, ARTCNN_C4F16);
+        assert!(named("nope").is_none());
     }
 
     #[test]

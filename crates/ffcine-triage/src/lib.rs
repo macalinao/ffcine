@@ -3,8 +3,8 @@
 //! Per clip, from the DJI `.LRF` proxy when there is one: a contact strip and scene cuts
 //! ([`scene`]), a speech map ([`vad`]), runaway/dead/dark flags ([`flags`]), and a word-timed
 //! transcript from one batched GPU whisper run ([`transcribe`]). The result is `index.json`
-//! ([`index`]), searchable with [`search`], and a static clip page ([`page`]) for picking clips.
-//! [`snap`] moves proposed in/out points onto word boundaries and silence.
+//! ([`index`]), searchable with [`search`](mod@search), and a static clip page ([`page`]) for picking clips.
+//! [`snap`](mod@snap) moves proposed in/out points onto word boundaries and silence.
 //!
 //! Clips come from a directory scan or a list ([`clips`]) until the `ffcine-ingest` catalog lands;
 //! see `docs/triage.md`.
