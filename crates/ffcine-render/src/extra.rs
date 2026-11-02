@@ -464,8 +464,8 @@ vec4 hook() {{
 }
 
 /// ffmpeg's `colorbalance`: shadows/midtones/highlights offsets per channel weighted by the
-/// input's HSL lightness (as [`crate::shaders::look`]), and with `pl` the result's lightness reset
-/// to the input's at the same hue and saturation.
+/// input's `max + min` (ffmpeg's weights, see [`crate::shaders::look`]), and with `pl` ffmpeg's
+/// lightness preservation (HSL, at the input's lightness).
 pub fn colorbalance() -> &'static str {
     r"//!PARAM rs
 //!TYPE float
@@ -503,21 +503,34 @@ pub fn colorbalance() -> &'static str {
 vec4 hook() {
     vec4 c = HOOKED_texOff(vec2(0.0));
     vec3 v = clamp(c.rgb, 0.0, 1.0);
-    float l = 0.5 * (max(v.r, max(v.g, v.b)) + min(v.r, min(v.g, v.b)));
+    // vf_colorbalance weighs by max + min (twice the HSL lightness).
+    float m2 = max(v.r, max(v.g, v.b)) + min(v.r, min(v.g, v.b));
+    float l = 0.5 * m2;
     const float a = 4.0, b = 0.333, k = 0.7;
-    float ws = clamp((b - l) * a + 0.5, 0.0, 1.0) * k;
-    float wm = clamp((l - b) * a + 0.5, 0.0, 1.0) * clamp((1.0 - l - b) * a + 0.5, 0.0, 1.0) * k;
-    float wh = clamp((l + b - 1.0) * a + 0.5, 0.0, 1.0) * k;
+    float ws = clamp((b - m2) * a + 0.5, 0.0, 1.0) * k;
+    float wm = clamp((m2 - b) * a + 0.5, 0.0, 1.0) * clamp((1.0 - m2 - b) * a + 0.5, 0.0, 1.0) * k;
+    float wh = clamp((m2 + b - 1.0) * a + 0.5, 0.0, 1.0) * k;
     vec3 o = clamp(v + ws * vec3(rs, gs, bs) + wm * vec3(rm, gm, bm) + wh * vec3(rh, gh, bh),
         0.0, 1.0);
     if (pl > 0.5) {
+        // vf_colorbalance's preservel: the result's HSL hue, its saturation over the input's
+        // lightness (0 if a channel is at 0 or 1), at the input's lightness.
         float mx = max(o.r, max(o.g, o.b)), mn = min(o.r, min(o.g, o.b));
-        float nl = 0.5 * (mx + mn);
-        float span = 1.0 - abs(2.0 * nl - 1.0);
-        o = mx > mn && span > 0.0
-            ? vec3(l) + (o - nl) * (1.0 - abs(2.0 * l - 1.0)) / span
-            : vec3(l);
-        o = clamp(o, 0.0, 1.0);
+        float h = 0.0;
+        if (mx > mn) {
+            if (mx == o.r)
+                h = 60.0 * ((o.g - o.b) / (mx - mn));
+            else if (mx == o.g)
+                h = 60.0 * (2.0 + (o.b - o.r) / (mx - mn));
+            else
+                h = 60.0 * (4.0 + (o.r - o.g) / (mx - mn));
+        }
+        if (h < 0.0)
+            h += 360.0;
+        float s = mx == 1.0 || mn == 0.0 ? 0.0 : (mx - mn) / (1.0 - abs(2.0 * l - 1.0));
+        float q = s * min(l, 1.0 - l);
+        vec3 kk = mod(vec3(0.0, 8.0, 4.0) + h / 30.0, 12.0);
+        o = clamp(l - q * max(min(min(kk - 3.0, 9.0 - kk), 1.0), -1.0), 0.0, 1.0);
     }
     c.rgb = o;
     return c;
