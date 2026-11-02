@@ -24,7 +24,8 @@ use super::placebo::{
 use super::retime::{Q, Retimer};
 use crate::pipeline::RunStats;
 use crate::{
-    ColorSpace, Decode, Device, Grade, Layer, LayerSource, Overlay, Pipeline, Result, Stage,
+    ColorSpace, Decode, Device, Grade, HdrMetadata, Layer, LayerSource, Overlay, Pipeline, Result,
+    Stage,
 };
 
 /// Persistent GPU state. Field order is drop order: renderer and libplacebo before the cache
@@ -64,19 +65,34 @@ impl Gpu {
     /// Renders one pipeline (one shot).
     pub(crate) fn run(&mut self, p: &Pipeline) -> Result<RunStats> {
         let t0 = Instant::now();
-        let grade = p
+        let mut grade = p
             .stages
             .iter()
             .map(|Stage::Grade(g)| g)
             .next()
             .cloned()
             .unwrap_or_default();
+        grade.merge_luts();
 
         let dec_device = match p.decode {
             Decode::Cuda => &self.devices.cuda,
             _ => &self.devices.vulkan,
         };
-        let input = Input::open(&p.input, p.start, dec_device)?;
+        // History and lookahead for the temporal denoiser: decoded and denoised, not output.
+        let ctx = if grade.denoise.is_some_and(|d| !d.is_off()) {
+            p.context
+        } else {
+            crate::FrameContext::default()
+        };
+        // Generous: the seek only has to land before the frames kept as history.
+        #[allow(clippy::cast_precision_loss)]
+        let lead = Duration::from_secs_f64(
+            (ctx.before + u64::from(ctx.before > 0)) as f64
+                * p.frame_rate
+                    .filter(|r| r.num > 0)
+                    .map_or(0.1, |r| f64::from(r.den) / f64::from(r.num)),
+        );
+        let input = Input::open_with_lead(&p.input, p.start, lead, dec_device)?;
         let (in_w, in_h) = input.size();
         let chroma = input.decoder().chroma_sample_location;
         let (w, h) = grade.size.map_or((in_w, in_h), |s| (s.width, s.height));
@@ -122,6 +138,7 @@ impl Gpu {
             out_rate,
             chroma,
             enc_frames.as_ref(),
+            grade.output_hdr.as_ref().filter(|_| grade.output.is_hdr()),
         )?;
 
         let pass = Pass::new(&self.vk, &grade, in_w, in_h)?;
@@ -174,7 +191,13 @@ impl Gpu {
         // Layers that are turned or blended (all of them on an HDR output) go through the
         // composite pass; the others are `pl_overlay`s on the grade pass.
         let hdr = grade.output.is_hdr();
-        let out_color = grade.output;
+        // One HDR colour space for the picture, the layers and the composite: the output's, with
+        // the mastering display the output frames carry (`Grade::output_hdr`).
+        let out_hdr = grade.output_hdr.as_ref().filter(|_| hdr);
+        let colors = (
+            layer_color(grade.output, out_hdr),
+            still_color(grade.output),
+        );
         let composites = |l: &Layer, at: i64| hdr || l.needs_composite(at);
         let mut composite = if p
             .layers
@@ -187,12 +210,13 @@ impl Gpu {
         };
         let setup = t0.elapsed();
 
-        let want = p.frames.unwrap_or(u64::MAX);
+        let want = p.frames.map_or(u64::MAX, |n| n.saturating_add(ctx.after));
+        let lead_frames = usize::try_from(ctx.before).unwrap_or(0);
         let vulkan = self.devices.vulkan.clone();
         // Three stages in flight: decode + upload N+1 | render N | download + encode N-1. Each
         // hands frames on with ffmpeg's/libplacebo's semaphores attached, so no stage waits on
         // the GPU for another; the bounded channels cap VRAM use.
-        let (dec_tx, dec_rx) = sync_channel::<Frame>(DEPTH);
+        let (dec_tx, dec_rx) = sync_channel::<(Frame, bool)>(DEPTH);
         let (enc_tx, enc_rx) = sync_channel::<Frame>(DEPTH);
         let (dec, rendered, enc) = thread::scope(|sc| {
             let grade = &grade;
@@ -203,7 +227,9 @@ impl Gpu {
                     sc.spawn(move || decode_loop(inp, rate, n, &vk, g, &tx))
                 })
                 .collect();
-            let dec = sc.spawn(move || decode_loop(input, rate, want, &vulkan, grade, &dec_tx));
+            let dec = sc.spawn(move || {
+                decode_lead(input, rate, lead_frames, want, &vulkan, grade, &dec_tx)
+            });
             let enc = sc.spawn(move || encode_loop(output, &enc_rx, p.frames, t0));
             let mut t_render = Busy::new("render");
             let mut index = 0;
@@ -218,7 +244,7 @@ impl Gpu {
                 for lr in &mut layers {
                     if let Some(rect) = lr.layer.rect_at(at, w, h) {
                         let local = usize::try_from(at - lr.layer.from).unwrap_or(0);
-                        t_render.time(|| gpu.render_layer(lr, local, out_color))?;
+                        t_render.time(|| gpu.render_layer(lr, local, colors))?;
                         shown.push((&*lr, rect));
                     }
                 }
@@ -226,7 +252,7 @@ impl Gpu {
                     .iter()
                     .position(|(lr, _)| composites(lr.layer, at))
                     .unwrap_or(shown.len());
-                let color = layer_color(out_color);
+                let color = colors.0;
                 let out = if let (true, Some(c)) = (k < shown.len(), composite.as_mut()) {
                     let below = overlays_at(&shown[..k], &[], at, color);
                     let text = overlays_at(&[], &overlays, at, color);
@@ -254,27 +280,39 @@ impl Gpu {
             };
             let rendered = (|| -> Result<()> {
                 let Some(dn) = &mut denoiser else {
-                    for up in dec_rx {
+                    for (up, _) in dec_rx {
                         if !send(self, Src::Frame(&up))? {
                             break;
                         }
                     }
                     return Ok(());
                 };
-                let mut open = true;
-                for up in dec_rx {
-                    dn.push(&up)?;
-                    while let Some((props, image)) = dn.pop(false)? {
-                        open = send(self, Src::Image(&props, &image))?;
-                        if !open {
+                // Context frames go through the denoiser in order but aren't rendered.
+                let mut lead = std::collections::VecDeque::new();
+                let mut left = p.frames.unwrap_or(u64::MAX);
+                let mut rx = dec_rx.into_iter();
+                loop {
+                    let flush = match rx.next() {
+                        Some((up, l)) => {
+                            dn.push(&up)?;
+                            lead.push_back(l);
+                            false
+                        }
+                        None => true,
+                    };
+                    while let Some((props, image)) = dn.pop(flush)? {
+                        if lead.pop_front().unwrap_or(false) {
+                            continue;
+                        }
+                        if left == 0 || !send(self, Src::Image(&props, &image))? {
                             return Ok(());
                         }
+                        left -= 1;
+                    }
+                    if flush {
+                        return Ok(());
                     }
                 }
-                while open && let Some((props, image)) = dn.pop(true)? {
-                    open = send(self, Src::Image(&props, &image))?;
-                }
-                Ok(())
             })();
             drop(send);
             // Layer decoders still sending (the main input ran short) stop when hung up on.
@@ -329,18 +367,19 @@ impl Gpu {
             )?
         };
         // The source's Dolby Vision RPU and HDR metadata describe the source, not the output:
-        // libplacebo would try to re-apply them to the target.
-        if !grade.output.is_hdr() {
-            for t in [
-                ff::AVFrameSideDataType::AV_FRAME_DATA_DOVI_RPU_BUFFER,
-                ff::AVFrameSideDataType::AV_FRAME_DATA_DOVI_METADATA,
-                ff::AVFrameSideDataType::AV_FRAME_DATA_MASTERING_DISPLAY_METADATA,
-                ff::AVFrameSideDataType::AV_FRAME_DATA_CONTENT_LIGHT_LEVEL,
-                ff::AVFrameSideDataType::AV_FRAME_DATA_DYNAMIC_HDR_PLUS,
-            ] {
-                // SAFETY: a valid frame we own.
-                unsafe { ff::av_frame_remove_side_data(out.as_ptr(), t) };
-            }
+        // libplacebo would try to re-apply them to the target. An HDR output gets its own.
+        for t in [
+            ff::AVFrameSideDataType::AV_FRAME_DATA_DOVI_RPU_BUFFER,
+            ff::AVFrameSideDataType::AV_FRAME_DATA_DOVI_METADATA,
+            ff::AVFrameSideDataType::AV_FRAME_DATA_MASTERING_DISPLAY_METADATA,
+            ff::AVFrameSideDataType::AV_FRAME_DATA_CONTENT_LIGHT_LEVEL,
+            ff::AVFrameSideDataType::AV_FRAME_DATA_DYNAMIC_HDR_PLUS,
+        ] {
+            // SAFETY: a valid frame we own.
+            unsafe { ff::av_frame_remove_side_data(out.as_ptr(), t) };
+        }
+        if let Some(m) = grade.output_hdr.as_ref().filter(|_| grade.output.is_hdr()) {
+            io::attach_hdr(out.as_ptr(), m)?;
         }
         io::tag_frame(out.get_mut(), grade.output);
         out.get_mut().sample_aspect_ratio = ff::AVRational { num: 1, den: 1 };
@@ -408,7 +447,7 @@ impl Gpu {
         &mut self,
         lr: &mut LayerRun<'_>,
         local: usize,
-        output: ColorSpace,
+        (color, still): (pl::pl_color_space, pl::pl_color_space),
     ) -> Result<()> {
         if let LayerSrc::Video { rx, last } = &mut lr.src
             && let Ok(f) = rx.recv()
@@ -419,7 +458,7 @@ impl Gpu {
         let params = &*lr.pass.params;
         set_tracks(params, grade, local)?;
         let luts = lr.pass.luts();
-        let mut target = lr.tex.frame(layer_color(output));
+        let mut target = lr.tex.frame(color);
         let gpu = self.vk.gpu;
         // SAFETY: a mapped Vulkan AVFrame (unmapped before returning) or our own texture, and
         // our own target texture, on the gpu libplacebo imported.
@@ -435,7 +474,7 @@ impl Gpu {
                 LayerSrc::Video { last: None, .. } => {
                     return Err(gpu_err("layer video has no frames in range"));
                 }
-                LayerSrc::Image(t) => (t.frame(still_color(output)), false),
+                LayerSrc::Image(t) => (t.frame(still), false),
             };
             apply_grade(&mut image, &mut target, grade, &luts, local);
             let ok = pl::pl_render_image(
@@ -456,8 +495,9 @@ impl Gpu {
 }
 
 /// The colour space layers are rendered in and composited from for an `output`: BT.709 and
-/// BT.1886 for SDR, the output's primaries with PQ or HLG for HDR.
-fn layer_color(output: ColorSpace) -> pl::pl_color_space {
+/// BT.1886 for SDR, the output's primaries with PQ or HLG for HDR, with the output's mastering
+/// display (`hdr`) as the output frames carry it, so layers map to the same peak as the picture.
+fn layer_color(output: ColorSpace, hdr: Option<&HdrMetadata>) -> pl::pl_color_space {
     use ffcine_core::color::{Primaries, Transfer};
     use pl::pl_color_primaries as P;
     use pl::pl_color_transfer as T;
@@ -481,6 +521,31 @@ fn layer_color(output: ColorSpace) -> pl::pl_color_space {
         } else {
             T::PL_COLOR_TRC_PQ
         },
+        hdr: hdr.map_or_else(Default::default, pl_hdr),
+    }
+}
+
+/// `m` as libplacebo reads it from the output frame's side data.
+#[allow(clippy::cast_possible_truncation)]
+fn pl_hdr(m: &HdrMetadata) -> pl::pl_hdr_metadata {
+    let xy = |[x, y]: [f64; 2]| pl::pl_cie_xy {
+        x: x as f32,
+        y: y as f32,
+    };
+    let [red, green, blue, white] = m.primaries;
+    pl::pl_hdr_metadata {
+        prim: pl::pl_raw_primaries {
+            red: xy(red),
+            green: xy(green),
+            blue: xy(blue),
+            white: xy(white),
+        },
+        min_luma: m.min_luminance as f32,
+        max_luma: m.max_luminance as f32,
+        #[allow(clippy::cast_precision_loss)]
+        max_cll: m.max_cll as f32,
+        #[allow(clippy::cast_precision_loss)]
+        max_fall: m.max_fall as f32,
         ..Default::default()
     }
 }
@@ -493,7 +558,7 @@ fn still_color(output: ColorSpace) -> pl::pl_color_space {
         // SAFETY: reading libplacebo's exported constant.
         unsafe { pl::pl_color_space_srgb }
     } else {
-        layer_color(output)
+        layer_color(output, None)
     }
 }
 
@@ -662,7 +727,8 @@ unsafe fn apply_grade(
     index: usize,
 ) {
     // The camera LUT on the source; the grade LUT on the source too, or, after a camera
-    // LUT, on the target (applied to the converted picture before encoding).
+    // LUT, on the target (applied to the converted picture before encoding). Normalized pairs
+    // arrive baked into one (`Grade::merge_luts`).
     if let (Some(l), Some(stage)) = (luts.input, &grade.input_lut) {
         image.lut = &raw const l.lut;
         image.lut_type = placebo::lut_type(stage.kind);
@@ -842,14 +908,43 @@ fn join<T>(h: thread::ScopedJoinHandle<'_, Result<T>>) -> Result<T> {
 
 /// Decode, select frames (seek trim, fps), upload to Vulkan. Stops quietly if the renderer hangs up.
 fn decode_loop(
-    mut input: Input,
+    input: Input,
     rate: Option<Q>,
     want: u64,
     vulkan: &BufferRef,
     grade: &Grade,
     tx: &SyncSender<Frame>,
 ) -> Result<()> {
-    let mut retimer = Retimer::new(input.tb, input.trim, rate);
+    decode_frames(input, rate, 0, want, vulkan, grade, tx, |f, _| f)
+}
+
+/// [`decode_loop`], first sending up to `lead` frames from before the seek point, flagged
+/// `true` (not counted in `want`).
+fn decode_lead(
+    input: Input,
+    rate: Option<Q>,
+    lead: usize,
+    want: u64,
+    vulkan: &BufferRef,
+    grade: &Grade,
+    tx: &SyncSender<(Frame, bool)>,
+) -> Result<()> {
+    decode_frames(input, rate, lead, want, vulkan, grade, tx, |f, l| (f, l))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn decode_frames<T>(
+    mut input: Input,
+    rate: Option<Q>,
+    lead: usize,
+    want: u64,
+    vulkan: &BufferRef,
+    grade: &Grade,
+    tx: &SyncSender<T>,
+    wrap: fn(Frame, bool) -> T,
+) -> Result<()> {
+    let mut retimer = Retimer::new(input.tb, input.trim, rate).lead(lead);
+    let mut out = 0usize;
     let mut vk_in: Option<BufferRef> = None;
     let mut ready = Vec::new();
     let mut sent = 0u64;
@@ -865,10 +960,11 @@ fn decode_loop(
             eof = true;
         }
         for f in ready.drain(..) {
-            if sent == want {
+            let lead = out < retimer.led();
+            if !lead && sent == want {
                 break;
             }
-            if sent == 0 && f.get().hw_frames_ctx.is_null() {
+            if out == 0 && f.get().hw_frames_ctx.is_null() {
                 // ffmpeg falls back to software decode quietly when the hardware decoder rejects
                 // a format (4:2:2 HEVC on NVDEC and Vulkan video as of driver 615).
                 // SAFETY: software frames carry their pixel format in `format`; the name is a
@@ -888,10 +984,11 @@ fn decode_loop(
                 );
             }
             let up = t_up.time(|| upload(&f, &mut vk_in, vulkan, grade))?;
-            if tx.send(up).is_err() {
+            if tx.send(wrap(up, lead)).is_err() {
                 return Ok(());
             }
-            sent += 1;
+            out += 1;
+            sent += u64::from(!lead);
         }
     }
     t_dec.report();
@@ -1169,7 +1266,7 @@ mod tests {
     fn layer_colour_follows_the_output() {
         use pl::pl_color_primaries as P;
         use pl::pl_color_transfer as T;
-        let sdr = layer_color(ColorSpace::BT709_TV);
+        let sdr = layer_color(ColorSpace::BT709_TV, None);
         assert_eq!(
             (sdr.primaries, sdr.transfer),
             (P::PL_COLOR_PRIM_BT_709, T::PL_COLOR_TRC_BT_1886)
@@ -1182,12 +1279,18 @@ mod tests {
             matrix: Matrix::Bt2020Ncl,
             range: Range::Limited,
         };
-        let pq = layer_color(hdr(Transfer::Pq));
+        let pq = layer_color(hdr(Transfer::Pq), None);
         assert_eq!(
             (pq.primaries, pq.transfer),
             (P::PL_COLOR_PRIM_BT_2020, T::PL_COLOR_TRC_PQ)
         );
-        let hlg = layer_color(hdr(Transfer::Hlg));
+        assert!(pq.hdr.max_luma.abs() < 1e-6);
+        // The output's mastering display, as on the output frames, so layers share its peak.
+        let m = HdrMetadata::P3_D65_1000.with_peak(600.0);
+        let pq = layer_color(hdr(Transfer::Pq), Some(&m));
+        assert!((pq.hdr.max_luma - 600.0).abs() < 1e-3 && (pq.hdr.max_cll - 600.0).abs() < 1e-3);
+        assert!((pq.hdr.prim.red.x - 0.680).abs() < 1e-6);
+        let hlg = layer_color(hdr(Transfer::Hlg), None);
         assert_eq!(
             (hlg.primaries, hlg.transfer),
             (P::PL_COLOR_PRIM_BT_2020, T::PL_COLOR_TRC_HLG)

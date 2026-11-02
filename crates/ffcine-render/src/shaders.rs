@@ -50,6 +50,38 @@ impl LookParams {
         .map(|(k, v)| (k.to_owned(), f64::from(v)))
         .collect()
     }
+
+    /// The [`look`] hook on one gamma-encoded RGB value, on the CPU (the LUT baker's look).
+    #[allow(clippy::many_single_char_names)] // the shader's names
+    pub fn apply(&self, rgb: [f32; 3]) -> [f32; 3] {
+        use std::f32::consts::PI;
+        let mut v = rgb.map(|c| c.clamp(0.0, 1.0));
+        if self.exposure != 0.0 {
+            let k = self.exposure.exp2();
+            v = v.map(|c| (c.powf(2.4) * k).powf(1.0 / 2.4).clamp(0.0, 1.0));
+        }
+        let l = f32::midpoint(v[0].max(v[1]).max(v[2]), v[0].min(v[1]).min(v[2]));
+        let (a, b, k) = (4.0, 0.333, 0.7);
+        let ws = ((b - l) * a + 0.5).clamp(0.0, 1.0) * k;
+        let wm =
+            ((l - b) * a + 0.5).clamp(0.0, 1.0) * ((1.0 - l - b) * a + 0.5).clamp(0.0, 1.0) * k;
+        let wh = ((l + b - 1.0) * a + 0.5).clamp(0.0, 1.0) * k;
+        let (w, t) = (self.warmth, self.tint);
+        let shift = [
+            (ws * 0.4 + wm + wh * 0.6) * w,
+            -wm * t,
+            -(ws * 0.4 + wm + wh * 0.6) * w,
+        ];
+        let y = std::array::from_fn::<f32, 3, _>(|c| {
+            let x = (v[c] + shift[c])
+                .clamp(0.0, 1.0)
+                .powf(1.0 / self.gamma.max(0.01));
+            let x = x - self.contrast / PI * 0.5 * (2.0 * PI * x).sin();
+            (self.lift + (self.gain - self.lift) * x).clamp(0.0, 1.0)
+        });
+        let luma = 0.2126 * y[0] + 0.7152 * y[1] + 0.0722 * y[2];
+        y.map(|c| (luma + (c - luma) * self.saturation).clamp(0.0, 1.0))
+    }
 }
 
 /// The prototype's post-LUT chain as one `PREOUTPUT` hook (gamma-encoded RGB after the LUT),
@@ -271,6 +303,33 @@ vec4 hook() {
 
 #[cfg(test)]
 mod tests {
+    use super::LookParams;
+
+    #[test]
+    fn look_on_the_cpu() {
+        let id = LookParams::default();
+        for v in [[0.0, 0.5, 1.0], [0.2, 0.3, 0.9]] {
+            let o = id.apply(v);
+            assert!((0..3).all(|c| (o[c] - v[c]).abs() < 1e-6), "{o:?}");
+        }
+        // +1 stop doubles display-linear light.
+        let up = LookParams {
+            exposure: 1.0,
+            ..id
+        }
+        .apply([0.4; 3]);
+        assert!((up[0].powf(2.4) - 2.0 * 0.4f32.powf(2.4)).abs() < 1e-5);
+        // Warmth pushes red up and blue down; saturation 0 is grey.
+        let warm = LookParams { warmth: 0.1, ..id }.apply([0.5; 3]);
+        assert!(warm[0] > 0.5 && warm[2] < 0.5);
+        let grey = LookParams {
+            saturation: 0.0,
+            ..id
+        }
+        .apply([0.8, 0.2, 0.1]);
+        assert!((grey[0] - grey[2]).abs() < 1e-6);
+    }
+
     #[test]
     fn unsharp_hook() {
         assert!(super::unsharp(0.0).is_none());

@@ -10,7 +10,7 @@ the decoded picture, or libplacebo's own tone and gamut mapping from the stream'
 
 | profile | picked when | colour-in |
 |---|---|---|
-| `dlog` | 10-bit, SDR-tagged, `encoder` starts with `DJI` (Osmo Pocket 4) | DJI's Pocket 4 D-Log -> Rec.709 V2.0 LUT; without it the analytic D-Log / D-Gamut transform |
+| `dlog` | 10-bit, SDR-tagged, `encoder` starts with `DJI` (Osmo Pocket 4: its only log mode is D-Log / D-Gamut, no D-Log M or HLG) | DJI's Pocket 4 D-Log -> Rec.709 V2.0 LUT; without it the analytic D-Log / D-Gamut transform |
 | `dlog-vivid` | override only | DJI's vivid V2.0 LUT (vendor file only) |
 | `dlogm`, `dlogm-vivid` | the same on an Osmo Pocket 3 (`encoder` has `Pocket3`) | DJI's D-Log M LUTs (vendor file only: DJI publishes no D-Log M curve) |
 | `clog3` | BT.2020, untagged transfer, Canon file (`CAEP` brand); else override | analytic Canon Log 3 / Cinema Gamut |
@@ -35,9 +35,11 @@ the decoded picture, or libplacebo's own tone and gamut mapping from the stream'
 BMFF metadata, the same detection the ingest catalog records: DJI's colour mode from the `djmd`
 CAM meta protobuf (DJI tags bt709 for log and "normal" alike), Canon and Apple tags, `colr`. A
 medium or high confidence answer wins; otherwise the probe rules in the table (a 10-bit DJI clip
-counts as log). D-Log2 (Pocket 4P) has no camera profile yet and falls through to the probe rules.
-Canon C-Log 3 tagging is unconfirmed (no C-Log 3 sample clip; the R10 has no Canon Log at all,
-only HDR PQ).
+counts as log). Checked on 460 Osmo Pocket 4 clips: every one is `DJI OsmoPocket4`, 10-bit HEVC
+tagged bt709, CAM meta colour mode 2 (D-Log, 443 clips) or none (Normal, 17); no D-Log M or
+D-Log2. D-Log2 is the Pocket 4P's curve, not the Pocket 4's: the catalog names it
+(`dji-dlog2`), but there is no camera profile for it (see [Not yet](#not-yet)). Canon C-Log 3
+tagging is unconfirmed (no C-Log 3 sample clip; the R10 has no Canon Log at all, only HDR PQ).
 
 ## Vendor LUTs
 
@@ -52,8 +54,6 @@ Looked up in `$FFCINE_LUT_DIR` (`:`-separated), then `~/.local/share/ffcine/luts
 | Apple Log to Rec.709 | Apple developer downloads (Apple Log profile, licence restricts redistribution) | optional; else analytic |
 | Canon Cinema Gamut / C-Log 3 to BT.709 | Canon's LUT downloads (`CinemaGamut_CanonLog3-to-BT709_WideDR_65_FF_Ver.2.0.cube`) | optional; else analytic |
 
-Pocket 4P also has D-Log2 (DJI publishes `DJI OSMO Pocket 4P D-Log2 to Rec.709 V1.0 size65.cube`);
-not a profile yet.
 
 ## Analytic transforms
 
@@ -70,6 +70,62 @@ encode. That is render.py's `applelog_lut.py`, generalised.
 The analytic D-Log is a fallback: its shoulder is harder than DJI's (highlights brighter, e.g.
 linear 1.44 -> 0.88 vs DJI's 0.78) and blues a little more saturated; 31.7 dB Y against DJI's V2.0
 LUT on payday after the exposure match.
+
+Against DJI's Pocket 4 D-Log to Rec.709 V1.0 LUT (CIEDE2000 on the BT.1886 outputs, both sampled
+trilinearly):
+
+| sample | mean ΔE | median | p95 | max |
+|---|---|---|---|---|
+| pixels of 10 real Pocket 4 D-Log frames (329k) | 2.68 | 1.48 | 6.42 | 27.2 |
+| the neutral axis (33 greys) | 1.62 | 0.51 | 5.92 | 6.42 |
+| the whole 33^3 lattice (mostly codes a camera never writes) | 11.0 | 7.46 | 34.7 | 62.6 |
+
+Mid-tones agree (grey code 0.2 -> 0.105 in both, 0.4 -> 0.413 vs 0.403); the gaps are DJI's
+lifted toe (0.1 -> 0.041 vs 0.016) and softer shoulder (0.5 -> 0.590 vs 0.659), and the biggest
+errors are saturated highlights. Refitting the display curve to DJI's LUT only took the real-pixel
+mean to about 2.1, so the transform stays as published (DJI's curve and gamut, ffcine's display
+mapping), and DJI's LUT stays the default when it is installed.
+
+### HDR camera transforms
+
+With an HDR deliverable (below), log footage skips the Rec.709 LUT and goes straight to BT.2020 PQ
+(`Profile::camera_lut_hdr`): decode, gamut matrix to BT.2020, exposure, a display mapping that puts
+18 % grey at 26 cd/m² and diffuse white at 203 cd/m² (ITU-R BT.2408) with an exponential shoulder
+up to the mastering peak, then the ST 2084 inverse EOTF. The source is re-tagged BT.2020 PQ, so
+libplacebo only converts to the target (PQ as is, or PQ -> HLG). D-Log keeps its Rec.709 exposure
+relative to the others (0.53 / 0.8), so it sits where DJI's grade puts it. D-Log M has no HDR
+transform (no published curve; DJI's LUTs only reach Rec.709) and fails with `--hdr`.
+
+## LUT baker
+
+`ffcine::bake` (`crates/ffcine-render/src/bake.rs`) evaluates a camera LUT, a grade LUT and the
+look (`LookParams`: exposure, warmth, tint, contrast, gamma, lift, gain, saturation; the same maths
+as the `look` hook, `LookParams::apply`) over a lattice into one LUT, in the order the GPU pass runs
+them, sampling LUTs trilinearly as libplacebo does. No ffmpeg in the loop.
+
+- `ffcine bake [--camera PROFILE [--hdr-peak NITS]] [--lut FILE] [--exposure ...] [--size 65]
+  OUT.cube` writes it, for other tools or as one `--lut`.
+- The render merges a camera LUT and a normalized grade LUT into one source LUT
+  (`Grade::merge_luts`, at least 33^3), so the grade LUT now runs before the look hooks, as it does
+  without a camera LUT. The target-LUT split stays only for non-normalized grade LUTs.
+
+## HDR deliverables
+
+`ffcine grade --hdr pq` writes an HDR10 master: BT.2020 primaries and matrix, PQ, limited range,
+10-bit HEVC (`main10`, `p010le`), with SMPTE ST 2086 mastering display and CTA-861.3 content light
+metadata (`Grade::output_hdr`; default `HdrMetadata::P3_D65_1000`: P3-D65 display, 1000 cd/m²
+peak, 0.0001 black, MaxCLL 1000, MaxFALL 400; `--hdr-peak` changes the peak). `--hdr hlg` writes
+BT.2020 HLG without static metadata. 8-bit encodes are refused.
+
+- The metadata goes on every output frame (libplacebo reads the target's peak from it and tone-maps
+  anything brighter; encoders that write SEI per frame take it from there), on the encoder context
+  (libx265 and NVENC write the SEI from it) and on the stream (`mdcv` / `clli` in MP4 and MOV).
+- The source's own mastering, content light, HDR10+ and Dolby Vision side data is always dropped
+  from the output: it describes the source.
+- HDR sources (iPhone HLG + DV, Canon PQ) are converted to the target with the source peak kept up
+  to the mastering peak; log sources use the HDR camera transforms above; SDR sources land at
+  BT.2408 reference white (203 cd/m²).
+
 
 ## Tone and gamut mapping
 
@@ -98,6 +154,17 @@ SSIM / PSNR on yuv420p10le against a reference running render.py's colour-in cha
 | R10 prototype match | `MVI_2884.MP4` (H.264 8-bit 4:2:0 full range), 96 f | render.py CPU render | 0.9965 | 51.7 |
 | 10-bit 4:2:2 HEVC, `--decode vulkan` | synthetic 4K25 `testsrc2` (yuv422p10le, bt709 tv), 100 f | ffmpeg software decode | 0.9997 | 58.4 |
 | the same, `--decode cuda` | | | 0.9997 | 58.4 |
+
+`crates/ffcine/tests/color_gpu.rs` (`--ignored`, needs a GPU) repeats the colour paths on
+synthetic 10-bit 4:2:2 HEVC (smooth `gradients` squeezed into a log-like code range, lossless
+x265; run on 2026-11-02, software decode, as above):
+
+| check | result |
+|---|---|
+| C-Log 3 clip (BT.2020, untagged transfer, `CAEP` brand) | detected as `clog3`; analytic LUT on the GPU vs ffmpeg `lut3d` (trilinear), RGB 48.6 dB |
+| HDR10 PQ -> `--hdr pq`-style output | 65.4 dB against the source; BT.2020 PQ tags, our mastering display (1000 cd/m²) and MaxCLL in the output |
+| PQ -> SDR | tone-mapped, tagged BT.709 |
+| camera + grade LUT vs the baker's single LUT | 50.5 dB |
 
 There is no iPhone HLG shot in render.py's bench and its cached renders are stale, so the HLG
 reference is render.py's colour-in filter on its own. The look on top of it matches as payday does
@@ -128,11 +195,13 @@ time.
   matters for 60p / mixed-rate footage.
 - `MediaInfo.tags` (container metadata) is new, for profile detection.
 
-## Left
+## Not yet
 
-- A `dlog2` profile for the Pocket 4P (DJI publishes a 65^3 D-Log2 LUT).
-- A real R10 4:2:2 clip and a C-Log 3 clip, to confirm tags and decode; Canon HDR PQ goes through
-  the `hdr` path untested on real footage.
-- HDR deliverables (HLG passthrough)
-: lower priority, SDR Rec.709 is the deliverable.
-- The Rust LUT baker (camera LUT + look in one LUT) can drop the target-LUT split.
+- A D-Log2 profile. D-Log2 is the Osmo Pocket 4P's curve; the Pocket 4 records D-Log, which has a
+  profile. DJI has published no D-Log2 / D-Gamut2 white paper (only Rec.709 LUTs, with no
+  redistribution terms), so there is no curve to build an analytic transform from.
+- Real-footage checks of the R10 4:2:2, C-Log 3 and Canon PQ paths: no such clips were available
+  (the only R10 video is 8-bit H.264 4:2:0), so the synthetic fixtures above stand in.
+- HDR through the timeline renderer (`ffcine render`): it renders BT.709 SDR; `--hdr` is a
+  `grade` option for now. The render backend already composites layers on an HDR output in the
+  output's colour space and mastering peak ([assembly.md](assembly.md)).

@@ -23,6 +23,7 @@
 
 pub use ffcine_assembly as assembly;
 pub use ffcine_audio as audio;
+pub use ffcine_breakdown as breakdown;
 pub use ffcine_core::{ColorSpace, Error, Lut, LutType, MediaInfo, Rational, Result};
 pub use ffcine_core::{camera, color, geom, lut, probe};
 pub use ffcine_delivery as delivery;
@@ -33,21 +34,21 @@ pub use ffcine_import as import;
 pub use ffcine_ingest as ingest;
 pub use ffcine_reframe as reframe;
 pub use ffcine_render::{
-    Backend, BlendMode, Codec, ColorMapTuning, ColorOverride, Crop, Deband, Decode,
-    DeliveryProfile, Device, Dither, DitherMethod, EncoderSettings, GamutMapping, Grade, Hook,
-    Image, Layer, LayerSource, LutStage, Mask, Overlay, OverlayPart, ParamTrack, Pipeline,
-    PixelFormat, RateControl, RunStats, Scaler, Scaling, Size, Stage, ToneMapping, Warp,
+    Backend, Bake, BlendMode, Codec, ColorMapTuning, ColorOverride, Crop, Deband, Decode,
+    DeliveryProfile, Device, Dither, DitherMethod, EncoderSettings, GamutMapping, Grade,
+    HdrMetadata, Hook, Image, Layer, LayerSource, LutStage, Mask, Overlay, OverlayPart, ParamTrack,
+    Pipeline, PixelFormat, RateControl, RunStats, Scaler, Scaling, Size, Stage, ToneMapping, Warp,
 };
 pub use ffcine_render::{
-    backend, blend, encode, grade, layer, overlay, pipeline, profile, shaders,
+    backend, bake, blend, encode, grade, layer, overlay, pipeline, profile, shaders,
 };
 pub use ffcine_stabilize as stabilize;
 pub use ffcine_text as text;
 pub use ffcine_timeline as timeline;
 pub use ffcine_triage as triage;
 
-/// Stabilizes a pipeline's shot in its grade pass: GPU detect over the pipeline's range (cached
-/// unless `cache` is false), smoothing and zoom per `params`, and the warps set on the first
+/// Stabilizes a pipeline's shot in its grade pass: camera motion over the pipeline's range from
+/// the source `motion` chooses (cached unless `cache` is false), smoothing and zoom per `params`, and the warps set on the first
 /// grade stage (one is added if there is none). The range's rate is the pipeline's output rate,
 /// else the source's (probed on `backend`); with no `frames` it runs to the end of the source.
 ///
@@ -58,8 +59,9 @@ pub fn stabilize_pipeline(
     backend: &dyn Backend,
     pipeline: &mut Pipeline,
     params: &stabilize::StabilizeParams,
+    motion: &stabilize::MotionOptions,
     cache: bool,
-) -> Result<(stabilize::Stabilization, bool)> {
+) -> Result<(stabilize::Stabilization, stabilize::MotionDetection)> {
     let start = pipeline.start.as_secs_f64();
     let (rate, frames) = match (pipeline.frame_rate, pipeline.frames) {
         (Some(r), Some(n)) => (r, n),
@@ -83,12 +85,8 @@ pub fn stabilize_pipeline(
         rate,
     };
     let detect = stabilize::DetectParams::default();
-    let (det, cached) = if cache {
-        stabilize::detect_cached(&pipeline.input, &range, &detect)?
-    } else {
-        (stabilize::detect(&pipeline.input, &range, &detect)?, false)
-    };
-    let st = stabilize::stabilize(&det, params);
+    let det = stabilize::detect_motion(&pipeline.input, &range, &detect, motion, cache)?;
+    let st = stabilize::stabilize(&det.detection, params);
     let warp = Some(Warp {
         transforms: st.transforms.clone(),
     });
@@ -103,5 +101,5 @@ pub fn stabilize_pipeline(
             }),
         );
     }
-    Ok((st, cached))
+    Ok((st, det))
 }

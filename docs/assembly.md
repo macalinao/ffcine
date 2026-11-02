@@ -67,7 +67,9 @@ is ever pruned, and old masters stay where they are.
      encoded values, `mix(b, B(b, s), alpha · opacity)`). The result and the text then go to
      the output frame. Layers under the first such one stay `pl_overlay`s;
    - on an HDR output (PQ or HLG) layers render in and composite in the output's colour space
-     (its primaries, PQ or HLG), all through the composite pass; stills are read as sRGB and
+     (its primaries, PQ or HLG, and the mastering display of `Grade::output_hdr` that the
+     output frames carry, so layers map to the same peak as the picture), all through the
+     composite pass; stills are read as sRGB and
      land at libplacebo's SDR reference white (`PL_COLOR_SDR_WHITE`, 203 nits per BT.2408),
      the level SDR footage and the text overlays get in the same master;
    - per-shot finishing (`ffcine.fx.vignette/1`, `darken/1`, `fade/1`, `flash/1`) is one
@@ -123,8 +125,9 @@ it covers:
   timeline's **grain**;
 - the **render profile** (size, aspect name, punch cap and the full encoder config), the ffcine
   version and `RENDER_REVISION`. Bump `RENDER_REVISION` whenever the render path changes its
-  output (4: per-clip filters and exposure; 5: overlay rotation, anchor, blend modes and HDR
-layers).
+  output (4: per-clip filters and exposure; 5: denoiser context across pieces, ramp pieces
+  seek; 6: overlay rotation, anchor, blend modes and HDR layers). A temporally denoised piece
+  also keys its context frames.
 
 Changing one filter re-renders that clip's segments (and a dissolve it is part of) only, and an
 unchanged timeline renders nothing (`plan::tests::filter_edits_rerender_only_their_clip`). A
@@ -160,10 +163,10 @@ does, with no CPU fallback:
 
 | Effect | In the render |
 |---|---|
-| `ffcine.fx.stabilize/1` | NVOF motion detect over the clip (cached on disk, shared by every piece of the clip and by `ffcine grade --stabilize`), smoothed, warped in the grade pass with the reframe window folded in. A retimed or ramped clip is analysed on its source frames, mapped to output frames through its speed or ramp. Split-screen panels and picture-in-picture clips are stabilized and reframed too, inside their panel or layer ([reframe.md](reframe.md#panels-and-overlays)); only the main picture is denoised. Freeze frames aren't stabilized |
-| `ffcine.fx.denoise/1` | temporal (NVOF or block motion) and spatial NLM denoise on the decoded planes ([denoise.md](denoise.md)). Without the effect the grade's `denoise` number `d` (edit.yaml) maps to temporal strength `d`, radius 2, NVOF, plus spatial `0.2 d` |
+| `ffcine.fx.stabilize/1` | NVOF motion detect over the clip (cached on disk, shared by every piece of the clip and by `ffcine grade --stabilize`), smoothed, warped in the grade pass with the reframe window folded in. Each piece decodes from its own first frame and indexes the clip's camera path by clip frame. A retimed or ramped clip is analysed on its source frames, mapped to output frames through its speed or ramp. Split-screen panels and picture-in-picture clips are stabilized and reframed too, inside their panel or layer ([reframe.md](reframe.md#panels-and-overlays)); only the main picture is denoised. Freeze frames aren't stabilized |
+| `ffcine.fx.denoise/1` | temporal (NVOF or block motion) and spatial NLM denoise on the decoded planes ([denoise.md](denoise.md)). Without the effect the grade's `denoise` number `d` (edit.yaml) maps to temporal strength `d`, radius 2, NVOF, plus spatial `0.2 d`. A piece of a clip decodes `radius` frames of the clip on each side as history and lookahead (`Pipeline::context`; none past the clip's ends), so cuts inside a clip don't show |
 | `ffcine.geo.reframe/1` | per-frame source windows (zoom, punch, push, pan, `crop_x`/`crop_y`, keyframes) evaluated over the whole clip, with the `profiles.<aspect>` override and the profile's punch cap |
-| `ffcine.time.ramp/1` | the ramp itself (`render.py`'s `ramp_setpts`), not the average speed: NVDEC, `setpts`, `fps`, this piece's frames, lossless NVENC |
+| `ffcine.time.ramp/1` | the ramp itself (`render.py`'s `ramp_setpts`), not the average speed: NVDEC, `setpts`, `fps`, this piece's frames, lossless NVENC. Source time is read from the clip's start on the source's clock (`-copyts`), so a piece seeks to just before its first source frame and gets the frames the whole clip has there |
 | `ffcine.color.grade/1` `exposure` | stops, a gain in display-linear light (2.4) ahead of the look hook |
 
 ## Aspects
@@ -262,9 +265,6 @@ exact rationals (`24000/1001`, `60000/1001`).
   `lut_strength`, the post-LUT look hook (exposure, warmth, tint, contrast, gamma, lift, gain,
   saturation), and sharpen. `rgb_gain` and `extra` are in the key but not applied yet (warned).
   Temporal blend (`ffcine.time.blend/1`) isn't applied yet.
-- A stabilized or ramped clip split into pieces (text cuts, dissolves) decodes its analysis
-  range or ramp from the clip start for each piece; a temporal denoiser starts each piece
-  without history.
 - **Audio**: the mix is held in RAM and written as a float WAV to `<cache>/tmp` before the AAC
   encode (about 350 MB per bus for 15 min). Stems aren't kept; `ffcine audio --stems` writes
   them.

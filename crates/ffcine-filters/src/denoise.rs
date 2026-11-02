@@ -24,6 +24,11 @@ use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
 
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's signature
+fn is_zero(v: &f32) -> bool {
+    *v == 0.0
+}
+
 /// Temporal (motion-compensated) part.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -36,6 +41,10 @@ pub struct Temporal {
     pub strength: f32,
     /// Chroma strength; `None` = `strength`.
     pub chroma: Option<f32>,
+    /// Point protection (luma): how far, in strengths, a warped neighbour may fall below a bright
+    /// centre pixel before it stops counting; 0 = off (`docs/denoise.md#point-protection`).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub protect: f32,
 }
 
 impl Default for Temporal {
@@ -43,8 +52,9 @@ impl Default for Temporal {
         Self {
             radius: 2,
             motion: Motion::default(),
-            strength: 4.0,
+            strength: 3.0,
             chroma: None,
+            protect: 0.0,
         }
     }
 }
@@ -67,6 +77,9 @@ pub struct Spatial {
     pub luma: f32,
     /// Chroma strength; 0 skips the chroma planes.
     pub chroma: f32,
+    /// Point protection (luma), as in [`Temporal::protect`].
+    #[serde(skip_serializing_if = "is_zero")]
+    pub protect: f32,
 }
 
 impl Default for Spatial {
@@ -75,6 +88,7 @@ impl Default for Spatial {
             radius: 2,
             luma: 2.0,
             chroma: 3.0,
+            protect: 0.0,
         }
     }
 }
@@ -106,12 +120,139 @@ impl Denoise {
     pub fn clamped(mut self) -> Self {
         if let Some(t) = &mut self.temporal {
             t.radius = t.radius.clamp(1, Temporal::MAX_RADIUS);
+            t.protect = t.protect.max(0.0);
         }
         if let Some(s) = &mut self.spatial {
             s.radius = s.radius.clamp(1, Spatial::MAX_RADIUS);
+            s.protect = s.protect.max(0.0);
         }
         self
     }
+}
+
+/// Parameters tuned for a kind of footage (`docs/denoise.md#presets`). Individual values override
+/// it: [`Overrides::resolve`], and the timeline's `preset` field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Preset {
+    /// Flat dark sky: a strong temporal pass with stars and point lights protected.
+    Night,
+    /// Bright, low noise, fine texture: gentle.
+    Snow,
+}
+
+impl Preset {
+    pub fn denoise(self) -> Denoise {
+        match self {
+            Self::Night => Denoise {
+                temporal: Some(Temporal {
+                    radius: 4,
+                    motion: Motion::Nvof,
+                    strength: 2.0,
+                    chroma: Some(3.0),
+                    protect: 2.0,
+                }),
+                spatial: Some(Spatial {
+                    radius: 2,
+                    luma: 1.0,
+                    chroma: 2.5,
+                    protect: 2.0,
+                }),
+            },
+            Self::Snow => Denoise {
+                temporal: Some(Temporal {
+                    radius: 2,
+                    motion: Motion::Nvof,
+                    strength: 1.5,
+                    chroma: None,
+                    protect: 0.0,
+                }),
+                spatial: None,
+            },
+        }
+    }
+}
+
+impl std::str::FromStr for Preset {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "night" => Ok(Self::Night),
+            "snow" => Ok(Self::Snow),
+            _ => Err(format!("unknown denoise preset {s:?} (night, snow)")),
+        }
+    }
+}
+
+/// Values set one by one (`ffcine grade` flags); what isn't set comes from the preset, or without
+/// one from the defaults, where both passes are off until asked for.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Overrides {
+    /// 0 turns the temporal pass off.
+    pub temporal_radius: Option<u32>,
+    pub temporal_motion: Option<Motion>,
+    pub temporal_strength: Option<f32>,
+    pub temporal_chroma: Option<f32>,
+    /// Spatial luma strength; 0 turns the spatial pass off unless `chroma` is set.
+    pub luma: Option<f32>,
+    pub chroma: Option<f32>,
+    pub spatial_radius: Option<u32>,
+    /// Both passes' [`Temporal::protect`].
+    pub protect: Option<f32>,
+}
+
+impl Overrides {
+    /// The stage for `preset` with these values on top, clamped.
+    #[must_use]
+    pub fn resolve(&self, preset: Option<Preset>) -> Denoise {
+        let base = preset.map_or_else(Denoise::default, Preset::denoise);
+        let t0 = base.temporal.unwrap_or_default();
+        let radius = self
+            .temporal_radius
+            .unwrap_or(base.temporal.map_or(0, |t| t.radius));
+        let temporal = (radius > 0).then_some(Temporal {
+            radius,
+            motion: self.temporal_motion.unwrap_or(t0.motion),
+            strength: self.temporal_strength.unwrap_or(t0.strength),
+            chroma: self.temporal_chroma.or(t0.chroma),
+            protect: self.protect.unwrap_or(t0.protect),
+        });
+        Denoise {
+            temporal,
+            spatial: spatial_over(
+                base.spatial,
+                self.luma,
+                self.chroma,
+                self.spatial_radius,
+                self.protect,
+            ),
+        }
+        .clamped()
+    }
+}
+
+/// `base` with spatial values on top. Without a base the luma strength decides and chroma defaults
+/// to 1.5x it; with one, luma 0 alone still means "spatial off".
+pub(crate) fn spatial_over(
+    base: Option<Spatial>,
+    luma: Option<f32>,
+    chroma: Option<f32>,
+    radius: Option<u32>,
+    protect: Option<f32>,
+) -> Option<Spatial> {
+    let d = Spatial::default();
+    let l = luma.or(base.map(|b| b.luma)).unwrap_or(0.0);
+    let c = chroma.unwrap_or(match (base, luma) {
+        (Some(_), Some(v)) if v <= 0.0 => 0.0,
+        (Some(b), _) => b.chroma,
+        (None, _) => 1.5 * l,
+    });
+    (l > 0.0 || c > 0.0).then_some(Spatial {
+        radius: radius.or(base.map(|b| b.radius)).unwrap_or(d.radius),
+        luma: l,
+        chroma: c,
+        protect: protect.or(base.map(|b| b.protect)).unwrap_or(d.protect),
+    })
 }
 
 /// Workgroup size of every kernel here.
@@ -351,14 +492,35 @@ pub struct Plane {
     pub sub: (u32, u32),
 }
 
+/// Point protection (`docs/denoise.md#point-protection`), GLSL: `pw`, the weight of a sample from
+/// how far it falls below the centre pixel `cen`. The 3x3 patch distance divides one pixel's
+/// difference by 9, so a point a few sigmas above a flat sky matches every empty patch; this looks
+/// at the pixel alone, and only down: bright points stay, dark outliers still average away.
+fn protect_glsl(h: f32, protect: f32, cen: &str, sample: &str) -> String {
+    let t = protect * h;
+    format!(
+        "float pw = exp(-max(pow(max({cen} - {sample}, 0.0), 2.0) - {t2:.6}, 0.0) / {h2:.6});",
+        t2 = t * t,
+        h2 = h * h,
+    )
+}
+
 /// Motion-compensated merge of `k` neighbours into the centre.
 ///
 /// Descriptors: `cur` (centre plane, nearest), `n0..n{k-1}` (neighbour planes, linear),
 /// `m0..m{k-1}` (their motion, linear), `dst` (storage, plane size).
-pub fn merge_kernel(k: usize, plane: Plane, norm: f32, strength: f32, block: u32) -> Compute {
+pub fn merge_kernel(
+    k: usize,
+    plane: Plane,
+    norm: f32,
+    strength: f32,
+    protect: f32,
+    block: u32,
+) -> Compute {
     let (ty, sw) = swizzle(plane.comps);
     let (sx, sy) = plane.sub;
     let h = strength.max(0.1);
+    let protected = protect > 0.0 && plane.comps == 1;
     // Block MAD between two frames of pure noise sigma h is ~1.13 h (luma, at the vector);
     // beyond that the match itself is doubtful.
     let mth = 1.5 * h + 1.0;
@@ -377,16 +539,19 @@ void ffc_merge(sampler2D n, sampler2D m, ivec2 p, vec2 sz, {ty} cp[9], inout {ty
     if (any(lessThan(q, vec2(0.5))) || any(greaterThan(q, sz - 0.5)))
         return;
     float d2 = 0.0;
+    float vmax = 0.0;
     {ty} c = {ty}(0.0);
     for (int i = 0; i < 9; i++) {{
         {ty} v = textureLod(n, (q + vec2(i % 3 - 1, i / 3 - 1)) / sz, 0.0).{sw};
         if (i == 4) c = v * FFC_K;
         {ty} d = v * FFC_K - cp[i];
         d2 += dot(d, d);
+{track}
     }}
     d2 /= {n9}.0;
     float w = exp(-max(d2 - 2.0 * FFC_H2, 0.0) / FFC_H2)
             * exp(-max(mv.z - FFC_MTH, 0.0) / FFC_MS);
+{prot}
     acc += w * c;
     wsum += w;
 }}
@@ -394,6 +559,23 @@ void ffc_merge(sampler2D n, sampler2D m, ivec2 p, vec2 sz, {ty} cp[9], inout {ty
         h2 = h * h,
         ms = 0.5 * h + 0.5,
         n9 = 9 * plane.comps,
+        track = if protected {
+            "        vmax = max(vmax, v * FFC_K);"
+        } else {
+            ""
+        },
+        prot = if protected {
+            // A point in this frame that the neighbour also has, within a pixel, and that the
+            // vector just misses: keep it out. A lone bright pixel in the centre (noise) has no
+            // such evidence in the neighbour and averages away as usual.
+            format!(
+                "    {}\n    w *= mix(1.0, pw, clamp((vmax - cp[4] + {t:.6}) / {h:.6} + 1.0, 0.0, 1.0));",
+                protect_glsl(h, protect, "cp[4]", "c"),
+                t = protect * h,
+            )
+        } else {
+            String::new()
+        },
     );
     let mut body = format!(
         r"
@@ -424,7 +606,7 @@ void ffc_merge(sampler2D n, sampler2D m, ivec2 p, vec2 sz, {ty} cp[9], inout {ty
 }
 
 /// NLM (3x3 patch, `(2 radius + 1)^2` search) from `src` (sampled) to `dst` (storage).
-pub fn spatial_kernel(radius: u32, comps: u32, norm: f32, strength: f32) -> Compute {
+pub fn spatial_kernel(radius: u32, comps: u32, norm: f32, strength: f32, protect: f32) -> Compute {
     let (ty, sw) = swizzle(comps);
     let halo = radius + 1;
     let t = GROUP + 2 * halo;
@@ -465,6 +647,7 @@ shared {ty} ffc_tile[FFC_T * FFC_T];
                     }}
                 d2 /= {n9}.0;
                 float w = exp(-max(d2 - 2.0 * FFC_H2, 0.0) / FFC_H2);
+                {prot}
                 acc += w * ffc_at(s);
                 wsum += w;
             }}
@@ -472,6 +655,14 @@ shared {ty} ffc_tile[FFC_T * FFC_T];
     }}
 ",
         n9 = 9 * comps,
+        prot = if protect > 0.0 && comps == 1 {
+            format!(
+                "{} w *= pw;",
+                protect_glsl(h, protect, "ffc_at(l)", "ffc_at(s)")
+            )
+        } else {
+            String::new()
+        },
         st = store(comps, "acc / (wsum * FFC_K)"),
     );
     let shmem = (t * t) as usize * 4 * comps as usize;
@@ -507,6 +698,7 @@ mod tests {
             },
             1.0,
             4.0,
+            0.0,
             BLOCK,
         );
         assert_eq!(c.body.matches("ffc_merge(").count(), 4);
@@ -515,8 +707,319 @@ mod tests {
     }
 
     #[test]
+    fn protect_only_when_asked() {
+        let plane = Plane {
+            comps: 1,
+            sub: (1, 1),
+        };
+        let off = merge_kernel(2, plane, 1.0, 3.0, 0.0, BLOCK);
+        assert!(!off.header.contains("pw"), "{}", off.header);
+        assert!(!spatial_kernel(2, 1, 1.0, 2.0, 0.0).body.contains("pw"));
+        // 3 strengths of 2: the threshold is (3 * 2)^2 = 36.
+        let want = "- 36.000000, 0.0) / 4.000000";
+        let c = merge_kernel(2, plane, 1.0, 2.0, 3.0, BLOCK);
+        assert!(c.header.contains(want), "{}", c.header);
+        let c = spatial_kernel(2, 1, 1.0, 2.0, 3.0);
+        assert!(c.body.contains(want), "{}", c.body);
+        // Chroma never: a point is a luma thing.
+        let chroma = Plane {
+            comps: 2,
+            sub: (2, 2),
+        };
+        assert!(
+            !merge_kernel(2, chroma, 1.0, 2.0, 3.0, BLOCK)
+                .header
+                .contains("pw")
+        );
+        assert!(!spatial_kernel(2, 2, 1.0, 2.0, 3.0).body.contains("pw"));
+    }
+
+    #[test]
+    fn protect_off_stays_out_of_plan_keys() {
+        // Render segments are keyed on the serialized params: no protection, same key as before.
+        let v = serde_json::to_value(Temporal::default()).unwrap();
+        assert!(v.get("protect").is_none());
+        let d: Temporal = serde_json::from_value(v).unwrap();
+        assert_eq!(d, Temporal::default());
+        let night = serde_json::to_value(Preset::Night.denoise()).unwrap();
+        assert!(night["temporal"].get("protect").is_some());
+    }
+
+    #[test]
+    fn presets_parse_and_stay_in_range() {
+        for (name, p) in [("night", Preset::Night), ("snow", Preset::Snow)] {
+            assert_eq!(name.parse::<Preset>().unwrap(), p);
+            let d = p.denoise();
+            assert_eq!(d.clamped(), d);
+            assert_eq!(Overrides::default().resolve(Some(p)), d);
+        }
+        assert!("aurora".parse::<Preset>().is_err());
+    }
+
+    #[test]
+    fn overrides_without_a_preset_keep_the_old_flags() {
+        assert!(Overrides::default().resolve(None).is_off());
+        let d = Overrides {
+            temporal_radius: Some(2),
+            luma: Some(2.0),
+            ..Overrides::default()
+        }
+        .resolve(None);
+        assert_eq!(d.temporal, Some(Temporal::default()));
+        let s = d.spatial.unwrap();
+        assert_eq!((s.radius, s.luma, s.chroma), (2, 2.0, 3.0));
+        // Only strengths given, no radius: still off, as before.
+        let d = Overrides {
+            temporal_strength: Some(9.0),
+            ..Overrides::default()
+        }
+        .resolve(None);
+        assert!(d.is_off());
+    }
+
+    #[test]
+    fn overrides_replace_preset_values_one_by_one() {
+        let night = Preset::Night.denoise();
+        let d = Overrides {
+            temporal_strength: Some(9.0),
+            protect: Some(-1.0),
+            ..Overrides::default()
+        }
+        .resolve(Some(Preset::Night));
+        let t = d.temporal.unwrap();
+        assert_eq!(t.radius, night.temporal.unwrap().radius);
+        assert_eq!((t.strength, t.protect), (9.0, 0.0));
+        assert_eq!(d.spatial.unwrap().luma, night.spatial.unwrap().luma);
+        // Luma 0 alone turns the spatial pass off; with a chroma strength it stays for chroma.
+        let off = Overrides {
+            luma: Some(0.0),
+            ..Overrides::default()
+        };
+        assert!(off.resolve(Some(Preset::Night)).spatial.is_none());
+        let chroma = Overrides {
+            chroma: Some(2.0),
+            ..off
+        };
+        let s = chroma.resolve(Some(Preset::Night)).spatial.unwrap();
+        assert_eq!((s.luma, s.chroma), (0.0, 2.0));
+    }
+
+    /// CPU references of the merge and the NLM, the weights of the generated GLSL: known zero
+    /// motion, no block confidence, one plane in 8-bit code values. Enough to see what the weights
+    /// do to a point.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss
+    )]
+    mod reference {
+        use super::*;
+
+        pub const N: usize = 96;
+        pub type Frame = Vec<f32>;
+
+        /// xorshift + Box-Muller, so the tests need no dependency and never change.
+        pub struct Noise(pub u64);
+
+        impl Noise {
+            fn uniform(&mut self) -> f32 {
+                self.0 ^= self.0 << 13;
+                self.0 ^= self.0 >> 7;
+                self.0 ^= self.0 << 17;
+                ((self.0 >> 40) as f32 + 1.0) / ((1u64 << 24) as f32 + 2.0)
+            }
+
+            pub fn gauss(&mut self) -> f32 {
+                let (a, b) = (self.uniform(), self.uniform());
+                (-2.0 * a.ln()).sqrt() * (std::f32::consts::TAU * b).cos()
+            }
+        }
+
+        /// `exp(-max(d2 - 2h^2, 0) / h^2)`.
+        fn patch_weight(d2: f32, h: f32) -> f32 {
+            (-(d2 - 2.0 * h * h).max(0.0) / (h * h)).exp()
+        }
+
+        /// `pw` of [`protect_glsl`].
+        fn protect_weight(centre: f32, sample: f32, h: f32, protect: f32) -> f32 {
+            let (t, d) = (protect * h, (centre - sample).max(0.0));
+            (-(d * d - t * t).max(0.0) / (h * h)).exp()
+        }
+
+        fn at(f: &[f32], x: i32, y: i32) -> f32 {
+            let c = |v: i32| v.clamp(0, N as i32 - 1) as usize;
+            f[c(y) * N + c(x)]
+        }
+
+        fn d2(a: &[f32], ax: i32, ay: i32, b: &[f32], bx: i32, by: i32) -> f32 {
+            let mut s = 0.0;
+            for j in -1..=1 {
+                for i in -1..=1 {
+                    let d = at(a, ax + i, ay + j) - at(b, bx + i, by + j);
+                    s += d * d;
+                }
+            }
+            s / 9.0
+        }
+
+        pub fn merge(frames: &[Frame], centre: usize, h: f32, protect: f32) -> Frame {
+            let cur = &frames[centre];
+            let mut out = vec![0.0; N * N];
+            for y in 0..N as i32 {
+                for x in 0..N as i32 {
+                    let c = at(cur, x, y);
+                    let (mut acc, mut wsum) = (c, 1.0);
+                    for (k, f) in frames.iter().enumerate() {
+                        if k != centre {
+                            let v = at(f, x, y);
+                            let mut w = patch_weight(d2(f, x, y, cur, x, y), h);
+                            if protect > 0.0 {
+                                let mut vmax = 0.0_f32;
+                                for j in -1..=1 {
+                                    for i in -1..=1 {
+                                        vmax = vmax.max(at(f, x + i, y + j));
+                                    }
+                                }
+                                let seen = ((vmax - c + protect * h) / h + 1.0).clamp(0.0, 1.0);
+                                let pw = protect_weight(c, v, h, protect);
+                                w *= 1.0 + (pw - 1.0) * seen;
+                            }
+                            acc += w * v;
+                            wsum += w;
+                        }
+                    }
+                    out[y as usize * N + x as usize] = acc / wsum;
+                }
+            }
+            out
+        }
+
+        pub fn nlm(f: &[f32], radius: i32, h: f32, protect: f32) -> Frame {
+            let mut out = vec![0.0; N * N];
+            for y in 0..N as i32 {
+                for x in 0..N as i32 {
+                    let (mut acc, mut wsum) = (0.0, 0.0);
+                    for sy in -radius..=radius {
+                        for sx in -radius..=radius {
+                            let v = at(f, x + sx, y + sy);
+                            let mut w = patch_weight(d2(f, x + sx, y + sy, f, x, y), h);
+                            if protect > 0.0 {
+                                w *= protect_weight(at(f, x, y), v, h, protect);
+                            }
+                            acc += w * v;
+                            wsum += w;
+                        }
+                    }
+                    out[y as usize * N + x as usize] = acc / wsum;
+                }
+            }
+            out
+        }
+
+        pub fn run(stage: Denoise, frames: &[Frame]) -> Frame {
+            let centre = frames.len() / 2;
+            let temporal = stage.temporal.unwrap();
+            let r = temporal.radius as usize;
+            let window = &frames[centre - r..=centre + r];
+            let merged = merge(window, r, temporal.strength, temporal.protect);
+            match stage.spatial {
+                Some(s) => nlm(&merged, s.radius as i32, s.luma, s.protect),
+                None => merged,
+            }
+        }
+
+        pub fn stars(amp: f32, sigma: f32) -> (Vec<Frame>, Vec<(i32, i32)>) {
+            let mut n = Noise(0x9E37_79B9_7F4A_7C15);
+            let points: Vec<_> = (0..25)
+                .map(|i| (9 + (i % 5) * 18, 9 + (i / 5) * 18))
+                .collect();
+            // The centre frame's points sit on `points`, other frames' a pixel off: the vectors
+            // of a flat sky never quite line them up.
+            let frames = (0..11)
+                .map(|k: i32| {
+                    let mut f: Frame = (0..N * N).map(|_| 42.0 + sigma * n.gauss()).collect();
+                    for &(x, y) in &points {
+                        f[y as usize * N + (x + (k + 1) % 2) as usize] += amp;
+                    }
+                    f
+                })
+                .collect();
+            (frames, points)
+        }
+
+        /// Mean height of the points above the sky around them.
+        pub fn peak(f: &[f32], points: &[(i32, i32)]) -> f32 {
+            let sum: f32 = points
+                .iter()
+                .map(|&(x, y)| at(f, x, y) - at(f, x + 7, y + 7))
+                .sum();
+            sum / points.len() as f32
+        }
+
+        /// Temporal-free sigma of the sky between the points.
+        pub fn sky_sigma(f: &[f32]) -> f32 {
+            let v: Vec<f32> = (0..N * N)
+                .filter(|i| !(6..13).contains(&(i % N % 18)) || !(6..13).contains(&(i / N % 18)))
+                .map(|i| f[i])
+                .collect();
+            let m = v.iter().sum::<f32>() / v.len() as f32;
+            (v.iter().map(|a| (a - m) * (a - m)).sum::<f32>() / v.len() as f32).sqrt()
+        }
+    }
+
+    #[test]
+    fn night_keeps_faint_stars_and_flattens_the_sky() {
+        use reference::*;
+        let night = Preset::Night.denoise();
+        let unprotected = Denoise {
+            temporal: night.temporal.map(|t| Temporal { protect: 0.0, ..t }),
+            spatial: night.spatial.map(|s| Spatial { protect: 0.0, ..s }),
+        };
+        let (amp, sigma) = (6.0, 0.7);
+        let (frames, points) = stars(amp, sigma);
+        let source = &frames[frames.len() / 2];
+        let (a, b) = (run(night, &frames), run(unprotected, &frames));
+        let (kept, lost) = (peak(&a, &points) / amp, peak(&b, &points) / amp);
+        assert!(kept > 0.9, "protected peak {kept}");
+        assert!(lost < 0.2, "unprotected peak {lost}");
+        // The sky still flattens, at least 3x.
+        let (before, after) = (sky_sigma(source), sky_sigma(&a));
+        assert!(after < before / 3.0, "sky {before} -> {after}");
+    }
+
+    #[test]
+    #[allow(clippy::cast_precision_loss)]
+    fn snow_keeps_fine_texture() {
+        use reference::*;
+        // Fine low-contrast texture, the same in every frame, under little noise.
+        let mut n = Noise(0x1234_5678_9ABC_DEF1);
+        let tex: Frame = (0..N * N).map(|_| 215.0 + 2.5 * n.gauss()).collect();
+        let frames: Vec<Frame> = (0..11)
+            .map(|_| tex.iter().map(|v| v + 0.8 * n.gauss()).collect())
+            .collect();
+        let hp = |f: &[f32]| {
+            let m = f.iter().sum::<f32>() / f.len() as f32;
+            (f.iter().map(|a| (a - m) * (a - m)).sum::<f32>() / f.len() as f32).sqrt()
+        };
+        let out = run(Preset::Snow.denoise(), &frames);
+        let kept = hp(&out) / hp(&tex);
+        assert!((0.9..1.1).contains(&kept), "texture energy {kept}");
+        let err = |f: &[f32]| {
+            let s: f32 = f.iter().zip(&tex).map(|(a, b)| (a - b) * (a - b)).sum();
+            (s / f.len() as f32).sqrt()
+        };
+        assert!(
+            err(&out) < 0.7 * err(&frames[5]),
+            "{} vs {}",
+            err(&out),
+            err(&frames[5])
+        );
+    }
+
+    #[test]
     fn spatial_shmem_fits() {
-        let c = spatial_kernel(Spatial::MAX_RADIUS, 2, 1.0, 2.0);
+        let c = spatial_kernel(Spatial::MAX_RADIUS, 2, 1.0, 2.0, 0.0);
         assert!(c.shmem <= 16 * 1024, "{}", c.shmem);
     }
 }

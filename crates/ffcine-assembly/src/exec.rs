@@ -128,6 +128,37 @@ fn secs(frames: i64, rate: f64) -> f64 {
     frames as f64 / rate
 }
 
+/// A ramped piece's retime: where to seek (source seconds after the clip's start), how much to
+/// read, and the filter giving output frames `from..from + n` of the whole clip.
+#[derive(Debug, Clone, PartialEq)]
+struct RampCut {
+    seek: f64,
+    duration: f64,
+    filter: String,
+}
+
+/// See [`RampCut`]. Source time is read on the source's own clock (`-copyts -start_at_zero`)
+/// from the clip's start, so a source frame lands on the same output time whichever piece
+/// decodes it, and `fps` numbers output frames from the clip's start: a piece seeks to just
+/// before its first source frame and gets the frames the whole clip would have there.
+#[allow(clippy::cast_precision_loss)]
+fn ramp_cut(ramp: &crate::plan::Ramp, clip_start: f64, from: i64, n: i64, rate: f64) -> RampCut {
+    let r = rational(rate);
+    // Half a second covers any source frame interval before the first one needed.
+    let seek = (ramp.source_time(secs(from, rate)) - 0.5).max(0.0);
+    RampCut {
+        seek,
+        duration: ramp.source_duration - seek + secs(2, rate),
+        filter: format!(
+            "{},fps={}/{},trim=start_pts={from}:end_pts={},setpts=PTS-STARTPTS",
+            ramp.setpts_of(&format!("(PTS*TB-{clip_start})")),
+            r.num,
+            r.den,
+            from + n
+        ),
+    }
+}
+
 impl Renderer<'_> {
     fn dir(&self, sub: &str) -> Result<PathBuf> {
         let d = self.cache.join(sub);
@@ -368,9 +399,12 @@ impl Renderer<'_> {
             })
             .transpose()
         };
+        // The denoiser's history and lookahead around the main picture's piece.
+        let mut ctx = (0, 0);
         let (base, start, mut grade) = match &seg.unit {
             Unit::Shot(s) => {
-                let (input, start) = self.input(plan, s, key, "shot", &mut temps)?;
+                ctx = s.context();
+                let (input, start) = self.input_ctx(plan, s, ctx, key, "shot", &mut temps)?;
                 let mut g = self.shot_grade(s, plan, size, None, Pic::Main)?;
                 g.grain = grain(Some(s))?;
                 (input, start, g)
@@ -385,7 +419,8 @@ impl Renderer<'_> {
                 let p = |i| comp::progress(i, n);
                 match *kind {
                     TransitionKind::Dissolve => {
-                        let (input, start) = self.input(plan, a, key, "a", &mut temps)?;
+                        ctx = a.context();
+                        let (input, start) = self.input_ctx(plan, a, ctx, key, "a", &mut temps)?;
                         let mut g = self.shot_grade(a, plan, size, None, Pic::Main)?;
                         g.grain = grain(Some(a))?;
                         let mut bg = self.shot_grade(b, plan, size, None, Pic::Main)?;
@@ -480,7 +515,8 @@ impl Renderer<'_> {
                                 Mix::Fade(k, colour)
                             }
                         };
-                        let (input, start) = self.input(plan, a, key, "a", &mut temps)?;
+                        ctx = a.context();
+                        let (input, start) = self.input_ctx(plan, a, ctx, key, "a", &mut temps)?;
                         let mut g = self.shot_grade(a, plan, size, Some(&mix(out_k)), Pic::Main)?;
                         g.grain = grain(Some(a))?;
                         let b2 = b.shifted(half, plan.rate);
@@ -549,6 +585,10 @@ impl Renderer<'_> {
         grade.size = Some(size);
         let pipe = self
             .pipeline(&base, out, start, frames, plan.rate)
+            .context(
+                u64::try_from(ctx.0).unwrap_or(0),
+                u64::try_from(ctx.1).unwrap_or(0),
+            )
             .grade(grade)
             .layers(layers)
             .overlays(overlays)
@@ -751,6 +791,21 @@ impl Renderer<'_> {
         tag: &str,
         temps: &mut Vec<PathBuf>,
     ) -> Result<(PathBuf, f64)> {
+        self.input_ctx(plan, s, (0, 0), key, tag, temps)
+    }
+
+    /// [`Renderer::input`] with `ctx` (before, after) frames of the clip around the piece for
+    /// the denoiser ([`Pipeline::context`]): a retimed intermediate holds them too.
+    #[allow(clippy::too_many_lines)]
+    fn input_ctx(
+        &self,
+        plan: &Plan,
+        s: &Shot,
+        ctx: (i64, i64),
+        key: &Key,
+        tag: &str,
+        temps: &mut Vec<PathBuf>,
+    ) -> Result<(PathBuf, f64)> {
         if (s.speed - 1.0).abs() < 1e-9 && s.filters.ramp.is_none() {
             return Ok((s.media.clone(), s.start));
         }
@@ -759,35 +814,34 @@ impl Renderer<'_> {
         let prep = self
             .dir("tmp")?
             .join(format!("{key}.{tag}.{}.retime.mkv", s.frames));
-        let n = s.frames.to_string();
+        let (before, after) = if s.speed.abs() < 1e-9 { (0, 0) } else { ctx };
+        let total = before + s.frames + after;
+        let n = total.to_string();
         let mut v = Vec::new();
         let filter = if let Some(ramp) = &s.filters.ramp {
-            // The whole clip through the ramp, then this piece's frames.
+            let from = s.clip_at.max(0);
+            let cut = ramp_cut(ramp, s.clip_start, from - before, total, plan.rate);
             v.extend(args(&[
                 "-hwaccel",
                 "cuda",
                 "-hwaccel_output_format",
                 "cuda",
+                "-copyts",
+                "-start_at_zero",
                 "-ss",
-                &s.clip_start.to_string(),
+                &(s.clip_start + cut.seek).to_string(),
                 "-t",
-                &(ramp.source_duration + secs(2, plan.rate)).to_string(),
+                &cut.duration.to_string(),
                 "-i",
             ]));
             v.push(s.media.clone().into());
-            let from = s.clip_at.max(0);
-            format!(
-                "{},fps={fr},trim=start_frame={from}:end_frame={},setpts=PTS-STARTPTS,\
-                 scale_cuda=format=p010le",
-                ramp.setpts(),
-                from + s.frames
-            )
+            format!("{},scale_cuda=format=p010le", cut.filter)
         } else if s.speed.abs() < 1e-9 {
             v.extend(args(&["-ss", &s.start.to_string(), "-i"]));
             v.push(s.media.clone().into());
             format!("trim=end_frame=1,loop=loop=-1:size=1:start=0,setpts=N/({fr})/TB,format=p010le")
         } else {
-            let src = secs(s.frames + 2, plan.rate) * s.speed;
+            let src = secs(before + s.frames + after + 2, plan.rate) * s.speed;
             // Frames stay in VRAM from NVDEC to the lossless NVENC intermediate: a timelapse
             // reads 20x its length of source.
             v.extend(args(&[
@@ -796,7 +850,7 @@ impl Renderer<'_> {
                 "-hwaccel_output_format",
                 "cuda",
                 "-ss",
-                &s.start.to_string(),
+                &s.shifted(-before, plan.rate).start.to_string(),
                 "-t",
                 &src.to_string(),
                 "-i",
@@ -822,7 +876,7 @@ impl Renderer<'_> {
         v.push(prep.clone().into());
         self.ffmpeg("retime", &v)?;
         temps.push(prep.clone());
-        Ok((prep, 0.0))
+        Ok((prep, secs(before, plan.rate)))
     }
 
     /// A shot's grade at `size`: the grader's (LUT, look, sharpen), its geometry as `pic`
@@ -1326,6 +1380,113 @@ fn read_manifest_key(path: &Path) -> Option<Key> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plan::Ramp;
+
+    fn ramp() -> Ramp {
+        Ramp {
+            points: vec![(0.0, 1.0), (0.5, 3.0), (1.0, 1.0)],
+            source_duration: 8.0,
+        }
+    }
+
+    #[test]
+    fn ramp_pieces_seek_to_their_own_source() {
+        let rate = 24000.0 / 1001.0;
+        let r = ramp();
+        let first = ramp_cut(&r, 2.5, 0, 30, rate);
+        assert!(first.seek.abs() < 1e-12);
+        assert!((first.duration - (8.0 + 2.0 / rate)).abs() < 1e-9);
+        assert!(first.filter.contains("(PTS*TB-2.5)"));
+        assert!(
+            first
+                .filter
+                .ends_with("fps=24000/1001,trim=start_pts=0:end_pts=30,setpts=PTS-STARTPTS")
+        );
+        let late = ramp_cut(&r, 2.5, 70, 30, rate);
+        let t = r.source_time(70.0 / rate);
+        assert!(late.seek > 1.0 && late.seek < t && t - late.seek <= 0.5 + 1e-9);
+        assert!((late.duration - (8.0 - late.seek + 2.0 / rate)).abs() < 1e-9);
+        assert!(late.filter.contains("trim=start_pts=70:end_pts=100,"));
+    }
+
+    fn ffmpeg(args: &[&str]) -> Vec<u8> {
+        let out = Command::new("ffmpeg")
+            .args(["-v", "error", "-y"])
+            .args(args)
+            .output()
+            .expect("ffmpeg on PATH");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out.stdout
+    }
+
+    /// Per-frame hashes of a ramped piece, the way `input` cuts it (on the CPU).
+    fn ramp_piece(src: &Path, from: i64, n: i64) -> Vec<String> {
+        let rate = 24000.0 / 1001.0;
+        let clip_start = 1.0;
+        let c = ramp_cut(&ramp(), clip_start, from, n, rate);
+        let out = ffmpeg(&[
+            "-copyts",
+            "-start_at_zero",
+            "-ss",
+            &(clip_start + c.seek).to_string(),
+            "-t",
+            &c.duration.to_string(),
+            "-i",
+            src.to_str().expect("utf-8"),
+            "-vf",
+            &c.filter,
+            "-frames:v",
+            &n.to_string(),
+            "-f",
+            "framemd5",
+            "-",
+        ]);
+        String::from_utf8_lossy(&out)
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .map(|l| l.rsplit(',').next().unwrap_or("").trim().to_owned())
+            .collect()
+    }
+
+    #[test]
+    #[ignore = "needs ffmpeg"]
+    fn ramp_pieces_match_the_whole_clip() {
+        let d = std::env::temp_dir().join(format!("ffcine-ramp-{}", std::process::id()));
+        std::fs::create_dir_all(&d).expect("temp dir");
+        let src = d.join("src.mp4");
+        ffmpeg(&[
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=160x90:rate=30000/1001",
+            "-t",
+            "10",
+            "-g",
+            "15",
+            "-c:v",
+            "libx264",
+            "-qp",
+            "0",
+            src.to_str().expect("utf-8"),
+        ]);
+        let whole = ramp_piece(&src, 0, 100);
+        assert_eq!(whole.len(), 100);
+        let distinct: std::collections::HashSet<_> = whole.iter().collect();
+        assert!(distinct.len() > 90, "the source's frames all differ");
+        for (from, n) in [(0, 17), (17, 40), (57, 3), (60, 40)] {
+            let piece = ramp_piece(&src, from, n);
+            let (a, b) = (
+                usize::try_from(from).unwrap(),
+                usize::try_from(from + n).unwrap(),
+            );
+            assert_eq!(piece, whole[a..b], "piece {from}+{n}");
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     #[test]
     fn rates() {
