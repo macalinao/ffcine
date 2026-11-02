@@ -1,6 +1,14 @@
 //! Layer compositing on the GPU (`cargo test -p ffcine --test layers_gpu -- --ignored`; needs a
 //! Vulkan GPU and `ffmpeg` on PATH, as in the dev shell): a video layer and a still image drawn
-//! over the main picture with opacity and rounded corners, read back as RGB.
+//! over the main picture with opacity and rounded corners; every blend mode against the CPU
+//! reference; turned layers; a still on a PQ output. Read back as RGB (or 10-bit luma).
+
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

@@ -55,6 +55,19 @@ is ever pruned, and old masters stay where they are.
      rectangle as a `pl_overlay`, under the text. Transition sides, split-screen panels (cover
      crop around `focus`, `push`, staggered slide-in, `radius`, over the `render.py` backdrop),
      picture-in-picture videos and PNG/JPEG stills are all layers, so there is no CPU blend;
+   - an overlay clip's `ffcine.geo.transform/1` places it: `translate`, `scale`, `rotate_deg`
+     (counter-clockwise on screen) and `anchor` (the pivot), in `units: picture` or `frame`,
+     picture point q at `A + R·S·(q − A) + T`, each keyframable. A turned layer, or one whose
+     `ffcine.comp.blend/1` `mode` isn't `normal`, is drawn by a composite pass instead of a
+     `pl_overlay`: the grade pass renders into an RGBA texture, and a shader (`pl_dispatch`)
+     reads that backdrop and the layer, maps the pixel back through the rotation (corners
+     outside the layer keep the backdrop, edges antialiased) and applies the mode
+     (`ffcine_render::blend`: every Resolve composite mode, W3C/Photoshop formulas on the
+     encoded values, `mix(b, B(b, s), alpha · opacity)`). The result and the text then go to
+     the output frame. Layers under the first such one stay `pl_overlay`s;
+   - on an HDR output (PQ or HLG) layers render in and composite in the output's colour space
+     (its primaries, PQ or HLG), all through the composite pass; stills are read as sRGB and
+     land at libplacebo's SDR reference white, 203 nits (BT.2408), as do the text overlays;
    - per-shot finishing (`ffcine.fx.vignette/1`, `darken/1`, `fade/1`, `flash/1`) is one
      `PREOUTPUT` hook after the look (`shaders::finish`), its fade and flash per frame from the
      piece's place in its clip; transitions fold their fades into it;
@@ -105,7 +118,8 @@ it covers:
   timeline's **grain**;
 - the **render profile** (size, aspect name, punch cap and the full encoder config), the ffcine
   version and `RENDER_REVISION`. Bump `RENDER_REVISION` whenever the render path changes its
-  output (4: per-clip filters and exposure).
+  output (4: per-clip filters and exposure; 5: overlay rotation, anchor, blend modes and HDR
+layers).
 
 Changing one filter re-renders that clip's segments (and a dissolve it is part of) only, and an
 unchanged timeline renders nothing (`plan::tests::filter_edits_rerender_only_their_clip`). A
@@ -215,11 +229,9 @@ exact rationals (`24000/1001`, `60000/1001`).
 
 ## Not done yet
 
-- Overlay `rotate_deg` and `anchor` aren't applied (warned); blend modes other than `normal`
-  render as `normal`. Overlay layers render at their largest size in the segment and are scaled
-  down by the compositor when they shrink.
-- Layers are composited in the output's BT.709 SDR space; HDR masters with layers aren't
-  handled yet.
+- Overlay layers render at their largest size in the segment and are scaled down by the
+  compositor when they shrink. `flip_x`/`flip_y` aren't applied; Resolve's key composite modes
+  (27-31) render as `normal`.
 - **Grade**: `ffcine render` builds each shot's GPU grade with the same code as
   `ffcine grade --clip` (`looks::grade_for`, passed in as `Renderer::grader`): LUT with
   `lut_strength`, the post-LUT look hook (exposure, warmth, tint, contrast, gamma, lift, gain,

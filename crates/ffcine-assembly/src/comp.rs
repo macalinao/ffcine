@@ -446,6 +446,7 @@ impl Placement {
 
     /// The unrotated rectangle of a `sw x sh` picture at source time `t` in a `w x h` frame;
     /// [`Self::rotation`] turns it about its middle.
+    #[allow(clippy::many_single_char_names)]
     pub fn rect(&self, t: f64, sw: f64, sh: f64, w: u32, h: u32) -> Rect {
         let (fw, fh) = (f64::from(w), f64::from(h));
         let fit = (fw / sw).min(fh / sh);

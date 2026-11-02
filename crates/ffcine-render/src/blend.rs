@@ -389,6 +389,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::many_single_char_names)]
     fn non_separable_modes() {
         let (b, s) = ([0.2, 0.4, 0.6], [0.9, 0.1, 0.1]);
         // Luminosity keeps the backdrop's hue and takes the layer's luma, and colour the reverse.
