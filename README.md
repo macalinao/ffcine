@@ -54,7 +54,7 @@ ffcine render --profile master -o master.mp4 timeline.otio
 |---|---|
 | `probe`, `doctor` | inspect a clip; check the GPU path |
 | `grade`, `batch`, `looks` | grade one shot, many shots on one warm pipeline, or compare looks |
-| `stabilize`, `jitter` | optical-flow stabilization; measure residual jitter |
+| `stabilize`, `jitter` | optical-flow or gyro stabilization; measure residual jitter |
 | `import`, `subs` | other editors' projects to an ffcine timeline; `.ass` subtitles as text clips |
 | `render`, `diff` | render a timeline to a master with a segment cache; what changed between renders |
 | `audio`, `sync` | the timeline's audio mix (R128, buses, ducking); line up recorder WAVs |

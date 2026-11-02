@@ -127,10 +127,15 @@ pub struct Telemetry {
     pub attitude: Vec<Attitude>,
     /// Focal length in source pixels, if the file states it.
     pub focal_px: Option<f64>,
-    /// `attitude` was integrated from raw gyro readings whose axes only come from the parser's
-    /// orientation convention, not checked against a camera. Not used by `auto`.
-    pub integrated: bool,
+    /// Why `auto` shouldn't use this even though it is readable; `--source gyro` still does.
+    pub auto_refusal: Option<&'static str>,
 }
+
+/// Why `auto` prefers flow on DJI's gimbal cameras: see docs/stabilize.md.
+pub const GIMBAL_REFUSAL: &str = "flow is steadier on this gimbal camera; --source gyro to force";
+/// Why `auto` doesn't use raw gyro: its axes only come from the parser's orientation convention,
+/// not checked against a camera, and a wrong sign would double the shake.
+pub const RAW_GYRO_REFUSAL: &str = "raw gyro axes aren't verified; --source gyro to force";
 
 /// Knobs of the gyro path.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -244,7 +249,7 @@ pub fn camera_focal(camera: &str, long_side: u32) -> Option<f64> {
 }
 
 /// Pinhole focal length over the frame's long side, default lens at 16:9.
-const POCKET4_FOCAL: f64 = 0.642;
+const POCKET4_FOCAL: f64 = 0.625;
 
 /// The motions of `range` as a [`Detection`] for a `width x height` source.
 pub fn detection(
@@ -478,7 +483,7 @@ mod tests {
             camera: None,
             attitude: integrate(&rates),
             focal_px: Some(2400.0),
-            integrated: true,
+            auto_refusal: None,
         };
         let range = SourceRange {
             frames: 75,
@@ -523,7 +528,7 @@ mod tests {
             camera: Some("Some Camera".into()),
             attitude: track(0.0, 2.0),
             focal_px: None,
-            integrated: false,
+            auto_refusal: None,
         };
         let size = (3840, 2160);
         let err = detection(&t, &RANGE, &GyroParams::default(), size).unwrap_err();

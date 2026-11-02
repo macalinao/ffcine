@@ -5,7 +5,7 @@
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use super::{DetectParams, Detection, GyroParams, Motion, SourceRange};
+use super::{DetectParams, Detection, Motion, MotionOptions, SourceRange};
 use ffcine_core::{Error, Result};
 
 /// Bump when detect's output for the same key changes (estimator, flow handling).
@@ -61,13 +61,15 @@ pub fn key(path: &Path, range: &SourceRange, params: &DetectParams) -> Result<St
     ))
 }
 
-/// The cache key of the same range's motions from the file's gyro.
-pub fn gyro_key(path: &Path, range: &SourceRange, params: &GyroParams) -> Result<String> {
+/// The cache key of the same range's motions from the file's gyro. The source choice is part of
+/// it: what `--source gyro` forces, `auto` may refuse, and mustn't find here.
+pub fn gyro_key(path: &Path, range: &SourceRange, options: &MotionOptions) -> Result<String> {
     Ok(format!(
-        "{}gyro {GYRO_VERSION} {:?} {}\n",
+        "{}gyro {GYRO_VERSION} {} {:?} {}\n",
         source_key(path, range)?,
-        params.focal_px,
-        params.offset_ms,
+        options.source,
+        options.gyro.focal_px,
+        options.gyro.offset_ms,
     ))
 }
 
@@ -202,10 +204,10 @@ pub fn detect_cached(
 pub fn gyro_cached(
     path: &Path,
     range: &SourceRange,
-    params: &GyroParams,
+    options: &MotionOptions,
     compute: impl FnOnce() -> Result<Detection, String>,
 ) -> Result<Result<(Detection, bool), String>> {
-    let key = gyro_key(path, range, params)?;
+    let key = gyro_key(path, range, options)?;
     if let Some(det) = read_entry(&key) {
         return Ok(Ok((det, true)));
     }
@@ -305,19 +307,27 @@ mod tests {
         };
         assert_ne!(k, key(&me, &r, &p2).unwrap());
         // The source is part of the key: gyro and flow entries never mix.
-        let g = GyroParams::default();
-        let gk = gyro_key(&me, &r, &g).unwrap();
+        let forced = MotionOptions {
+            source: crate::MotionSource::Gyro,
+            ..MotionOptions::default()
+        };
+        let gk = gyro_key(&me, &r, &forced).unwrap();
         assert_ne!(k, gk);
         assert!(gk.contains("gyro "));
-        let g2 = GyroParams {
-            focal_px: Some(2000.0),
-            ..g
-        };
-        assert_ne!(gk, gyro_key(&me, &r, &g2).unwrap());
-        let g3 = GyroParams {
-            offset_ms: 5.0,
-            ..g
-        };
-        assert_ne!(gk, gyro_key(&me, &r, &g3).unwrap());
+        let auto = MotionOptions::default();
+        assert_ne!(gk, gyro_key(&me, &r, &auto).unwrap());
+        for gyro in [
+            crate::GyroParams {
+                focal_px: Some(2000.0),
+                offset_ms: 0.0,
+            },
+            crate::GyroParams {
+                focal_px: None,
+                offset_ms: 5.0,
+            },
+        ] {
+            let o = MotionOptions { gyro, ..forced };
+            assert_ne!(gk, gyro_key(&me, &r, &o).unwrap());
+        }
     }
 }

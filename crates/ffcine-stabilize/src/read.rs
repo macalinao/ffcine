@@ -8,7 +8,7 @@ use ff::media::Type as Media;
 use ffmpeg_next as ff;
 
 use super::SourceRange;
-use super::gyro::{Attitude, Telemetry, dbgi};
+use super::gyro::{Attitude, GIMBAL_REFUSAL, Telemetry, dbgi};
 
 /// The video's size and the camera it names (the `encoder` tag on DJI files).
 struct Video {
@@ -29,11 +29,12 @@ fn dbgi_stream(ictx: &ff::format::context::Input) -> Option<usize> {
 
 /// The attitude samples of the range from DJI's `dbgi` track, demuxing nothing else, with the
 /// margin of a second either side. `None` if the file has no such track or its samples hold no
-/// attitude.
+/// attitude. `auto` won't use it, so unless `strict` the first attitude settles it.
 fn read_dbgi(
     ictx: &mut ff::format::context::Input,
     range: &SourceRange,
     camera: Option<String>,
+    strict: bool,
 ) -> Option<Telemetry> {
     let index = dbgi_stream(ictx)?;
     let n = ictx.nb_streams() as usize;
@@ -73,12 +74,15 @@ fn read_dbgi(
             t,
             q: dbgi::sample_attitude(packet.data()?)?,
         });
+        if !strict {
+            break;
+        }
     }
     (!attitude.is_empty()).then_some(Telemetry {
         camera,
         attitude,
         focal_px: None,
-        integrated: false,
+        auto_refusal: Some(GIMBAL_REFUSAL),
     })
 }
 
@@ -92,12 +96,17 @@ fn video(ictx: &ff::format::context::Input) -> Option<Video> {
     })
 }
 
-/// The file's telemetry for `range` and its video's size, or why there is none.
-pub fn read(path: &Path, range: &SourceRange) -> Result<(Telemetry, (u32, u32)), String> {
+/// The file's telemetry for `range` and its video's size, or why there is none. Unless `strict`
+/// (`--source gyro`) it may stop as soon as [`Telemetry::auto_refusal`] is known.
+pub fn read(
+    path: &Path,
+    range: &SourceRange,
+    strict: bool,
+) -> Result<(Telemetry, (u32, u32)), String> {
     ff::init().map_err(|e| e.to_string())?;
     let mut ictx = ff::format::input(path).map_err(|e| e.to_string())?;
     let Video { size, camera } = video(&ictx).ok_or("no video stream")?;
-    if let Some(t) = read_dbgi(&mut ictx, range, camera) {
+    if let Some(t) = read_dbgi(&mut ictx, range, camera, strict) {
         return Ok((t, size));
     }
     #[cfg(feature = "telemetry")]

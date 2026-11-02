@@ -113,7 +113,7 @@ named_enum!(
     /// Where a stabilizer's camera motion comes from.
     #[derive(Default)]
     MotionSource {
-        /// Gyro if the file has usable telemetry, else optical flow.
+        /// Gyro if the file has telemetry `auto` trusts, else optical flow.
         #[default]
         Auto = "auto",
         /// The file's gyro or attitude telemetry; an error if it has none.
@@ -143,8 +143,8 @@ pub struct MotionDetection {
 }
 
 /// The camera motion of `range` from the source `options` chooses, through the cache if `cache`.
-/// With [`MotionSource::Auto`], a file with no usable telemetry goes to optical flow and says why
-/// in [`MotionDetection::fallback`].
+/// With [`MotionSource::Auto`], a file with no telemetry it trusts goes to optical flow and says
+/// why in [`MotionDetection::fallback`].
 #[cfg(feature = "nvof")]
 pub fn detect_motion(
     path: &std::path::Path,
@@ -171,14 +171,14 @@ pub fn detect_motion(
     }
     let strict = options.source == MotionSource::Gyro;
     let gyro = || -> Result<Detection, String> {
-        let (telemetry, size) = read::read(path, range)?;
-        if telemetry.integrated && !strict {
-            return Err("raw gyro axes aren't verified for this camera".into());
+        let (telemetry, size) = read::read(path, range, strict)?;
+        if let Some(why) = telemetry.auto_refusal.filter(|_| !strict) {
+            return Err(why.into());
         }
         gyro::detection(&telemetry, range, &options.gyro, size)
     };
     let got = if cache {
-        cache::gyro_cached(path, range, &options.gyro, gyro)?
+        cache::gyro_cached(path, range, options, gyro)?
     } else {
         gyro().map(|d| (d, false))
     };
@@ -380,6 +380,34 @@ mod tests {
         assert!(after.ty < before.ty * 0.1, "{before:?} -> {after:?}");
         assert!(after.angle < before.angle * 0.1, "{before:?} -> {after:?}");
         assert_eq!(jitter(&det.motions, 5.0, &[50]).pairs, 118);
+    }
+
+    #[cfg(feature = "nvof")]
+    #[test]
+    fn no_gyro_is_an_error_only_when_asked_for() {
+        let dir = std::env::temp_dir().join(format!("ffcine-motion-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("not-a-video.mp4");
+        std::fs::write(&f, b"not a video").unwrap();
+        let range = SourceRange {
+            start: 0.0,
+            frames: 2,
+            rate: Rational { num: 25, den: 1 },
+        };
+        let run = |source| {
+            let options = MotionOptions {
+                source,
+                ..MotionOptions::default()
+            };
+            detect_motion(&f, &range, &DetectParams::default(), &options, false)
+                .unwrap_err()
+                .to_string()
+        };
+        // Asked for gyro: the gyro path's error. Auto: on to flow, which fails on this file itself.
+        assert!(run(MotionSource::Gyro).contains("gyro: "));
+        assert!(!run(MotionSource::Auto).contains("gyro: "));
+        assert!(!run(MotionSource::Flow).contains("gyro: "));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

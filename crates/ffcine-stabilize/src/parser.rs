@@ -9,7 +9,7 @@ use telemetry_parser::Input;
 use telemetry_parser::tags_impl::{GroupId, TagId, TagValue};
 use telemetry_parser::util;
 
-use super::gyro::{Attitude, Quat, Rate, Telemetry, integrate};
+use super::gyro::{Attitude, Quat, RAW_GYRO_REFUSAL, Rate, Telemetry, integrate};
 
 /// telemetry-parser's camera axes (Gyroflow's: `x` right, `y` up, `z` back) to image axes: a half
 /// turn about `x`.
@@ -84,7 +84,7 @@ pub fn read(path: &Path) -> Result<Telemetry, String> {
                 camera,
                 attitude,
                 focal_px,
-                integrated: false,
+                auto_refusal: None,
             });
         }
         let rates = rates(&input);
@@ -98,7 +98,7 @@ pub fn read(path: &Path) -> Result<Telemetry, String> {
             camera,
             attitude: integrate(&rates),
             focal_px,
-            integrated: true,
+            auto_refusal: Some(RAW_GYRO_REFUSAL),
         })
     };
     catch_unwind(AssertUnwindSafe(parse))

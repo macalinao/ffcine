@@ -291,7 +291,7 @@ pub(crate) struct StabilizeArgs {
     /// Gaussian smoothing half-window in frames (vidstab smoothing).
     #[bpaf(argument("FRAMES"), fallback(20), display_fallback)]
     smoothing: u32,
-    /// Camera motion from: auto (gyro if the file has it, else flow), gyro or flow.
+    /// Camera motion from: auto (gyro where it is trusted, else flow), gyro or flow.
     #[bpaf(argument("SOURCE"), fallback(MotionSource::Auto), display_fallback)]
     source: MotionSource,
     /// Gyro: focal length in source pixels, instead of the file's or the camera's.
@@ -351,10 +351,10 @@ pub(crate) struct JitterArgs {
     input: PathBuf,
 }
 
-/// `auto` found no usable gyro: say why, once the choice is made.
+/// `auto` went to optical flow: say why.
 fn print_fallback(found: &stabilize::MotionDetection) {
     if let Some(why) = &found.fallback {
-        eprintln!("stabilize: no gyro ({why}), using optical flow");
+        eprintln!("stabilize: optical flow, not gyro: {why}");
     }
 }
 
@@ -531,7 +531,7 @@ pub(crate) struct GradeArgs {
     /// auto zoom, warp before the crop.
     #[bpaf(long("stabilize"), long("stabilise"))]
     stabilize: bool,
-    /// --stabilize camera motion from: auto (gyro if the file has it, else flow), gyro or flow.
+    /// --stabilize camera motion from: auto (gyro where it is trusted, else flow), gyro or flow.
     #[bpaf(argument("SOURCE"), fallback(MotionSource::Auto), display_fallback)]
     stab_source: MotionSource,
     /// --stabilize gyro: focal length in source pixels, instead of the file's or the camera's.
