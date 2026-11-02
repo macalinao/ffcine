@@ -86,6 +86,7 @@ fn pieces_with_context_match_the_whole_clip() {
                         motion: Motion::Blocks,
                         strength: 8.0,
                         chroma: None,
+                        protect: 0.0,
                     }),
                     spatial: None,
                 }),
