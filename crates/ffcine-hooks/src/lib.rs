@@ -204,7 +204,7 @@ fn role(h: &Hook) -> u8 {
     }
 }
 
-/// Sorts hooks by their first stage ([`parse::STAGES`]), then [`role`]; stable otherwise.
+/// Sorts hooks by their first stage ([`parse::STAGES`]), then by role; stable otherwise.
 /// libplacebo runs each hook at its own stage regardless, so this only decides the order of
 /// hooks sharing a stage, and makes the array read in pipeline order.
 pub fn order(hooks: &mut [Hook]) {
