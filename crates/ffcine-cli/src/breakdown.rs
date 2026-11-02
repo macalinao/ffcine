@@ -7,27 +7,6 @@ use bpaf::Bpaf;
 use ffcine::breakdown::{self, Options};
 use ffcine::triage::transcribe::WhisperParams;
 
-/// The long `--help` footer: outputs and examples.
-pub const FOOTER: &str = concat!(
-    "\n\nWrites, in DIR:",
-    "\n",
-    "\n      breakdown.json      every shot: in/out, frames, keyframes, motion, colour, beat, speech, text",
-    "\n      shotlist.md         # | Time | Dur | Motion | Notes | Keyframe (♪: cut on the beat)",
-    "\n      contact-sheet.jpg   the keyframes in a grid, numbered, with each shot's length",
-    "\n      keyframes/NNN.jpg   each shot's sharpest middle frame; NNN-first.jpg, NNN-last.jpg",
-    "\n\nExamples:",
-    "\n",
-    "\n      ffcine breakdown reel.mp4",
-    "\n      ffcine breakdown -o /tmp/ref --no-transcribe trailer.mkv",
-    "\n      # Fast cutting: allow shots down to 3 frames, a lower cut threshold",
-    "\n      ffcine breakdown --min-shot 0.1 --threshold 0.22 reel.mp4",
-    "\n      # Download first (ffcine reads local files only)",
-    "\n      yt-dlp -o ref.mp4 URL && ffcine breakdown ref.mp4",
-    "\n\nDocs:",
-    "\n",
-    "\n      https://github.com/macalinao/ffcine/blob/master/docs/breakdown.md",
-);
-
 #[derive(Debug, Clone, Bpaf)]
 #[allow(clippy::struct_excessive_bools)] // flags
 pub struct BreakdownArgs {
