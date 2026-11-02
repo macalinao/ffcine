@@ -725,6 +725,7 @@ impl GradeArgs {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)] // one flag-to-field mapping
     fn into_pipeline(mut self) -> anyhow::Result<Pipeline> {
         let lut = self
             .lut
@@ -736,18 +737,7 @@ impl GradeArgs {
                 })
             })
             .transpose()?;
-        let mut shaders = Vec::new();
-        let mut named = Vec::new();
-        for s in std::mem::take(&mut self.shader) {
-            match s
-                .to_str()
-                .filter(|_| !s.exists())
-                .and_then(ffcine::hooks::named)
-            {
-                Some(hook) => named.push(hook?),
-                None => shaders.push(s),
-            }
-        }
+        let (shaders, named) = split_shaders(std::mem::take(&mut self.shader))?;
         let mut grade = Grade {
             input_color: self.in_color.unwrap_or_default(),
             lut,
@@ -989,6 +979,24 @@ pub(crate) fn run(cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Triage(args) => args.run()?,
     }
     Ok(())
+}
+
+/// `--shader` values: files (used as written), and vendored or external shader names as hooks.
+/// A path that exists wins over a name.
+fn split_shaders(shaders: Vec<PathBuf>) -> anyhow::Result<(Vec<PathBuf>, Vec<ffcine::Hook>)> {
+    let mut files = Vec::new();
+    let mut named = Vec::new();
+    for s in shaders {
+        match s
+            .to_str()
+            .filter(|_| !s.exists())
+            .and_then(ffcine::hooks::named)
+        {
+            Some(hook) => named.push(hook?),
+            None => files.push(s),
+        }
+    }
+    Ok((files, named))
 }
 
 #[cfg(test)]

@@ -61,10 +61,24 @@ impl Backend for Ffmpeg {
 
     fn probe(&self, path: &Path) -> Result<MediaInfo> {
         let ictx = ff::format::input(path)?;
-        let streams = ictx
+        let mut streams = ictx
             .streams()
             .map(|s| stream_info(&s))
-            .collect::<Result<_>>()?;
+            .collect::<Result<Vec<_>>>()?;
+        // A tiled HEIF still: one video stream at the displayed size, not one per tile.
+        // SAFETY: an opened context with stream info.
+        if let Some(g) = unsafe { super::tiles::TileGrid::find(ictx.as_ptr()) } {
+            let first = g.tiles.first().and_then(|t| usize::try_from(t.0).ok());
+            streams.retain(|s| {
+                let i = std::os::raw::c_int::try_from(s.index).unwrap_or(-1);
+                !g.has_stream(i) || Some(s.index) == first
+            });
+            for s in streams.iter_mut().filter(|s| Some(s.index) == first) {
+                if let StreamKind::Video(v) = &mut s.kind {
+                    (v.width, v.height) = g.size();
+                }
+            }
+        }
         Ok(MediaInfo {
             path: path.to_owned(),
             format: ictx.format().name().to_owned(),
