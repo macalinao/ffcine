@@ -39,7 +39,9 @@ pub use ffcine_render::{
     Layer, LayerSource, LutStage, Mask, Overlay, OverlayPart, ParamTrack, Pipeline, PixelFormat,
     RateControl, RunStats, Scaler, Scaling, Size, Stage, ToneMapping, Warp,
 };
-pub use ffcine_render::{backend, bake, encode, grade, layer, overlay, pipeline, profile, shaders};
+pub use ffcine_render::{
+    backend, bake, encode, extra, grade, layer, overlay, pipeline, profile, shaders,
+};
 pub use ffcine_stabilize as stabilize;
 pub use ffcine_text as text;
 pub use ffcine_timeline as timeline;

@@ -123,6 +123,30 @@ impl Lut {
         out
     }
 
+    /// This LUT after a per-channel `gain` on its input, clamped to 0..1 (ffmpeg's
+    /// `colorchannelmixer rr:gg:bb` ahead of `lut3d`), resampled on the same lattice.
+    #[must_use]
+    pub fn with_input_gain(&self, gain: [f32; 3]) -> Self {
+        let id = Self::identity(self.size);
+        let data = id
+            .data
+            .iter()
+            .map(|p| {
+                let mut x = [0f32; 3];
+                for c in 0..3 {
+                    let v = self.domain_min[c] + p[c] * (self.domain_max[c] - self.domain_min[c]);
+                    x[c] = (v * gain[c]).clamp(0.0, 1.0);
+                }
+                self.sample(x)
+            })
+            .collect();
+        Self {
+            data,
+            path: None,
+            ..self.clone()
+        }
+    }
+
     /// The LUT as `.cube` text (`TITLE`, `LUT_3D_SIZE`, the domain if not 0..1, then entries).
     #[allow(clippy::float_cmp)] // exact defaults
     pub fn to_cube(&self) -> String {
@@ -236,6 +260,28 @@ mod tests {
             }
         );
         assert_eq!(lut.at(1, 0, 1), [1.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn input_gain() {
+        // On the identity a gain is the gain, clamped at 1 (exact at lattice points).
+        let g = Lut::identity(17).with_input_gain([2.0, 1.0, 0.5]);
+        assert_eq!(g.at(4, 4, 4), [0.5, 0.25, 0.125]);
+        assert_eq!(g.at(12, 0, 0), [1.0, 0.0, 0.0]);
+        assert_eq!(g.at(16, 16, 16), [1.0, 1.0, 0.5]);
+        // Through a LUT: the LUT read at the gained input.
+        let mut l = Lut::identity(9);
+        for v in &mut l.data {
+            *v = [v[0] * v[0], v[1], 1.0 - v[2]];
+        }
+        let lg = l.with_input_gain([0.5, 1.0, 1.0]);
+        let s = lg.at(8, 2, 8);
+        assert!((s[0] - l.sample([0.5, 0.0, 0.0])[0]).abs() < 1e-6, "{s:?}");
+        assert!((s[0] - 0.25).abs() < 1e-6);
+        assert!((s[1] - 0.25).abs() < 1e-6);
+        assert!(s[2].abs() < 1e-6);
+        // Unit gain is the LUT itself.
+        assert_eq!(l.with_input_gain([1.0; 3]).data, l.data);
     }
 
     #[test]

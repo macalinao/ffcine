@@ -94,8 +94,9 @@ project grade <- look <- source-kind rule <- the clip's override <- the variant'
 
 The grade is the LUT (mixed by `lut_strength`) plus one generated `PREOUTPUT` hook reproducing
 the prototype's post-LUT chain (`colorbalance` warmth/tint, `curves` contrast/gamma/lift/gain,
-saturation) with `//!PARAM`s, so all variants share one compiled shader. `exposure`, `rgb_gain`,
-`denoise` and `extra` are not applied yet (warned). Everything runs through one warm
+saturation) with `//!PARAM`s, so all variants share one compiled shader. `rgb_gain` is folded
+into the LUT and `extra` filters run as hooks after the look ([assembly.md](assembly.md)); `denoise`
+and unsupported `extra` filters are warned and skipped. Everything runs through one warm
 GPU pipeline (as `batch`), with JPEG encoding on worker threads while the GPU renders the next
 variant: 15 4K stills and 3 sheets take about 10 s. `ffcine still` uses the same grade.
 

@@ -197,7 +197,7 @@ pub const LOOKS: &str = concat!(
         "warmth, tint, contrast, gamma, lift, gain, saturation, lut_strength, sharpen.",
         "Each variant layers like a clip grade:",
         "project grade <- look <- source-kind rule <- the clip's override <- the variant's fields.",
-        "exposure, rgb_gain, denoise and extra are not applied yet (warned).",
+        "denoise is not applied yet, nor extra filters outside ffcine_render::extra (warned).",
     ),
     examples!(
         "# The cut against every project look, at two times",
