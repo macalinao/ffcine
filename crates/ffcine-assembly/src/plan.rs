@@ -1904,6 +1904,48 @@ mod tests {
     }
 
     #[test]
+    fn nle_geometry_is_read_and_keyed() {
+        let at = |fx: &[(usize, &str, Value)]| {
+            plan(
+                &timeline(filtered(fx), vec![]),
+                Path::new("/proj"),
+                &Profile::preview(),
+                &Fake,
+                None,
+            )
+            .unwrap()
+        };
+        let mut fx = base_fx();
+        fx.push((
+            2,
+            "ffcine.geo.transform/1",
+            json!({"units": "picture", "y": "down",
+                   "scale_x": [{"t": 0.0, "v": 1.0}, {"t": 1.0, "v": 0.5}]}),
+        ));
+        fx.push((2, "ffcine.geo.crop/1", json!({"left": 0.1})));
+        let p = at(&fx);
+        assert_eq!(changed(&at(&base_fx()), &p), ["c"]);
+        let Unit::Shot(c) = &p.segments[2].unit else {
+            panic!("shot")
+        };
+        assert!(c.filters.geo.transform.is_some() && c.filters.geo.crop.is_some());
+        // Animated: keyed by where the piece sits in its clip.
+        assert!(c.filters.whole_clip());
+        let mut bad = base_fx();
+        bad.push((2, "ffcine.geo.transform/1", json!({"units": "inches"})));
+        assert!(
+            plan(
+                &timeline(filtered(&bad), vec![]),
+                Path::new("/proj"),
+                &Profile::preview(),
+                &Fake,
+                None,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn stabilized_pieces_share_one_span_and_detect_inputs_are_keyed() {
         let p = plan_of(&timeline(filtered(&base_fx()), vec![]));
         let Unit::Shot(b) = p.segments[1].unit.clone() else {
