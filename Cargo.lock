@@ -580,6 +580,7 @@ version = "0.1.0"
 dependencies = [
  "ffcine-assembly",
  "ffcine-audio",
+ "ffcine-breakdown",
  "ffcine-core",
  "ffcine-delivery",
  "ffcine-filters",
@@ -627,6 +628,20 @@ dependencies = [
  "rustfft",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "ffcine-breakdown"
+version = "0.1.0"
+dependencies = [
+ "ffcine-audio",
+ "ffcine-text",
+ "ffcine-triage",
+ "ffmpeg-next",
+ "image",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

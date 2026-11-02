@@ -15,7 +15,12 @@ rust-version.workspace = true
 [features]
 default = ["ffmpeg", "placebo", "nvof"]
 # libav* demux/decode/encode/mux (probe, and the I/O half of `grade`).
-ffmpeg = ["ffcine-render/ffmpeg", "ffcine-triage/ffmpeg", "audio"]
+ffmpeg = [
+  "ffcine-render/ffmpeg",
+  "ffcine-triage/ffmpeg",
+  "ffcine-breakdown/ffmpeg",
+  "audio",
+]
 # Audio decode of any container and the libavfilter clean chain (libav* only, no GPU).
 audio = ["ffcine-audio/ffmpeg"]
 # libplacebo on Vulkan: the processing half of `grade`.
@@ -41,6 +46,7 @@ ffcine-delivery.workspace = true
 ffcine-reframe.workspace = true
 ffcine-hooks.workspace = true
 ffcine-triage.workspace = true
+ffcine-breakdown.workspace = true
 
 [lints]
 workspace = true

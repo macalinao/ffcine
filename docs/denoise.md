@@ -178,7 +178,10 @@ Frames never leave VRAM and the CPU never waits on the GPU (NVOF included, below
 
 The output is `r` frames behind the input; the render thread renders frame `c` once `c+r` is
 decoded and flushes the tail at the end of the shot (missing neighbours are skipped), so the
-encoder gets the same frames and timestamps.
+encoder gets the same frames and timestamps. A `Pipeline::context` of `(before, after)` frames
+decodes that many frames before the range and after it into the ring without rendering them,
+so a piece of a longer clip is denoised as it would be in the whole clip (`ffcine render` gives
+each piece `r` on each side, within its clip).
 
 ### Motion: NVOF (default) or Vulkan block matching
 

@@ -4,6 +4,8 @@
 #[cfg(feature = "audio")]
 mod audio;
 #[cfg(feature = "gpu")]
+mod breakdown;
+#[cfg(feature = "gpu")]
 mod gpu;
 mod help;
 mod publish;

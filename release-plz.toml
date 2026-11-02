@@ -14,6 +14,7 @@ changelog_include = [
   "ffcine",
   "ffcine-assembly",
   "ffcine-audio",
+  "ffcine-breakdown",
   "ffcine-core",
   "ffcine-delivery",
   "ffcine-filters",
