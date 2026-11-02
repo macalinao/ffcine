@@ -46,7 +46,7 @@ ffcine render --profile master -o master.mp4 timeline.otio
 
 `grade` defaults: bt.2390 tone mapping, perceptual gamut mapping, lanczos scaling in gamma light,
 10-bit HEVC NVENC (`p6`, `hq`, `qp=12`, `main10`, `p010le`, GOP 24). `--preview` switches to
-8-bit libx264.
+8-bit libx264; `--hdr pq` (or `hlg`) makes a BT.2020 HDR10 / HLG master instead.
 
 ## Commands
 
@@ -58,7 +58,7 @@ ffcine render --profile master -o master.mp4 timeline.otio
 | `import`, `subs` | other editors' projects to an ffcine timeline; `.ass` subtitles as text clips |
 | `render`, `diff` | render a timeline to a master with a segment cache; what changed between renders |
 | `audio`, `sync` | the timeline's audio mix (R128, buses, ducking); line up recorder WAVs |
-| `ingest`, `catalog`, `fetch-luts` | verified card offload; clip catalog with picture profiles; camera LUTs |
+| `ingest`, `catalog`, `fetch-luts`, `bake` | verified card offload; clip catalog with picture profiles; camera LUTs; camera LUT + LUT + look baked to one `.cube` |
 | `triage`, `search`, `snap` | index a card (strips, scene cuts, transcripts); find words; snap cuts to words |
 | `chapters`, `credits`, `still`, `publish` | YouTube chapters, music credits, stills, upload to Immich |
 
