@@ -5,9 +5,11 @@
 mod audio;
 #[cfg(feature = "gpu")]
 mod gpu;
+mod help;
 mod publish;
 mod triage;
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
@@ -63,7 +65,9 @@ enum Cmd {
     #[bpaf(command)]
     Search(#[bpaf(external(triage::search_args))] triage::SearchArgs),
     /// Move a proposed in/out onto word boundaries and silence.
-    #[bpaf(command)]
+    ///
+    /// Prints the snapped in and out in seconds and as timecode.
+    #[bpaf(command, footer(help::SNAP))]
     Snap(#[bpaf(external(triage::snap_args))] triage::SnapArgs),
     /// Line up recorder WAVs with the camera clips by their scratch audio.
     ///
@@ -386,8 +390,31 @@ fn gpu_doctor(_: &mut Vec<String>) {
     );
 }
 
+/// `args` with `--help` given twice, which makes bpaf print the full help (details, examples,
+/// formats); `-h` stays the brief one.
+fn long_help(args: impl IntoIterator<Item = OsString>) -> Vec<OsString> {
+    let mut out = Vec::new();
+    let mut positional = false;
+    for a in args {
+        let help = !positional && a == "--help";
+        positional |= a == "--";
+        out.push(a);
+        if help {
+            out.push("--help".into());
+        }
+    }
+    out
+}
+
 fn main() -> anyhow::Result<()> {
-    match cmd().run() {
+    let args = long_help(std::env::args_os().skip(1));
+    let cmd = cmd()
+        .run_inner(bpaf::Args::from(&args[..]).set_name("ffcine"))
+        .unwrap_or_else(|e| {
+            e.print_message(100);
+            std::process::exit(e.exit_code())
+        });
+    match cmd {
         #[cfg(feature = "gpu")]
         Cmd::Gpu(c) => gpu::run(c),
         Cmd::Ingest(a) => run_ingest(a),
