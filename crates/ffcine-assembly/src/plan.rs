@@ -105,7 +105,11 @@ impl Ramp {
     /// ffmpeg `setpts` expression mapping source time since the first frame to output time
     /// (`render.py` `ramp_setpts`).
     pub fn setpts(&self) -> String {
-        let x = "((PTS-STARTPTS)*TB)";
+        self.setpts_of("((PTS-STARTPTS)*TB)")
+    }
+
+    /// [`Ramp::setpts`] with the source time given by the expression `x`.
+    pub fn setpts_of(&self, x: &str) -> String {
         let mut expr: Option<String> = None;
         for (t0, t1, a, b, o0) in self.segments().into_iter().rev() {
             let m = (b - a) / (t1 - t0);
@@ -184,11 +188,13 @@ pub fn grade_denoise(d: f64) -> Option<Denoise> {
                 motion: Motion::Nvof,
                 strength: d,
                 chroma: None,
+                protect: 0.0,
             }),
             spatial: Some(Spatial {
                 radius: 2,
                 luma: 0.2 * d,
                 chroma: 0.3 * d,
+                protect: 0.0,
             }),
         }
         .clamped()
@@ -254,6 +260,23 @@ impl Shot {
         self
     }
 
+    /// Frames of the clip before and after this piece that a temporal denoiser reads as history
+    /// and lookahead: its radius on each side, fewer at the clip's ends.
+    pub fn context(&self) -> (i64, i64) {
+        let r = self
+            .filters
+            .denoise
+            .filter(|d| !d.is_off())
+            .map_or(0, |d| i64::from(d.radius()));
+        if r == 0 || self.speed.abs() < 1e-9 {
+            return (0, 0);
+        }
+        (
+            r.min(self.clip_at).max(0),
+            r.min(self.clip_frames - self.clip_at - self.frames).max(0),
+        )
+    }
+
     fn recipe(&self) -> Value {
         let mut v = json!({
             "media": self.fingerprint,
@@ -274,6 +297,10 @@ impl Shot {
         }
         if self.filters.stabilize.is_some() {
             v["span"] = json!([self.span.0, self.span.1]);
+        }
+        let ctx = self.context();
+        if ctx != (0, 0) {
+            v["context"] = json!([ctx.0, ctx.1]);
         }
         v
     }
@@ -2060,6 +2087,37 @@ mod tests {
             })
             .collect();
         assert_eq!(pieces, [(0, (0, 72)), (24, (0, 72)), (48, (0, 72))]);
+    }
+
+    #[test]
+    fn denoised_pieces_read_their_neighbours_inside_the_clip() {
+        let p = plan_of(&timeline(filtered(&base_fx()), vec![]));
+        let Unit::Shot(mut b) = p.segments[1].unit.clone() else {
+            panic!()
+        };
+        b.filters.denoise = grade_denoise(2.0);
+        let len = b.clip_frames;
+        assert_eq!(len, 72);
+        let units = split_at(vec![("b".to_owned(), len, Unit::Shot(b))], &[24], RATE);
+        let ctx: Vec<(i64, i64, (i64, i64))> = units
+            .iter()
+            .map(|u| match &u.2 {
+                Unit::Shot(s) => (s.clip_at, s.frames, s.context()),
+                _ => panic!(),
+            })
+            .collect();
+        assert_eq!(ctx, [(0, 24, (0, 2)), (24, 48, (2, 0))]);
+        for (at, n, (before, after)) in ctx {
+            assert!(at - before >= 0 && at + n + after <= len);
+        }
+        let Unit::Shot(s) = &units[1].2 else { panic!() };
+        assert_eq!(s.recipe()["context"], json!([2, 0]));
+        // A frame from either end: one frame of history, one of lookahead.
+        let inner = s.shifted(-23, RATE).with_frames(70);
+        assert_eq!((inner.clip_at, inner.context()), (1, (1, 1)));
+        let mut frozen = s.clone();
+        frozen.speed = 0.0;
+        assert_eq!(frozen.context(), (0, 0));
     }
 
     #[test]

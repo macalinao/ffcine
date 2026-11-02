@@ -35,6 +35,7 @@ ffcine-ingest = { path = "crates/ffcine-ingest", version = "0.1.0" }
 ffcine-text = { path = "crates/ffcine-text", version = "0.1.0" }
 ffcine-delivery = { path = "crates/ffcine-delivery", version = "0.1.0" }
 ffcine-triage = { path = "crates/ffcine-triage", version = "0.1.0", default-features = false }
+ffcine-breakdown = { path = "crates/ffcine-breakdown", version = "0.1.0", default-features = false }
 # Published as ffcine-libplacebo-sys (libplacebo-sys on crates.io is an unrelated 2019 crate).
 libplacebo-sys = { package = "ffcine-libplacebo-sys", path = "crates/libplacebo-sys", version = "0.1.0" }
 
@@ -78,6 +79,8 @@ hound = "3"
 rustfft = "6"
 # dlopen of the NVIDIA driver libraries (CUDA, optical flow) at run time.
 libloading = "0.8"
+# Camera gyro and attitude metadata (optional, `telemetry`). 0.2.6 is the last crates.io release.
+telemetry-parser = "0.2.6"
 
 # PNG decode and JPEG encode in `ffcine looks` are unusably slow unoptimised.
 [profile.dev.package.image]

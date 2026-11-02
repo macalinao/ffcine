@@ -147,7 +147,7 @@ Positions are always y down, offsets from the middle; angles counter-clockwise o
 | Schema | Parameters |
 |---|---|
 | `ffcine.color.grade/1` | `look` + any `GradeParams` field (the clip override) |
-| `ffcine.fx.denoise/1` | `luma`, `chroma` (spatial NLM strengths, 8-bit code values; chroma defaults to 1.5x luma), `low_light` (bigger NLM search), `temporal: {radius (1-5, 2), motion (`nvof` | `blocks`), strength (4), chroma}` (motion-compensated temporal denoise, [denoise.md](denoise.md)); read by `ffcine_filters::effect::denoise` |
+| `ffcine.fx.denoise/1` | `preset` (`night`, `snow`: starting values the other fields override one by one, [denoise.md](denoise.md#presets)), `luma`, `chroma` (spatial NLM strengths, 8-bit code values; chroma defaults to 1.5x luma), `low_light` (bigger NLM search), `protect` (spatial point protection), `temporal: {radius (1-5, 2), motion (`nvof` | `blocks`), strength (3), chroma, protect}` or `null` for off (motion-compensated temporal denoise, [denoise.md](denoise.md)); read by `ffcine_filters::effect::denoise` |
 | `ffcine.fx.grain/1` | `strength` (sigma at mid-grey, 8-bit code values, 3), `size` (cell size in output pixels, 1.5), `chroma` (0), `profiles {name: {fields}}` overriding them per render profile (`preview`, `master`); read by `ffcine_filters::effect::grain_for`. On a clip, or on the timeline's top-level stack (`tracks.effects`) for the whole picture after everything is composited |
 | `ffcine.fx.vignette/1` | `amount`: ffmpeg `vignette` angle = `amount`·π/2 (`render.py`) |
 | `ffcine.fx.darken/1` | `amount`: RGB multiplier (`colorchannelmixer rr=gg=bb=amount`) |
