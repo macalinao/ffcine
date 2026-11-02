@@ -1,4 +1,4 @@
-//! What a media file contains, as reported by a [`Backend`](crate::Backend).
+//! What a media file contains, as reported by a backend (`ffcine_render::Backend`).
 
 use std::collections::BTreeMap;
 use std::fmt;

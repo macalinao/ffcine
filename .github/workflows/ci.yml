@@ -34,6 +34,11 @@ jobs:
       - name: cargo clippy
         run: nix develop --command cargo clippy --workspace --all-targets -- -D warnings
 
+      - name: cargo doc
+        run: nix develop --command cargo doc --no-deps --workspace
+        env:
+          RUSTDOCFLAGS: -D warnings
+
       # No GPU on the runner: tests needing one skip themselves.
       - name: cargo test
         run: nix develop --command cargo test --workspace
