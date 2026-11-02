@@ -3,7 +3,7 @@
 //! arguments, comma-separated chains) and run as `PREOUTPUT` hooks in chain order, so nothing
 //! falls back to the CPU.
 //!
-//! Supported: `eq` (contrast, brightness, saturation, gamma, gamma_r/g/b, gamma_weight), `hue`
+//! Supported: `eq` (contrast, brightness, saturation, gamma, `gamma_r/g/b`, `gamma_weight`), `hue`
 //! (h, s, H, b), `colorbalance` (rs..bh, pl), `curves` (preset, master/red/green/blue/all point
 //! lists, natural spline), `unsharp` (luma and chroma sizes and amounts) and `vignette` (angle).
 //! `eq`, `hue` and `unsharp` work on BT.601 limited-range YUV code values, as ffmpeg's
@@ -316,7 +316,7 @@ fn hook(f: &Filter) -> Result<(Option<Hook>, Vec<String>), String> {
         "eq" => {
             let (gamma, gr, gg, gb) = (n(3, 1.0)?, n(4, 1.0)?, n(5, 1.0)?, n(6, 1.0)?);
             hook(
-                eq().to_owned(),
+                eq(),
                 vec![
                     ("contrast", n(0, 1.0)?),
                     ("brightness", n(1, 0.0)?),
@@ -335,7 +335,7 @@ fn hook(f: &Filter) -> Result<(Option<Hook>, Vec<String>), String> {
                 None => n(0, 0.0)?.to_radians(),
             };
             hook(
-                hue().to_owned(),
+                hue(),
                 vec![("hue", h), ("sat", n(1, 1.0)?), ("bright", n(3, 0.0)?)],
             )
         }
@@ -739,7 +739,11 @@ fn points(s: &str) -> Result<Vec<(f64, f64)>, String> {
 
 /// A natural cubic spline through `pts` sampled at `n` points over `0..=1`, flat outside the
 /// first and last point, clipped to `0..=1` (ffmpeg's `interp=natural`).
-#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::many_single_char_names
+)]
 fn spline(pts: &[(f64, f64)], n: usize) -> Vec<f32> {
     let k = pts.len();
     // Second derivatives, natural ends (Thomas algorithm).
@@ -786,7 +790,8 @@ fn spline(pts: &[(f64, f64)], n: usize) -> Vec<f32> {
 #[allow(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
+    clippy::cast_sign_loss,
+    clippy::many_single_char_names
 )]
 fn lerp_table(t: &[f32], x: f32) -> f32 {
     let p = x.clamp(0.0, 1.0) * (t.len() - 1) as f32;
@@ -857,7 +862,7 @@ mod tests {
         assert_eq!(f[0].get(EQ[1], Some(1)), Some("0.05"));
         assert_eq!(f[1].get(HUE[0], Some(0)), Some("30"));
         assert_eq!(f[2].name, "unsharp");
-        assert!(f[2].args.is_empty());
+        assert_eq!(f[2].args, []);
         // Quotes keep ':' and ',' inside a value; escapes too.
         let f = parse(r"curves=r='0/0 0.5/0.6 1/1':g=0/0\ 1/0.9,eq=gamma=1.1").unwrap();
         assert_eq!(f[0].get(CURVES[2], None), Some("0/0 0.5/0.6 1/1"));
@@ -948,6 +953,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::many_single_char_names)]
     fn curves_tables() {
         // Two points: a straight line.
         let t = spline(&[(0.0, 0.0), (1.0, 0.5)], 5);

@@ -137,27 +137,26 @@ fn blend_filter(n: u32, hist: i64, fr: &str) -> String {
     let pad = i64::from(n) - 1 - hist;
     let mut f = String::new();
     if pad > 0 {
-        f.push_str(&format!("tpad=start={pad}:start_mode=clone,"));
+        let _ = write!(f, "tpad=start={pad}:start_mode=clone,");
     }
-    f.push_str(&format!("settb=1/({fr}),setpts=N,hwupload,split={n}"));
+    let _ = write!(f, "settb=1/({fr}),setpts=N,hwupload,split={n}");
     for j in 0..n {
-        f.push_str(&format!("[b{j}]"));
+        let _ = write!(f, "[b{j}]");
     }
     f.push(';');
     for j in 1..n {
-        f.push_str(&format!(
-            "[b{j}]trim=start_frame={j},setpts=PTS-STARTPTS[t{j}];"
-        ));
+        let _ = write!(f, "[b{j}]trim=start_frame={j},setpts=PTS-STARTPTS[t{j}];");
     }
     let mut prev = "b0".to_owned();
     for j in 1..n {
-        f.push_str(&format!(
+        let _ = write!(
+            f,
             "[t{j}][{prev}]blend_vulkan=all_mode=normal:all_opacity={:.7}",
             1.0 / f64::from(j + 1)
-        ));
+        );
         if j + 1 < n {
             prev = format!("m{j}");
-            f.push_str(&format!("[{prev}];"));
+            let _ = write!(f, "[{prev}];");
         }
     }
     f.push_str(",hwupload=derive_device=cuda");
@@ -779,6 +778,7 @@ impl Renderer<'_> {
 
     /// A shot's source for the GPU pass: its media at its start, or, with a speed change, a
     /// freeze or a temporal blend, a lossless retimed intermediate (ffmpeg on NVDEC/NVENC) from 0.
+    #[allow(clippy::many_single_char_names)]
     fn input(
         &self,
         plan: &Plan,

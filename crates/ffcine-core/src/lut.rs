@@ -89,9 +89,9 @@ impl Lut {
     }
 
     /// Trilinear lookup at input `rgb` (clamped to the domain).
+    #[allow(clippy::many_single_char_names, clippy::cast_precision_loss)]
     pub fn sample(&self, rgb: [f32; 3]) -> [f32; 3] {
         let n = self.size - 1;
-        #[allow(clippy::cast_precision_loss)]
         let nf = n as f32;
         let mut i0 = [0usize; 3];
         let mut f = [0f32; 3];
