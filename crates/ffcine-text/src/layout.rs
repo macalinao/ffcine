@@ -19,6 +19,27 @@ use crate::style::{Align, TextStyle};
 pub struct Layer {
     pub mask: Arc<Mask>,
     pub parts: Vec<OverlayPart>,
+    pub role: Role,
+}
+
+/// What a [`Layer`] draws.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    /// A solid box behind the text (or a `rect` clip's rectangle): a 1x1 mask stretched.
+    Box,
+    Shadow,
+    Outline,
+    Fill,
+    Highlight,
+}
+
+/// A grapheme cluster of the laid-out text: `[x0, x1]` along its line, in text box px.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Glyph {
+    pub line: usize,
+    pub x: [f32; 2],
+    /// Whitespace (ends a word).
+    pub space: bool,
 }
 
 /// A laid-out text: its layers and the text box (top left, size) in output px.
@@ -27,6 +48,12 @@ pub struct Rendered {
     pub layers: Vec<Layer>,
     pub origin: [f32; 2],
     pub size: [f32; 2],
+    /// Margin around the text box in every mask (blur, outline), px.
+    pub pad: f32,
+    /// Top of each line in the text box, px, plus the box's bottom.
+    pub lines: Vec<f32>,
+    /// Clusters in reading order.
+    pub glyphs: Vec<Glyph>,
 }
 
 /// Font database, glyph cache and loaded font files. Building one scans the system fonts, so
@@ -233,6 +260,34 @@ impl Typesetter {
             .map(|r| r.line_top + r.line_height)
             .fold(0.0, f32::max)
             .ceil();
+        let mut lines = Vec::new();
+        let mut glyphs = Vec::new();
+        for (line, run) in buf.layout_runs().enumerate() {
+            lines.push(run.line_top);
+            let mut gs: Vec<Glyph> = Vec::new();
+            let mut last = None;
+            for g in run.glyphs {
+                let space = run
+                    .text
+                    .get(g.start..g.end)
+                    .is_some_and(|t| t.trim().is_empty());
+                match gs.last_mut() {
+                    // One cluster shaped into several glyphs.
+                    Some(c) if last == Some(g.start) => {
+                        c.x = [c.x[0].min(g.x), c.x[1].max(g.x + g.w)];
+                    }
+                    _ => gs.push(Glyph {
+                        line,
+                        x: [g.x, g.x + g.w],
+                        space,
+                    }),
+                }
+                last = Some(g.start);
+            }
+            gs.sort_by(|a, b| a.x[0].total_cmp(&b.x[0]));
+            glyphs.extend(gs);
+        }
+        lines.push(height);
 
         let outline = style.outline.as_ref().map_or(0.0, |o| o.width * scale);
         let blur = style.shadow.as_ref().map_or(0.0, |s| s.blur * scale);
@@ -273,8 +328,8 @@ impl Typesetter {
         let at = [origin[0] - pad as f32, origin[1] - pad as f32];
         let part = |pos: [f32; 2], colour: [f32; 4]| OverlayPart {
             pos,
-            size: None,
             colour,
+            ..OverlayPart::default()
         };
         let mut layers = Vec::new();
         if let Some(b) = &style.box_ {
@@ -285,7 +340,9 @@ impl Typesetter {
                     pos: [origin[0] - p, origin[1] - p],
                     size: Some([width + 2.0 * p, height + 2.0 * p]),
                     colour: b.colour,
+                    src: None,
                 }],
+                role: Role::Box,
             });
         }
         if let Some(s) = &style.shadow {
@@ -301,6 +358,7 @@ impl Typesetter {
                     [at[0] + s.offset[0] * scale, at[1] + s.offset[1] * scale],
                     s.colour,
                 )],
+                role: Role::Shadow,
             });
         }
         if let Some(o) = &style.outline {
@@ -310,22 +368,28 @@ impl Typesetter {
                     (o.width * scale).round() as usize,
                 )),
                 parts: vec![part(at, o.colour)],
+                role: Role::Outline,
             });
         }
         layers.push(Layer {
             mask: Arc::new(fill),
             parts: vec![part(at, style.colour)],
+            role: Role::Fill,
         });
         if let (Some(m), Some(c)) = (marked, style.highlight) {
             layers.push(Layer {
                 mask: Arc::new(m),
                 parts: vec![part(at, c)],
+                role: Role::Highlight,
             });
         }
         Ok(Some(Rendered {
             layers,
             origin,
             size: [width, height],
+            pad: pad as f32,
+            lines,
+            glyphs,
         }))
     }
 }

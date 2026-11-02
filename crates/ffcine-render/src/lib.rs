@@ -18,6 +18,6 @@ pub use grade::{
     LutStage, ParamTrack, Scaler, Scaling, Size, ToneMapping, Warp,
 };
 pub use layer::{Image, Layer, LayerSource};
-pub use overlay::{Mask, Overlay, OverlayPart};
+pub use overlay::{Mask, Motion, Overlay, OverlayPart};
 pub use pipeline::{Backend, Decode, Device, Pipeline, RunStats, Stage};
 pub use profile::DeliveryProfile;
