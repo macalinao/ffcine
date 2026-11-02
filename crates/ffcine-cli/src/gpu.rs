@@ -14,10 +14,9 @@ use ffcine::stabilize::{
     StabilizeParams, Zoom,
 };
 use ffcine::{
-    Backend as _, Codec, ColorMapTuning, ColorOverride, Crop, Deband, Decode, Denoise, Device,
-    Dither, DitherMethod, EncoderSettings, GamutMapping, Grade, Grain, Lut, LutStage, LutType,
-    Pipeline, PixelFormat, RateControl, Rational, Scaler, Scaling, Size, Spatial, Temporal,
-    ToneMapping, backend,
+    Backend as _, Codec, ColorMapTuning, ColorOverride, Crop, Deband, Decode, Device, Dither,
+    DitherMethod, EncoderSettings, GamutMapping, Grade, Grain, Lut, LutStage, LutType, Pipeline,
+    PixelFormat, RateControl, Rational, Scaler, Scaling, Size, ToneMapping, backend,
 };
 
 #[path = "assemble.rs"]
@@ -636,28 +635,35 @@ pub(crate) struct GradeArgs {
     /// --stabilize cap on the automatic zoom, e.g. 1.1 (default: no cap).
     #[bpaf(argument("Z"))]
     stab_max_zoom: Option<f64>,
-    /// Temporal denoise: frames on each side, 1..5, motion-compensated; 0 = off.
-    #[bpaf(argument("N"), fallback(0), display_fallback)]
-    temporal_radius: u32,
-    /// Temporal denoise motion: nvof (NVIDIA optical flow) or blocks (Vulkan block matching)
-    /// (default: nvof).
-    #[bpaf(argument("SRC"), fallback(ffcine::filters::Motion::Nvof))]
-    temporal_motion: ffcine::filters::Motion,
-    /// Temporal denoise luma strength: noise sigma in 8-bit code values.
-    #[bpaf(argument("S"), fallback(4.0), display_fallback)]
-    temporal_strength: f32,
+    /// Denoise preset: night (flat dark sky, stars protected) or snow (bright fine texture, gentle).
+    /// The denoise flags below override its values one by one.
+    #[bpaf(argument("NAME"))]
+    denoise_preset: Option<ffcine::filters::Preset>,
+    /// Temporal denoise: frames on each side (1-5), motion-compensated; 0 = off.
+    #[bpaf(argument("N"))]
+    temporal_radius: Option<u32>,
+    /// Temporal denoise motion: nvof (NVIDIA optical flow, default) or blocks (Vulkan block matching).
+    #[bpaf(argument("SRC"))]
+    temporal_motion: Option<ffcine::filters::Motion>,
+    /// Temporal denoise luma strength (noise sigma, 8-bit code values; default 3).
+    #[bpaf(argument("S"))]
+    temporal_strength: Option<f32>,
     /// Temporal denoise chroma strength (default: the luma strength).
     #[bpaf(argument("S"))]
     temporal_chroma: Option<f32>,
     /// Spatial (NLM) denoise luma strength, after the temporal one; 0 = off.
-    #[bpaf(argument("S"), fallback(0.0), display_fallback)]
-    denoise: f32,
+    #[bpaf(argument("S"))]
+    denoise: Option<f32>,
     /// Spatial denoise chroma strength (default: 1.5x luma).
     #[bpaf(argument("S"))]
     denoise_chroma: Option<f32>,
-    /// Spatial denoise search radius in px, 1..4.
-    #[bpaf(argument("R"), fallback(2), display_fallback)]
-    denoise_radius: u32,
+    /// Spatial denoise search radius (1-4; default 2).
+    #[bpaf(argument("R"))]
+    denoise_radius: Option<u32>,
+    /// Keep pixels that stand out by more than K strengths from being averaged away (stars,
+    /// point lights); 0 = off.
+    #[bpaf(argument("K"))]
+    denoise_protect: Option<f32>,
     /// Film grain sigma at mid-grey (8-bit code values) on the graded output; 0 = off.
     #[bpaf(argument("S"), fallback(0.0), display_fallback)]
     grain: f32,
@@ -903,21 +909,17 @@ impl GradeArgs {
             sharpen: self.sharpen,
             shaders,
             denoise: Some(
-                Denoise {
-                    temporal: (self.temporal_radius > 0).then_some(Temporal {
-                        radius: self.temporal_radius,
-                        motion: self.temporal_motion,
-                        strength: self.temporal_strength,
-                        chroma: self.temporal_chroma,
-                    }),
-                    spatial: (self.denoise > 0.0 || self.denoise_chroma.is_some_and(|c| c > 0.0))
-                        .then_some(Spatial {
-                            radius: self.denoise_radius,
-                            luma: self.denoise,
-                            chroma: self.denoise_chroma.unwrap_or(1.5 * self.denoise),
-                        }),
+                ffcine::filters::Overrides {
+                    temporal_radius: self.temporal_radius,
+                    temporal_motion: self.temporal_motion,
+                    temporal_strength: self.temporal_strength,
+                    temporal_chroma: self.temporal_chroma,
+                    luma: self.denoise,
+                    chroma: self.denoise_chroma,
+                    spatial_radius: self.denoise_radius,
+                    protect: self.denoise_protect,
                 }
-                .clamped(),
+                .resolve(self.denoise_preset),
             )
             .filter(|d| !d.is_off()),
             grain: (self.grain > 0.0).then_some(Grain {
@@ -1237,5 +1239,53 @@ mod tests {
         assert_eq!(d.temporal.unwrap().radius, 5);
         assert!((d.spatial.unwrap().chroma - 3.0).abs() < f32::EPSILON);
         assert!((g.grain.unwrap().strength - 3.0).abs() < f32::EPSILON);
+    }
+
+    fn denoise_of(flags: &[&str]) -> Option<ffcine::Denoise> {
+        let mut words = vec!["grade"];
+        words.extend_from_slice(flags);
+        words.extend(["in.mov", "out.mkv"]);
+        let Cmd::Grade(args) = cmd().to_options().run_inner(&words[..]).unwrap() else {
+            panic!("expected grade");
+        };
+        let p = args.into_pipeline().unwrap();
+        let ffcine::Stage::Grade(g) = &p.stages[0] else {
+            panic!("expected grade stage");
+        };
+        g.denoise
+    }
+
+    #[test]
+    fn grade_denoise_preset_and_overrides() {
+        use ffcine::filters::Preset;
+        assert_eq!(denoise_of(&[]), None);
+        let night = Preset::Night.denoise();
+        assert_eq!(denoise_of(&["--denoise-preset", "night"]), Some(night));
+        let d = denoise_of(&[
+            "--denoise-preset",
+            "night",
+            "--temporal-radius",
+            "1",
+            "--denoise",
+            "0.5",
+        ])
+        .unwrap();
+        let (t, want) = (d.temporal.unwrap(), night.temporal.unwrap());
+        assert_eq!(t.radius, 1);
+        assert_eq!(t.strength.to_bits(), want.strength.to_bits());
+        let s = d.spatial.unwrap();
+        assert_eq!(s.luma.to_bits(), 0.5_f32.to_bits());
+        assert_eq!(s.chroma.to_bits(), night.spatial.unwrap().chroma.to_bits());
+        let off = [
+            "--denoise-preset",
+            "night",
+            "--temporal-radius",
+            "0",
+            "--denoise",
+            "0",
+        ];
+        assert_eq!(denoise_of(&off), None);
+        let bad = ["grade", "--denoise-preset", "aurora", "in.mov", "out.mkv"];
+        assert!(cmd().to_options().run_inner(&bad[..]).is_err());
     }
 }

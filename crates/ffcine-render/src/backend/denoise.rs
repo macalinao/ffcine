@@ -1108,17 +1108,24 @@ impl Denoiser {
                 self.nvof_done(p)?;
             }
             for (i, &(w, h, plane, _)) in layout.planes.iter().enumerate() {
-                let strength = if i == layout.luma {
-                    t.strength
+                let (strength, protect) = if i == layout.luma {
+                    (t.strength, t.protect)
                 } else {
-                    t.chroma_strength()
+                    (t.chroma_strength(), 0.0)
                 };
                 let mut descs = vec![sampled(c"cur", src[i], false), storage(self.merged[i])];
                 for (j, &(f, m)) in nb.iter().enumerate() {
                     descs.push(sampled(N[j], self.ring[slot(f)].planes[i], true));
                     descs.push(sampled(M[j], self.motion[m], true));
                 }
-                let kern = k::merge_kernel(nb.len(), plane, layout.norm, strength, self.block());
+                let kern = k::merge_kernel(
+                    nb.len(),
+                    plane,
+                    layout.norm,
+                    strength,
+                    protect,
+                    self.block(),
+                );
                 self.dispatch(n, "merge", &kern, &descs, groups(w, h))?;
                 n += 1;
             }
@@ -1136,7 +1143,12 @@ impl Denoiser {
             let d = [sampled(c"src", src[i], false), storage(self.out[i])];
             if strength > 0.0 {
                 let r = self.cfg.spatial.map_or(2, |s| s.radius);
-                let kern = k::spatial_kernel(r, plane.comps, layout.norm, strength);
+                let protect = self
+                    .cfg
+                    .spatial
+                    .filter(|_| i == layout.luma)
+                    .map_or(0.0, |s| s.protect);
+                let kern = k::spatial_kernel(r, plane.comps, layout.norm, strength, protect);
                 self.dispatch(n, "spatial", &kern, &d, groups(w, h))?;
             } else {
                 self.dispatch(n, "copy", &k::copy_kernel(), &d, groups(w, h))?;

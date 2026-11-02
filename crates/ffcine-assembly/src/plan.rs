@@ -175,11 +175,13 @@ pub fn grade_denoise(d: f64) -> Option<Denoise> {
                 motion: Motion::Nvof,
                 strength: d,
                 chroma: None,
+                protect: 0.0,
             }),
             spatial: Some(Spatial {
                 radius: 2,
                 luma: 0.2 * d,
                 chroma: 0.3 * d,
+                protect: 0.0,
             }),
         }
         .clamped()

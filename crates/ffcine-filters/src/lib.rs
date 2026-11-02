@@ -22,7 +22,7 @@ pub mod denoise;
 pub mod effect;
 pub mod grain;
 
-pub use denoise::{Denoise, Motion, Spatial, Temporal};
+pub use denoise::{Denoise, Motion, Overrides, Preset, Spatial, Temporal};
 pub use grain::Grain;
 
 use std::fmt;

@@ -4,20 +4,24 @@
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
-use crate::{Denoise, Grain, Spatial, Temporal};
+use crate::denoise::spatial_over;
+use crate::{Denoise, Grain, Preset};
 
 pub const DENOISE: &str = "ffcine.fx.denoise/1";
 pub const GRAIN: &str = "ffcine.fx.grain/1";
 
-/// `ffcine.fx.denoise/1`: `luma`, `chroma` (spatial strengths, 8-bit code values), `low_light`
-/// (bigger spatial search), `temporal: {radius, strength, chroma}`.
+/// `ffcine.fx.denoise/1`: `preset` (`night`, `snow`: the values the others override), `luma`,
+/// `chroma` (spatial strengths, 8-bit code values), `low_light` (bigger spatial search), `protect`
+/// (spatial point protection), `temporal: {radius, strength, chroma, protect}` (`null`: off).
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct DenoiseV1 {
+    preset: Option<Preset>,
     luma: Option<f32>,
     chroma: Option<f32>,
     low_light: bool,
-    temporal: Option<Temporal>,
+    protect: Option<f32>,
+    temporal: Option<Map<String, Value>>,
 }
 
 fn params<T: for<'de> Deserialize<'de>>(meta: &Map<String, Value>) -> Result<T, String> {
@@ -29,19 +33,23 @@ fn params<T: for<'de> Deserialize<'de>>(meta: &Map<String, Value>) -> Result<T, 
 /// Reads `ffcine.fx.denoise/1` parameters (the effect's `metadata.ffcine`).
 pub fn denoise(meta: &Map<String, Value>) -> Result<Denoise, String> {
     let v: DenoiseV1 = params(meta)?;
-    let spatial = (v.luma.is_some() || v.chroma.is_some()).then(|| {
-        let luma = v.luma.unwrap_or(0.0);
-        Spatial {
-            radius: if v.low_light { 3 } else { 2 },
-            luma,
-            chroma: v.chroma.unwrap_or(luma * 1.5),
+    let base = v.preset.map_or_else(Denoise::default, Preset::denoise);
+    // Fields given override the preset's, one by one; an explicit `null` turns the pass off.
+    let temporal = match (v.temporal, meta.contains_key("temporal"), base.temporal) {
+        (None, true, _) | (None, false, None) => None,
+        (None, false, Some(t)) => Some(t),
+        (Some(over), _, t) => {
+            let mut m = match t.map(serde_json::to_value) {
+                Some(Ok(Value::Object(m))) => m,
+                _ => Map::new(),
+            };
+            m.extend(over);
+            Some(serde_json::from_value(Value::Object(m)).map_err(|e| e.to_string())?)
         }
-    });
-    Ok(Denoise {
-        temporal: v.temporal,
-        spatial,
-    }
-    .clamped())
+    };
+    let radius = v.low_light.then_some(3);
+    let spatial = spatial_over(base.spatial, v.luma, v.chroma, radius, v.protect);
+    Ok(Denoise { temporal, spatial }.clamped())
 }
 
 /// Reads `ffcine.fx.grain/1` parameters: `strength`, `size`, `chroma`; `profiles` is ignored
@@ -80,6 +88,26 @@ mod tests {
         assert_eq!((s.radius, s.luma, s.chroma), (3, 2.0, 3.0));
         assert_eq!(d.temporal.unwrap().radius, 3);
         assert!(denoise(&obj(r#"{"temporal": {"radius": 2, "bogus": 1}}"#)).is_err());
+    }
+
+    #[test]
+    fn denoise_preset_with_overrides() {
+        let night = Preset::Night.denoise();
+        assert_eq!(denoise(&obj(r#"{"preset": "night"}"#)).unwrap(), night);
+        // One temporal field replaces that field only.
+        let d = denoise(&obj(
+            r#"{"preset": "night", "temporal": {"radius": 2}, "luma": 1}"#,
+        ))
+        .unwrap();
+        let (t, want) = (d.temporal.unwrap(), night.temporal.unwrap());
+        assert_eq!(t.radius, 2);
+        assert_eq!((t.strength, t.protect), (want.strength, want.protect));
+        let s = d.spatial.unwrap();
+        assert_eq!((s.luma, s.chroma), (1.0, night.spatial.unwrap().chroma));
+        // Passes can be turned off.
+        let d = denoise(&obj(r#"{"preset": "night", "temporal": null, "luma": 0}"#)).unwrap();
+        assert!(d.is_off());
+        assert!(denoise(&obj(r#"{"preset": "aurora"}"#)).is_err());
     }
 
     #[test]

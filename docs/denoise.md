@@ -6,19 +6,154 @@
 GPU times come from libplacebo timers and are a ceiling, wall-clock fps are noisy.
 
 ```sh
-ffcine grade --temporal-radius 2 --temporal-strength 3 --denoise 1.5 --grain 2 in.mp4 out.mkv
+ffcine grade --denoise-preset night --grain 2 in.mp4 out.mkv
+ffcine grade --temporal-radius 2 --temporal-strength 3 --denoise 1.5 in.mp4 out.mkv
 ```
 
 | flag | meaning (strengths are noise sigmas in 8-bit code values, on 10/16-bit data) |
 |---|---|
+| `--denoise-preset night\|snow` | starting values ([presets](#presets)); the flags below override them one by one |
 | `--temporal-radius N` | frames on each side, 1-5 (0 = off) |
 | `--temporal-motion nvof\|blocks` | motion source (default nvof, falls back to blocks) |
 | `--temporal-strength S`, `--temporal-chroma S` | how different a warped neighbour may be and still count as "the same pixel" |
 | `--denoise S`, `--denoise-chroma S`, `--denoise-radius R` | spatial NLM after the temporal pass (chroma defaults to 1.5x) |
+| `--denoise-protect K` | [point protection](#point-protection) in both passes (0 = off, the default) |
 | `--grain S`, `--grain-size PX`, `--grain-chroma K` | film grain on the graded output |
 
-Timeline: `ffcine.fx.denoise/1 {luma, chroma, low_light, temporal: {radius, strength, chroma}}`
-and `ffcine.fx.grain/1 {strength, size, chroma}` ([timeline.md](timeline.md#effect-schemas)).
+Timeline: `ffcine.fx.denoise/1 {preset, luma, chroma, low_light, protect, temporal: {radius,
+strength, chroma, protect}}` (`temporal: null` turns a preset's pass off) and `ffcine.fx.grain/1 {strength, size, chroma}` ([timeline.md](timeline.md#effect-schemas)).
+
+## Presets
+
+Explicit values, nothing is detected from the footage. Both assume camera noise of a sigma or two
+in 8-bit code values: well above that, set `--temporal-strength` to the noise sigma.
+
+| preset | temporal | spatial NLM | protect | for |
+|---|---|---|---|---|
+| `night` | r4, s2, chroma 3 | R2, 1 / 2.5 | 2 | flat dark sky, stars, point lights |
+| `snow` | r2, s1.5 | off | off | bright, little noise, fine texture |
+
+- **`night`** against what used to be the recommendation (r2 s3 + NLM 1.5/2.5): about the same sky
+  on moving or white-noise clips, up to 30 % less boiling on still ones, and a star of 6-12 code
+  values keeps 3.6x as much of its height. r4 over r3 buys 6-14 % less boiling, for twice the NVOF
+  calls of r2.
+- **`snow`** drops the NLM. On fine low-contrast texture the NLM is what does the damage: with it
+  the output is further from the truth than the noisy input (44.9 vs 48.6 dB).
+- A strength in a preset that is too low does nothing rather than something bad. `night` on sigma 4
+  white noise leaves the sky at 3.84; `--temporal-strength 4 --denoise 2` gets 0.56, at the cost
+  of the faint stars (table below).
+
+The `grade` defaults stay as they were (denoise off until asked for, and `ffcine render`'s mapping
+of the prototype's `denoise` number is unchanged), with one exception: the default temporal strength
+goes from 4 to 3. There is no prototype flag it has to match. On low-light noise 3 flattens the same
+(sky sigma 0.855 vs 0.856, real night clips within 3 %) and keeps more of what stands out (a 12-25
+star 0.85 vs 0.73, 0.86 vs 0.70 on low-pass noise). It loses on loud white noise (mid noise below:
+32.2 vs 34.1 dB), where the strength should be set to the noise anyway. Point protection is not a
+default: it costs 0.45-0.5 dB on that same noise.
+
+### Point protection
+
+The patch distance divides one pixel's difference by 9, so at h = 1 a star 4 code values above a
+flat sky is within `2h^2` of every empty patch, and at 6 each of the NLM's 24 other samples still
+weighs 0.14: both passes average it away. With protection,
+a sample more than `K h` below a brighter centre pixel fades out by `exp(-max(d^2 - (K h)^2, 0) / h^2)`,
+whatever its patch looks like. Only downwards: dark outliers still average away. Luma only.
+
+In the merge it needs evidence, or every noise outlier would keep its height: the factor applies in
+full only where the warped neighbour's 3x3 patch reaches within `K h` of the centre pixel, so a
+point that moved a pixel counts and a lone bright noise pixel doesn't. By then most outliers are
+gone, so the NLM needs no such test. Protecting without the evidence keeps a little more of the faint
+stars (6-12: 0.79 vs 0.57 on low-pass noise) but leaves salt in white noise (the sky's 99.9th
+percentile: 5.7 vs 2.7 code values, 1.24 with the old settings).
+
+Luma-adaptive strengths weren't tried: a faint star barely moves its patch's mean, which is why the
+test looks at the pixel.
+
+### Before and after
+
+Synthetic, with ground truth (`bench/denoise/synth.py`, 1080p, 24 frames): point lights of 3-60 code
+values with a 0.8 px PSF on a dark sky with a moving glow, drifting 0.15 px a frame. `peak` is the
+height kept against the clean clip, by star height. `sky` is the sigma and the frame-to-frame
+difference of the error between the stars.
+
+| noise | settings | PSNR Y | peak 3-6 / 6-12 / 12-25 / 25-60 | sky sigma / temporal |
+|---|---|---|---|---|
+| low-pass, sigma 1.5 | none | 43.24 | 0.99 / 1.00 / 1.00 / 1.00 | 1.76 / 1.98 |
+| | before: r2 s3 + NLM 1.5/2.5 | 52.52 | 0.08 / 0.15 / 0.81 / 0.98 | 0.58 / 0.57 |
+| | **`night`** | **52.70** | **0.20 / 0.57 / 0.96 / 1.00** | **0.57 / 0.56** |
+| white, sigma 2 | none | 40.75 | 0.98 / 0.99 / 1.00 / 1.00 | 2.34 / 2.63 |
+| | before | 57.07 | 0.09 / 0.20 / 0.82 / 0.96 | 0.32 / 0.24 |
+| | **`night`** | 56.63 | **0.28 / 0.71 / 0.95 / 0.99** | 0.34 / **0.24** |
+| white, sigma 4 | none | 34.74 | 0.99 / 0.98 / 1.00 / 1.00 | 4.67 / 5.27 |
+| | before | 44.79 | 0.33 / 0.56 / 0.94 / 0.99 | 1.46 / 1.24 |
+| | `night` | 36.36 | 0.85 / 0.91 / 0.98 / 1.00 | 3.84 / 4.19 |
+| | `night`, s4, NLM 2 | 52.03 | 0.12 / 0.25 / 0.76 / 0.97 | 0.56 / 0.46 |
+
+Fine bright texture (luma 205-220, contrast 2.5, drifting, noise sigma 0.8; `hp` is high-pass energy
+against the clean clip, and the noisy input's 1.06 is the noise):
+
+| settings | PSNR Y | hp | SSIM Y | temporal |
+|---|---|---|---|---|
+| none | 48.61 | 1.06 | 0.9892 | 1.06 |
+| before: r2 s3 + NLM 1.5/2.5 | 44.95 | 0.58 | 0.9707 | 0.70 |
+| `night` | 47.64 | 0.72 | 0.9840 | 0.56 |
+| **`snow`** | **52.71** | **0.90** | **0.9957** | **0.38** |
+
+Real clips, no ground truth (`bench/denoise/patches.py`, 24 frames, 10-bit lossless output). 4K clips
+are native-resolution 1080p crops, because full 4K ran out of VRAM on the shared card. Noise comes
+from the flattest 512x512 tile, as above, full resolution / 4x4 bins; texture from the most detailed
+tile, against the undenoised render. Sigmas bottom out near 0.17: that's the output dither.
+
+| clip | settings | sigma | temporal | texture hp, SSIM |
+|---|---|---|---|---|
+| 4K DJI night, walking | none | 0.321 / 0.739 | 1.275 / 0.873 | |
+| | before | 0.166 / 0.422 | 0.633 / 0.547 | 0.769, 0.9865 |
+| | **`night`** | 0.166 / **0.404** | 0.641 / 0.555 | **0.803, 0.9888** |
+| 4K DJI night, still | none | 0.397 / 0.692 | 1.512 / 1.049 | |
+| | before | 0.166 / 0.267 | 0.613 / 0.538 | 0.370, 0.9756 |
+| | **`night`** | 0.166 / **0.208** | **0.496 / 0.433** | **0.407, 0.9776** |
+| 4K DJI night, third clip | none | 0.325 / 0.513 | 1.155 / 0.756 | |
+| | before | 0.166 / 0.192 | 0.446 / 0.382 | 0.484, 0.9843 |
+| | **`night`** | **0.114 / 0.136** | **0.313 / 0.270** | 0.485, 0.9829 |
+
+Bright clips all move, so their temporal numbers are the motion, not noise:
+
+| clip | settings | sigma, 4x4 bins | texture hp, SSIM |
+|---|---|---|---|
+| 1080p HLG 10-bit, white walls | none / before / **`snow`** | 0.180 / 0.121 / 0.139 | 0.937, 0.9850 / **0.991, 0.9966** |
+| 1080p 10-bit, bright fine texture | none / before / **`snow`** | 3.199 / 2.721 / 3.072 | 0.984, 0.9930 / **0.998, 0.9984** |
+| 4K DJI D-Log M, overcast sky | none / before / **`snow`** | 0.449 / 0.368 / 0.425 | 0.899, 0.9925 / **0.970, 0.9973** |
+| 1080p 8-bit drone, clouds | none / before / **`snow`** | 1.685 / 1.517 / 1.655 | 0.928, 0.9937 / **0.988, 0.9989** |
+| 4K R10 8-bit, bright daylight | none / before / **`snow`** | 2.076 / 1.797 / 1.987 | 0.986, 0.9927 / **0.997, 0.9978** |
+
+(The texture columns give before / `snow`.) `snow` keeps 97-99.8 % of the high-pass energy where the
+old settings kept 90-98 %, and leaves most of the noise: these clips have little to remove.
+
+**Pending** (no footage, or no VRAM to measure it):
+
+- real snow, aurora and starry-sky clips: stars and snow texture are measured on the synthetic
+  scenes only;
+- low-light Canon R10 (8-bit H.264 / 10-bit HEVC): the R10 is measured in daylight only. Noisy
+  high-ISO clips are the likely case for raising `--temporal-strength`;
+- full-frame 4K: the shared card's VRAM was full, so 4K clips were measured as 1080p crops.
+
+`bench/denoise/presets.sh all CLIP[@SS]...` re-runs the preset tables above in one go (the known-noise one is `run.sh` with `ENC` set as in `presets.sh`).
+
+Known noise (`bench/denoise/run.sh`, as below, on a different daylight clip, 24 frames, lossless):
+
+| noise | settings | PSNR Y / U | SSIM Y |
+|---|---|---|---|
+| heavy | r2 s16 + NLM 8/12 R3 | 37.98 / 47.36 | 0.935 |
+| | same, protect 2 | 37.52 / 47.35 | 0.928 |
+| | `night` | 25.55 / 30.88 | 0.369 |
+| mid | r2 s8 + NLM 4/6 | 41.83 / 49.55 | 0.969 |
+| | same, protect 2 | 41.38 / 49.55 | 0.966 |
+| | r2 s8 / s4 (old default) / s3 (default) | 39.00 / 34.10 / 32.22 | 0.923 / 0.789 / 0.705 |
+| | `night` | 31.83 / 46.41 | 0.685 |
+| | `snow` | 31.82 / 37.22 | 0.684 |
+
+Lossless output matters for these numbers: at any lossy rate, even x265 at CRF 0, the encoder alone
+takes more than half the height off a faint point, so `presets.sh` encodes with lossless x264.
 
 ## How it runs
 
@@ -32,7 +167,8 @@ Frames never leave VRAM and the CPU never waits on the GPU (NVOF included, below
    its block's mean absolute difference at full resolution: the match confidence.
 3. **Merge** (one dispatch per plane): each neighbour is warped onto the centre with bilinear
    vectors and samples, and weighted by `exp(-max(d2 - 2h^2, 0) / h^2)` on the 3x3 patch distance
-   `d2`, times a penalty when the block's MAD is above what noise alone explains. The centre has
+   `d2`, times a penalty when the block's MAD is above what noise alone explains (and
+   [point protection](#point-protection), if on). The centre has
    weight 1, so a pixel whose neighbours all mismatch (occlusion, a cut, a wrong vector) keeps its
    own value: no ghosting, just less denoising there.
 4. **Spatial** (one dispatch per plane): NLM, 3x3 patch, `(2R+1)^2` search, from a shared-memory
@@ -197,8 +333,8 @@ card).
 denoise, ffcine temporal r2 s3 + NLM 1.5, nlmeans_vulkan s=1 r=7. nlmeans smears the leaves;
 the temporal pass keeps them.*
 
-No Canon R10 low-light footage was available: the only R10 clip (`MVI_2884.MP4`, 8-bit H.264,
-daylight) has nothing to denoise. Re-run `real.sh` on R10 night clips when there are some.
+No Canon R10 low-light footage was available: the only R10 clip (8-bit H.264, daylight) has
+nothing to denoise. Re-run `real.sh` on R10 night clips when there are some.
 
 ### Speed
 
@@ -218,9 +354,6 @@ same nlmeans_vulkan pass caps a 4K render near 18 fps.
 
 ## Left to do
 
-- Tune defaults on snow and night-sky footage (aurora:
- flat dark sky, where temporal denoise matters
-  most); the strengths here are per-clip choices.
 - `ffcine render` applies `ffcine.fx.denoise/1` and the grade's `denoise` number
   ([assembly.md](assembly.md#per-clip-filters)); `ffcine.fx.grain/1` isn't wired into it yet.
 - Re-run `bench/denoise/nvof.sh` on a quiet GPU for end-to-end fps (the numbers above were
