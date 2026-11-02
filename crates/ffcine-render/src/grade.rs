@@ -327,6 +327,10 @@ pub struct Grade {
     /// moves to the output side (libplacebo's target LUT), so it grades the converted picture.
     pub input_lut: Option<LutStage>,
     pub lut: Option<LutStage>,
+    /// Per-channel gain on the decoded source RGB ahead of every LUT, clamped to 0..1 (ffmpeg's
+    /// `colorchannelmixer rr:gg:bb` before `lut3d`). Folded into the first (normalized) LUT, or
+    /// an identity one without.
+    pub rgb_gain: Option<[f32; 3]>,
     pub tone_mapping: ToneMapping,
     pub gamut_mapping: GamutMapping,
     pub color_map: ColorMapTuning,
@@ -369,6 +373,7 @@ impl Default for Grade {
             input_color: ColorOverride::default(),
             input_lut: None,
             lut: None,
+            rgb_gain: None,
             tone_mapping: ToneMapping::Bt2390,
             gamut_mapping: GamutMapping::Perceptual,
             color_map: ColorMapTuning::default(),

@@ -88,6 +88,66 @@ impl Lut {
         self.data[r + g * self.size + b * self.size * self.size]
     }
 
+    /// Trilinear lookup at input `rgb` (clamped to the domain).
+    pub fn sample(&self, rgb: [f32; 3]) -> [f32; 3] {
+        let n = self.size - 1;
+        #[allow(clippy::cast_precision_loss)]
+        let nf = n as f32;
+        let mut i0 = [0usize; 3];
+        let mut f = [0f32; 3];
+        for c in 0..3 {
+            let span = self.domain_max[c] - self.domain_min[c];
+            let x = ((rgb[c] - self.domain_min[c]) / span).clamp(0.0, 1.0) * nf;
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let i = (x.floor() as usize).min(n.saturating_sub(1));
+            i0[c] = i;
+            f[c] = x - i as f32;
+        }
+        let mut out = [0f32; 3];
+        for corner in 0..8 {
+            let d = [corner & 1, (corner >> 1) & 1, (corner >> 2) & 1];
+            let w: f32 = (0..3)
+                .map(|c| if d[c] == 1 { f[c] } else { 1.0 - f[c] })
+                .product();
+            if w == 0.0 {
+                continue;
+            }
+            let v = self.at(
+                (i0[0] + d[0]).min(n),
+                (i0[1] + d[1]).min(n),
+                (i0[2] + d[2]).min(n),
+            );
+            for c in 0..3 {
+                out[c] += w * v[c];
+            }
+        }
+        out
+    }
+
+    /// This LUT after a per-channel `gain` on its input, clamped to 0..1 (ffmpeg's
+    /// `colorchannelmixer rr:gg:bb` ahead of `lut3d`), resampled on the same lattice.
+    #[must_use]
+    pub fn with_input_gain(&self, gain: [f32; 3]) -> Self {
+        let id = Self::identity(self.size);
+        let data = id
+            .data
+            .iter()
+            .map(|p| {
+                let mut x = [0f32; 3];
+                for c in 0..3 {
+                    let v = self.domain_min[c] + p[c] * (self.domain_max[c] - self.domain_min[c]);
+                    x[c] = (v * gain[c]).clamp(0.0, 1.0);
+                }
+                self.sample(x)
+            })
+            .collect();
+        Self {
+            data,
+            path: None,
+            ..self.clone()
+        }
+    }
+
     fn parse_cube(text: &str) -> Result<Self, (usize, String)> {
         let mut title = None;
         let mut size = None;
@@ -172,6 +232,28 @@ mod tests {
             }
         );
         assert_eq!(lut.at(1, 0, 1), [1.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn input_gain() {
+        // On the identity a gain is the gain, clamped at 1 (exact at lattice points).
+        let g = Lut::identity(17).with_input_gain([2.0, 1.0, 0.5]);
+        assert_eq!(g.at(4, 4, 4), [0.5, 0.25, 0.125]);
+        assert_eq!(g.at(12, 0, 0), [1.0, 0.0, 0.0]);
+        assert_eq!(g.at(16, 16, 16), [1.0, 1.0, 0.5]);
+        // Through a LUT: the LUT read at the gained input.
+        let mut l = Lut::identity(9);
+        for v in &mut l.data {
+            *v = [v[0] * v[0], v[1], 1.0 - v[2]];
+        }
+        let lg = l.with_input_gain([0.5, 1.0, 1.0]);
+        let s = lg.at(8, 2, 8);
+        assert!((s[0] - l.sample([0.5, 0.0, 0.0])[0]).abs() < 1e-6, "{s:?}");
+        assert!((s[0] - 0.25).abs() < 1e-6);
+        assert!((s[1] - 0.25).abs() < 1e-6);
+        assert!(s[2].abs() < 1e-6);
+        // Unit gain is the LUT itself.
+        assert_eq!(l.with_input_gain([1.0; 3]).data, l.data);
     }
 
     #[test]

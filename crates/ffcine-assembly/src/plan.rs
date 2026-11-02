@@ -136,6 +136,9 @@ pub struct Filters {
     pub reframe: Option<Reframe>,
     /// `ffcine.time.ramp/1`: the clip is retimed through the ramp, not its average speed.
     pub ramp: Option<Ramp>,
+    /// `ffcine.time.blend/1` `frames` (> 1): each output frame is the mean of the last `frames`
+    /// frames at the timeline rate (the prototype's `tmix`), history from before the piece.
+    pub blend: Option<u32>,
 }
 
 impl Filters {
@@ -158,6 +161,7 @@ impl Filters {
             "denoise": self.denoise,
             "reframe": self.reframe.as_ref().map(|r| format!("{r:?}")),
             "ramp": self.ramp,
+            "blend": self.blend,
         })
     }
 }
@@ -1068,7 +1072,7 @@ impl Planner<'_> {
         }))
     }
 
-    /// Reads a stabilize, denoise or ramp effect of clip `clip` into `filters`; `false` if `g`
+    /// Reads a stabilize, denoise, ramp or blend effect of clip `clip` into `filters`; `false` if `g`
     /// isn't one (they're keyed through `filters`, not `fx`).
     fn filter(
         clip: &str,
@@ -1124,6 +1128,17 @@ impl Planner<'_> {
                             "needs points [[u, speed > 0]] and source_duration".into(),
                         ));
                     }
+                }
+            }
+            Some(("ffcine.time.blend", 1)) => {
+                let n = params().get("frames").and_then(Value::as_f64);
+                match n {
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    Some(n) if (1.0..=64.0).contains(&n.round()) => {
+                        let n = n.round() as u32;
+                        filters.blend = (n > 1).then_some(n);
+                    }
+                    _ => return Err(bad("blend", "needs frames 1..64".into())),
                 }
             }
             _ => return Ok(false),
@@ -1861,6 +1876,26 @@ mod tests {
             &json!({"look": "night", "exposure": 0.5}),
         );
         assert_eq!(changed(&base, &plan_of(&timeline(v, vec![]))), ["b"]);
+    }
+
+    #[test]
+    fn blend_is_a_keyed_filter() {
+        let base = plan_of(&timeline(shots(), vec![]));
+        let blend = |n: f64| {
+            let mut v = shots();
+            v[2] = with_filter(v[2].clone(), "ffcine.time.blend/1", &json!({"frames": n}));
+            plan_of(&timeline(v, vec![]))
+        };
+        let p = blend(3.0);
+        assert_eq!(changed(&base, &p), ["c"]);
+        let Unit::Shot(s) = &p.segments[2].unit else {
+            panic!("shot")
+        };
+        assert_eq!(s.filters.blend, Some(3));
+        assert!(s.fx.is_empty(), "keyed as a filter, not an effect");
+        assert_eq!(changed(&p, &blend(4.0)), ["c"]);
+        // One frame is no blend.
+        assert_eq!(changed(&base, &blend(1.0)), Vec::<String>::new());
     }
 
     #[test]
