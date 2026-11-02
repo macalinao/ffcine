@@ -46,13 +46,14 @@ pub struct TagArgs {
     #[bpaf(argument("TIMELINE"))]
     timeline: Option<PathBuf>,
     /// Title of the 0:00 chapter added when the first marker is later.
-    #[bpaf(argument("TITLE"), fallback("Intro".to_owned()))]
+    #[bpaf(argument("TITLE"), fallback("Intro".to_owned()), display_fallback)]
     intro: String,
     /// Cover art: a JPEG or PNG file, or a time in the video (S, M:SS or H:MM:SS).
     #[bpaf(argument("FILE|TIME"))]
     cover: Option<String>,
     /// Remove the chapters and cover first.
     clear: bool,
+    /// The finished MP4, rewritten in place.
     #[bpaf(positional("MP4"))]
     mp4: PathBuf,
 }
@@ -283,22 +284,23 @@ pub fn grade(mut args: GradeArgs, ff: &dyn Backend) -> anyhow::Result<()> {
 
 #[derive(Debug, Clone, Bpaf)]
 pub struct StillArgs {
-    /// Timeline time: seconds, M:SS or H:MM:SS.
+    /// Timeline time: seconds, M:SS or H:MM:SS (required).
     #[bpaf(argument("TIME"))]
     at: String,
-    /// Output size (default: the timeline's `frame_size`, else the source's).
+    /// Output size in px, e.g. 1280x720 (default: the timeline's `frame_size`, else the source's).
     #[bpaf(argument("WxH"))]
     size: Option<Size>,
     /// Leave the text out.
     no_text: bool,
-    /// Output PNG (default: still-<TIME>.png).
+    /// Output PNG (default: still-<TIME>.png, `:` written as `.`).
     #[bpaf(short('o'), argument("FILE"))]
     output: Option<PathBuf>,
-    /// CUDA device.
+    /// CUDA device index (default: picked automatically).
     #[bpaf(argument("N"))]
     cuda: Option<u32>,
     /// Don't use an on-disk shader cache.
     pub no_cache: bool,
+    /// Timeline (.otio).
     #[bpaf(positional("TIMELINE"))]
     timeline: PathBuf,
 }

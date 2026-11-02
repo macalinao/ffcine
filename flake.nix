@@ -20,10 +20,11 @@
   outputs =
     inputs@{ flake-parts, ... }:
     flake-parts.lib.mkFlake { inherit inputs; } {
-      # Vulkan + NVENC/VAAPI: Linux only for now.
+      # Vulkan + NVENC/VAAPI: the full build is Linux only. macOS has the audio dev shell.
       systems = [
         "x86_64-linux"
         "aarch64-linux"
+        "aarch64-darwin"
       ];
 
       imports = [
@@ -59,6 +60,22 @@
             pkgs.shaderc
           ];
 
+          # `sync`, `audio` and `ffcine-audio`'s tests: libav* only, so this one builds on macOS.
+          audioShell = pkgs.mkShell {
+            name = "ffcine-audio";
+            nativeBuildInputs = [
+              pkgs.pkg-config
+              pkgs.rustPlatform.bindgenHook
+            ];
+            buildInputs = [ pkgs.ffmpeg ] ++ pkgs.lib.optional pkgs.stdenv.hostPlatform.isDarwin pkgs.libiconv;
+            packages = [
+              pkgs.cargo
+              pkgs.rustc
+              pkgs.clippy
+              pkgs.rustfmt
+            ];
+          };
+
           ffcine = pkgs.rustPlatform.buildRustPackage {
             pname = "ffcine";
             version = "0.1.0";
@@ -88,12 +105,12 @@
           };
         in
         {
-          packages = {
+          packages = pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
             inherit ffcine libplacebo ffmpeg-gpu;
             default = ffcine;
           };
 
-          checks = { inherit ffcine; };
+          checks = pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux { inherit ffcine; };
 
           # treefmt-nix: `nix fmt` formats Nix, Rust and TOML.
           treefmt = {
@@ -124,6 +141,8 @@
               };
             };
           };
+
+          devShells.audio = audioShell;
 
           devShells.default = pkgs.mkShell {
             name = "ffcine";
