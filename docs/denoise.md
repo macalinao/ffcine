@@ -129,10 +129,15 @@ Bright clips all move, so their temporal numbers are the motion, not noise:
 (The texture columns give before / `snow`.) `snow` keeps 97-99.8 % of the high-pass energy where the
 old settings kept 90-98 %, and leaves most of the noise: these clips have little to remove.
 
-No real snow, aurora or starry-sky footage was available, nor any low-light R10 footage. Stars and
-snow texture are only measured on the synthetic scenes, and the R10's 8-bit noise only in daylight;
-re-run `bench/denoise/presets.sh` on such clips when there are some. Noisy high-ISO R10 clips are
-the likely case for raising `--temporal-strength`.
+**Pending** (no footage, or no VRAM to measure it):
+
+- real snow, aurora and starry-sky clips: stars and snow texture are measured on the synthetic
+  scenes only;
+- low-light Canon R10 (8-bit H.264 / 10-bit HEVC): the R10 is measured in daylight only. Noisy
+  high-ISO clips are the likely case for raising `--temporal-strength`;
+- full-frame 4K: the shared card's VRAM was full, so 4K clips were measured as 1080p crops.
+
+`bench/denoise/presets.sh all CLIP[@SS]...` re-runs the preset tables above in one go (the known-noise one is `run.sh` with `ENC` set as in `presets.sh`).
 
 Known noise (`bench/denoise/run.sh`, as below, on a different daylight clip, 24 frames, lossless):
 

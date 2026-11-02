@@ -3,7 +3,8 @@
 # numpy on PATH, from the repo root, after `cargo build --release`. Lossless x264: at any lossy
 # rate, even x265 at CRF 0, the encoder itself takes half the height off a faint point.
 #   bench/denoise/presets.sh real NAME CLIP SS   # patches.py against the undenoised render
-#   bench/denoise/presets.sh synth stars|stars-blotchy|snow   # synth.py against ground truth
+#   bench/denoise/presets.sh synth stars|stars-loud|stars-blotchy|snow   # synth.py vs ground truth
+#   bench/denoise/presets.sh all [CLIP[@SS]...]  # every synthetic scene, then each clip (SS 0)
 set -euo pipefail
 W=${W:-/tmp/ffcine-denoise/presets}
 FF=${FF:-./target/release/ffcine}
@@ -48,4 +49,8 @@ synth)
   run old "${OLD[@]}"
   run night --denoise-preset night
   run snow --denoise-preset snow ;;
+all)
+  shift
+  for scene in stars stars-loud stars-blotchy snow; do "$0" synth "$scene"; done
+  for c in "$@"; do "$0" real "$(basename "${c%@*}" | tr -c 'A-Za-z0-9\n' _)" "${c%@*}" "$([[ $c == *@* ]] && echo "${c##*@}" || echo 0)"; done ;;
 esac
