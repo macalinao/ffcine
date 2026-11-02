@@ -2,12 +2,12 @@
 """Synthetic scenes with ground truth for tuning the denoise presets (docs/denoise.md). Needs numpy
 and ffmpeg.
 
-    synth.py gen stars|stars-blotchy|snow OUT_DIR [FRAMES]   # clean.mkv, noisy.mkv, truth.npz
+    synth.py gen stars|stars-loud|stars-blotchy|snow OUT_DIR [FRAMES]   # clean.mkv, noisy.mkv, truth.npz
     synth.py score OUT.mkv REF.mkv TRUTH.npz                 # one line of metrics
 
 stars: a dark sky (D-Log level, a soft moving glow) with point lights from 3 to 60 code values over
-it, drifting slightly, and white noise (stars) or low-pass noise (stars-blotchy, what in-camera NR
-and HEVC leave). snow: a bright slope of fine low-contrast texture with little noise. Everything is
+it, drifting slightly, and white noise (stars, stars-loud) or low-pass noise (stars-blotchy, what
+in-camera NR and HEVC leave). snow: a bright slope of fine low-contrast texture with little noise. Everything is
 in 8-bit code values of the 10-bit signal. REF is the clean clip through the same grade as OUT.
 """
 import subprocess, sys
@@ -77,7 +77,7 @@ def gen(kind, out, frames):
                 gx, gy = xx[iy - 4:iy + 5, ix - 4:ix + 5] - x0, yy[iy - 4:iy + 5, ix - 4:ix + 5] - y0
                 y[iy - 4:iy + 5, ix - 4:ix + 5] += a * np.exp(-(gx * gx + gy * gy) / (2 * 0.8 ** 2))
             put(clean, y)
-            put(noisy, y + (noise(rng, 2.0, 0) if kind == "stars" else noise(rng, 1.5, 1.2)))
+            put(noisy, y + {"stars": noise(rng, 2.0, 0), "stars-loud": noise(rng, 4.0, 0)}.get(kind, noise(rng, 1.5, 1.2)))
     elif kind == "snow":
         tex = blur(rng.standard_normal((H, W)), 0.9) + 0.5 * blur(rng.standard_normal((H, W)), 3)
         tex /= tex.std()

@@ -523,7 +523,7 @@ pub(crate) struct GradeArgs {
     /// Temporal denoise motion: nvof (NVIDIA optical flow, default) or blocks (Vulkan block matching).
     #[bpaf(argument("SRC"))]
     temporal_motion: Option<ffcine::filters::Motion>,
-    /// Temporal denoise luma strength (noise sigma, 8-bit code values; default 4).
+    /// Temporal denoise luma strength (noise sigma, 8-bit code values; default 3).
     #[bpaf(argument("S"))]
     temporal_strength: Option<f32>,
     /// Temporal denoise chroma strength (default: the luma strength).

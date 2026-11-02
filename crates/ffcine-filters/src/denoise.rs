@@ -24,6 +24,11 @@ use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
 
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's signature
+fn is_zero(v: &f32) -> bool {
+    *v == 0.0
+}
+
 /// Temporal (motion-compensated) part.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -38,6 +43,7 @@ pub struct Temporal {
     pub chroma: Option<f32>,
     /// Point protection (luma): how far, in strengths, a warped neighbour may fall below a bright
     /// centre pixel before it stops counting; 0 = off (`docs/denoise.md#point-protection`).
+    #[serde(skip_serializing_if = "is_zero")]
     pub protect: f32,
 }
 
@@ -46,7 +52,7 @@ impl Default for Temporal {
         Self {
             radius: 2,
             motion: Motion::default(),
-            strength: 4.0,
+            strength: 3.0,
             chroma: None,
             protect: 0.0,
         }
@@ -72,6 +78,7 @@ pub struct Spatial {
     /// Chroma strength; 0 skips the chroma planes.
     pub chroma: f32,
     /// Point protection (luma), as in [`Temporal::protect`].
+    #[serde(skip_serializing_if = "is_zero")]
     pub protect: f32,
 }
 
@@ -203,7 +210,7 @@ impl Overrides {
         let radius = self
             .temporal_radius
             .unwrap_or(base.temporal.map_or(0, |t| t.radius));
-        let temporal = (radius > 0).then(|| Temporal {
+        let temporal = (radius > 0).then_some(Temporal {
             radius,
             motion: self.temporal_motion.unwrap_or(t0.motion),
             strength: self.temporal_strength.unwrap_or(t0.strength),
@@ -235,12 +242,12 @@ pub(crate) fn spatial_over(
 ) -> Option<Spatial> {
     let d = Spatial::default();
     let l = luma.or(base.map(|b| b.luma)).unwrap_or(0.0);
-    let c = chroma.unwrap_or_else(|| match (base, luma) {
+    let c = chroma.unwrap_or(match (base, luma) {
         (Some(_), Some(v)) if v <= 0.0 => 0.0,
         (Some(b), _) => b.chroma,
         (None, _) => 1.5 * l,
     });
-    (l > 0.0 || c > 0.0).then(|| Spatial {
+    (l > 0.0 || c > 0.0).then_some(Spatial {
         radius: radius.or(base.map(|b| b.radius)).unwrap_or(d.radius),
         luma: l,
         chroma: c,
@@ -728,6 +735,17 @@ mod tests {
     }
 
     #[test]
+    fn protect_off_stays_out_of_plan_keys() {
+        // Render segments are keyed on the serialized params: no protection, same key as before.
+        let v = serde_json::to_value(Temporal::default()).unwrap();
+        assert!(v.get("protect").is_none());
+        let d: Temporal = serde_json::from_value(v).unwrap();
+        assert_eq!(d, Temporal::default());
+        let night = serde_json::to_value(Preset::Night.denoise()).unwrap();
+        assert!(night["temporal"].get("protect").is_some());
+    }
+
+    #[test]
     fn presets_parse_and_stay_in_range() {
         for (name, p) in [("night", Preset::Night), ("snow", Preset::Snow)] {
             assert_eq!(name.parse::<Preset>().unwrap(), p);
@@ -789,6 +807,12 @@ mod tests {
     /// CPU references of the merge and the NLM, the weights of the generated GLSL: known zero
     /// motion, no block confidence, one plane in 8-bit code values. Enough to see what the weights
     /// do to a point.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss
+    )]
     mod reference {
         use super::*;
 
@@ -893,14 +917,15 @@ mod tests {
             out
         }
 
-        pub fn run(d: Denoise, frames: &[Frame]) -> Frame {
+        pub fn run(stage: Denoise, frames: &[Frame]) -> Frame {
             let centre = frames.len() / 2;
-            let (t, s) = (d.temporal.unwrap(), d.spatial);
-            let r = t.radius as usize;
-            let m = merge(&frames[centre - r..=centre + r], r, t.strength, t.protect);
-            match s {
-                Some(s) => nlm(&m, s.radius as i32, s.luma, s.protect),
-                None => m,
+            let temporal = stage.temporal.unwrap();
+            let r = temporal.radius as usize;
+            let window = &frames[centre - r..=centre + r];
+            let merged = merge(window, r, temporal.strength, temporal.protect);
+            match stage.spatial {
+                Some(s) => nlm(&merged, s.radius as i32, s.luma, s.protect),
+                None => merged,
             }
         }
 
@@ -964,6 +989,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::cast_precision_loss)]
     fn snow_keeps_fine_texture() {
         use reference::*;
         // Fine low-contrast texture, the same in every frame, under little noise.
