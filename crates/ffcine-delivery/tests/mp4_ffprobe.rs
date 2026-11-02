@@ -61,6 +61,7 @@ fn md5s(path: &Path) -> String {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn ffprobe_reads_chapters_and_cover() {
     if Command::new("ffprobe").arg("-version").output().is_err() {
         eprintln!("skipped: no ffprobe");

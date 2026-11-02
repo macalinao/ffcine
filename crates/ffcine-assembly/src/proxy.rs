@@ -131,7 +131,9 @@ pub fn make(ffmpeg: &OsStr, source: &Path, out: &Path) -> Result<(), String> {
                 return std::fs::rename(&partial, out)
                     .map_err(|e| format!("{}: {e}", out.display()));
             }
-            Ok(o) => last = String::from_utf8_lossy(&o.stderr).trim().to_owned(),
+            Ok(o) => String::from_utf8_lossy(&o.stderr)
+                .trim()
+                .clone_into(&mut last),
             Err(e) => last = format!("{}: {e}", ffmpeg.to_string_lossy()),
         }
     }

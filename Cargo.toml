@@ -16,7 +16,7 @@ readme = "README.md"
 authors = ["Ian Macalinao <me@ianm.com>"]
 keywords = ["video", "ffmpeg", "libplacebo", "vulkan", "color-grading"]
 categories = ["multimedia::video"]
-rust-version = "1.88"
+rust-version = "1.85"
 
 [workspace.dependencies]
 # Internal crates

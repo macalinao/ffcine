@@ -155,9 +155,9 @@ impl Profile {
         };
         let size = match mode.size {
             Some([w, h]) if aspect.is_none() && w > 0 && h > 0 && p.name == "review" => {
-                let k = (f64::from(REVIEW_SHORT) / f64::from(w.min(h))).min(1.0);
+                let scale = (f64::from(REVIEW_SHORT) / f64::from(w.min(h))).min(1.0);
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                let even = |v: u32| ((f64::from(v) * k / 2.0).round() as u32 * 2).max(2);
+                let even = |v: u32| ((f64::from(v) * scale / 2.0).round() as u32 * 2).max(2);
                 Size {
                     width: even(w),
                     height: even(h),

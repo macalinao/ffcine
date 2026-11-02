@@ -111,6 +111,7 @@ fn children(mut buf: &[u8]) -> Result<Vec<Raw<'_>>> {
 }
 
 /// A box of `kind` around `body`.
+#[allow(clippy::trivially_copy_pass_by_ref)] // called with `b"type"` literals
 fn boxed(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
     let mut v = Vec::with_capacity(body.len() + 16);
     if let Ok(size) = u32::try_from(body.len() + 8) {
@@ -347,7 +348,7 @@ fn rebuild_udta(old: Option<&Raw>, chpl: Option<Chpl>, cover: Option<&[u8]>) -> 
         None => Udta::default(),
     };
     u.chpl = chpl;
-    let covr = cover.and_then(|c| {
+    let item = cover.and_then(|c| {
         let ty = image_type(c)?;
         let mut data = Vec::with_capacity(c.len() + 16);
         data.extend_from_slice(&u32::try_from(c.len() + 16).unwrap_or(0).to_be_bytes());
@@ -359,14 +360,14 @@ fn rebuild_udta(old: Option<&Raw>, chpl: Option<Chpl>, cover: Option<&[u8]>) -> 
     });
     if let Some(meta) = &mut u.meta {
         match meta.get_mut::<Ilst>() {
-            Some(ilst) => ilst.covr = covr,
-            None if covr.is_some() => meta.push(Ilst {
-                covr,
+            Some(ilst) => ilst.covr = item,
+            None if item.is_some() => meta.push(Ilst {
+                covr: item,
                 ..Ilst::default()
             }),
             None => {}
         }
-    } else if covr.is_some() {
+    } else if item.is_some() {
         let mut meta = Meta {
             hdlr: Hdlr {
                 handler: FourCC::new(b"mdir"),
@@ -375,7 +376,7 @@ fn rebuild_udta(old: Option<&Raw>, chpl: Option<Chpl>, cover: Option<&[u8]>) -> 
             items: Vec::new(),
         };
         meta.push(Ilst {
-            covr,
+            covr: item,
             ..Ilst::default()
         });
         u.meta = Some(meta);
@@ -477,9 +478,9 @@ pub fn write(input: &Path, output: &Path, tags: &Tags) -> Result<()> {
     }
 
     // Chapters: start in ms, sample durations, and the samples.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let dur_ms = if mvhd.timescale > 0 {
-        (mvhd.duration as f64 * 1000.0 / f64::from(mvhd.timescale)).round() as u64
+        let ts = u128::from(mvhd.timescale);
+        u64::try_from((u128::from(mvhd.duration) * 1000 + ts / 2) / ts).unwrap_or(u64::MAX)
     } else {
         0
     };
@@ -674,7 +675,7 @@ mod tests {
     fn synthetic() -> Vec<u8> {
         let ftyp = boxed(b"ftyp", b"isom\0\0\x02\0isomiso2mp41");
         let mdat = boxed(b"mdat", b"FRAME-ONEFRAME-TWO");
-        let first = (ftyp.len() + 8) as u32;
+        let first = u32::try_from(ftyp.len() + 8).expect("small");
         let mvhd = encode(&Mvhd {
             timescale: 1000,
             duration: 2000,

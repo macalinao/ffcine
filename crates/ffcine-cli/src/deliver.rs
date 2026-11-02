@@ -1,4 +1,5 @@
-//! Delivery commands: `chapters`, `credits`, `still`, `subs`, and `grade --deliver` / `--text`.
+//! Delivery commands: `chapters`, `tag`, `credits`, `still`, `subs`, and `grade --deliver` /
+//! `--text`.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -37,6 +38,100 @@ pub fn chapters(timeline: &Path, intro: &str, output: Option<&Path>) -> anyhow::
         eprintln!("warning: {w}");
     }
     write_out(&c.youtube(), output)
+}
+
+#[derive(Debug, Clone, Bpaf)]
+pub struct TagArgs {
+    /// Chapters from this timeline's markers (those flagged `chapter`, else all).
+    #[bpaf(argument("TIMELINE"))]
+    timeline: Option<PathBuf>,
+    /// Title of the 0:00 chapter added when the first marker is later.
+    #[bpaf(argument("TITLE"), fallback("Intro".to_owned()))]
+    intro: String,
+    /// Cover art: a JPEG or PNG file, or a time in the video (S, M:SS or H:MM:SS).
+    #[bpaf(argument("FILE|TIME"))]
+    cover: Option<String>,
+    /// Remove the chapters and cover first.
+    clear: bool,
+    #[bpaf(positional("MP4"))]
+    mp4: PathBuf,
+}
+
+/// The cover from `spec`: an image file's bytes, or the frame of `video` at a time as a JPEG.
+pub fn cover(spec: &str, video: &Path) -> anyhow::Result<Vec<u8>> {
+    let path = Path::new(spec);
+    if path.is_file() {
+        return std::fs::read(path).with_context(|| format!("reading {}", path.display()));
+    }
+    let at = delivery::parse_time(spec)
+        .with_context(|| format!("--cover {spec:?}: not a file or a time"))?;
+    let ffmpeg = std::env::var_os("FFMPEG").unwrap_or_else(|| "ffmpeg".into());
+    let out = std::process::Command::new(&ffmpeg)
+        .args(["-v", "error", "-ss", &format!("{at:.3}"), "-i"])
+        .arg(video)
+        .args([
+            "-frames:v",
+            "1",
+            "-q:v",
+            "2",
+            "-c:v",
+            "mjpeg",
+            "-f",
+            "image2",
+            "pipe:1",
+        ])
+        .output()
+        .with_context(|| format!("running {}", ffmpeg.to_string_lossy()))?;
+    anyhow::ensure!(
+        out.status.success() && !out.stdout.is_empty(),
+        "cover frame at {spec} of {}: {}",
+        video.display(),
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    Ok(out.stdout)
+}
+
+/// Chapters from `timeline`'s markers, warnings printed.
+pub fn timeline_chapters(timeline: &Path, intro: &str) -> anyhow::Result<Vec<delivery::Chapter>> {
+    let c = delivery::chapters(&load(timeline)?, intro);
+    for w in &c.warnings {
+        eprintln!("warning: {w}");
+    }
+    Ok(c.chapters)
+}
+
+/// Writes `tags` into `mp4` unless it already has them; says what it wrote.
+pub fn write_tags(mp4: &Path, tags: &delivery::mp4::Tags) -> anyhow::Result<()> {
+    if delivery::mp4::read(mp4).ok().as_ref() == Some(tags) {
+        return Ok(());
+    }
+    delivery::mp4::write_in_place(mp4, tags)
+        .with_context(|| format!("tagging {}", mp4.display()))?;
+    eprintln!(
+        "{}: {} chapters{}",
+        mp4.display(),
+        tags.chapters.len(),
+        tags.cover.as_ref().map_or_else(String::new, |c| format!(
+            ", cover ({} KB)",
+            c.len().div_ceil(1000)
+        ))
+    );
+    Ok(())
+}
+
+pub fn tag(a: &TagArgs) -> anyhow::Result<()> {
+    let mut tags = if a.clear {
+        delivery::mp4::Tags::default()
+    } else {
+        delivery::mp4::read(&a.mp4).with_context(|| format!("reading {}", a.mp4.display()))?
+    };
+    if let Some(t) = &a.timeline {
+        tags.chapters = timeline_chapters(t, &a.intro)?;
+    }
+    if let Some(c) = &a.cover {
+        tags.cover = Some(cover(c, &a.mp4)?);
+    }
+    write_tags(&a.mp4, &tags)
 }
 
 pub fn credits(timeline: &Path, public: bool, output: Option<&Path>) -> anyhow::Result<()> {
