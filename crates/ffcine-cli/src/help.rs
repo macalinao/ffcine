@@ -495,6 +495,11 @@ mod tests {
     #[test]
     fn help_links_resolve() {
         let docs = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs");
+        if !docs.is_dir() {
+            // A packaged source (the nix build, crates.io) has no docs/; the checkout's run checks.
+            eprintln!("skipped: no {}", docs.display());
+            return;
+        }
         let mut pages = vec![help(&[], true)];
         pages.extend(commands().iter().map(|(name, _)| help(&[name], true)));
         let mut problems = Vec::new();
