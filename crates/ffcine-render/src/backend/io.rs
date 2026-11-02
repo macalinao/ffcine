@@ -75,6 +75,17 @@ impl Input {
     /// Opens `path`, seeks to `start` like ffmpeg's input `-ss`, and sets up hardware decode on
     /// `device` (CUDA or Vulkan); codecs it can't decode fall back to software.
     pub(crate) fn open(path: &Path, start: Duration, device: &BufferRef) -> Result<Self> {
+        Self::open_with_lead(path, start, Duration::ZERO, device)
+    }
+
+    /// [`Input::open`], seeking `lead` earlier so the frames before `start` are decoded too
+    /// (still trimmed at `start`).
+    pub(crate) fn open_with_lead(
+        path: &Path,
+        start: Duration,
+        lead: Duration,
+        device: &BufferRef,
+    ) -> Result<Self> {
         let p = path_cstr(path)?;
         let mut fmt = ptr::null_mut();
         // SAFETY: standard libavformat open sequence; everything is freed in Drop.
@@ -149,7 +160,12 @@ impl Input {
             };
             if start_us > 0 {
                 let ts = base + start_us;
-                check(ff::avformat_seek_file(fmt, -1, i64::MIN, ts, ts, 0), "seek")?;
+                let lead_us = i64::try_from(lead.as_micros()).unwrap_or(i64::MAX);
+                let seek = base + start_us.saturating_sub(lead_us).max(0);
+                check(
+                    ff::avformat_seek_file(fmt, -1, i64::MIN, seek, seek, 0),
+                    "seek",
+                )?;
                 this.trim = super::retime::rescale_near(ts, Q::new(1, 1_000_000), this.tb);
             }
             Ok(this)

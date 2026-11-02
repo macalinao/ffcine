@@ -31,8 +31,13 @@ pub(crate) fn rescale_near(v: i64, from: Q, to: Q) -> i64 {
 #[derive(Debug)]
 pub(crate) struct Retimer<T> {
     tb: Q,
-    /// Frames with `pts < trim` (stream time base) are dropped (accurate seek).
+    /// Frames with `pts < trim` (stream time base) are dropped (accurate seek), except the last
+    /// `lead` of them: they come out ahead of the first kept frame, as is (temporal filter
+    /// history; [`Retimer::led`] counts them).
     trim: i64,
+    lead: usize,
+    held: std::collections::VecDeque<T>,
+    led: usize,
     /// Output frame rate's time base (`1/fps`), or `None` to pass frames through.
     out_tb: Option<Q>,
     first: Option<i64>,
@@ -46,6 +51,9 @@ impl<T: Clone> Retimer<T> {
         Self {
             tb,
             trim,
+            lead: 0,
+            held: std::collections::VecDeque::new(),
+            led: 0,
             out_tb: fps.map(|f| Q::new(f.den, f.num)),
             first: None,
             pending: None,
@@ -53,10 +61,31 @@ impl<T: Clone> Retimer<T> {
         }
     }
 
+    /// Keeps up to `n` frames before the trim point.
+    pub(crate) fn lead(mut self, n: usize) -> Self {
+        self.lead = n;
+        self
+    }
+
+    /// Frames output ahead of the first kept one (set once that frame is in).
+    pub(crate) fn led(&self) -> usize {
+        self.led
+    }
+
     /// Feeds one decoded frame (presentation order); returns the output frames it completes.
     pub(crate) fn push(&mut self, pts: i64, frame: T, out: &mut Vec<T>) {
         if pts < self.trim {
+            if self.lead > 0 {
+                if self.held.len() == self.lead {
+                    self.held.pop_front();
+                }
+                self.held.push_back(frame);
+            }
             return;
+        }
+        if self.first.is_none() {
+            self.led = self.held.len();
+            out.extend(self.held.drain(..));
         }
         let first = *self.first.get_or_insert(pts);
         let Some(out_tb) = self.out_tb else {
@@ -141,6 +170,30 @@ mod tests {
     fn upsampling_duplicates() {
         let out = run(Q::new(1, 10), 0, Some(Q::new(20, 1)), &[0, 1, 2]);
         assert_eq!(out, vec![0, 0, 1, 1, 2]);
+    }
+
+    #[test]
+    fn lead_frames_come_first_and_leave_the_rest_alone() {
+        let tb = Q::new(1, 24000);
+        let fps = Some(Q::new(24000, 1001));
+        let pts: Vec<i64> = (0..12).map(|k| k * 1001).collect();
+        let mut r = Retimer::new(tb, 6000, fps).lead(2);
+        let mut out = Vec::new();
+        for &p in &pts {
+            r.push(p, p, &mut out);
+        }
+        r.finish(&mut out);
+        assert_eq!(r.led(), 2);
+        assert_eq!(out[..2], [4004, 5005]);
+        assert_eq!(out[2..], run(tb, 6000, fps, &pts)[..]);
+        // Near the start of the source there are fewer.
+        let mut r = Retimer::new(tb, 1001, fps).lead(3);
+        let mut out = Vec::new();
+        for &p in &pts[..4] {
+            r.push(p, p, &mut out);
+        }
+        assert_eq!(r.led(), 1);
+        assert_eq!(out[0], 0);
     }
 
     #[test]
