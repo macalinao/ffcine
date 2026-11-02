@@ -20,9 +20,8 @@ use ffcine::{
 };
 
 const N: u64 = 4;
-/// Against a CPU reference: the 4:2:2 source goes out 4:2:0, and `testsrc2`'s hard colour edges
-/// make that the main difference.
-const MIN_DB: f64 = 30.0;
+/// Against a CPU reference (the 4:2:2 source goes out 4:2:0).
+const MIN_DB: f64 = 40.0;
 
 fn dir() -> PathBuf {
     let d = std::env::temp_dir().join(format!("ffcine-color-gpu-{}", std::process::id()));
@@ -54,14 +53,17 @@ fn ffprobe(path: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-/// A lossless 10-bit 4:2:2 HEVC `testsrc2` with x265 VUI `params` (`colorprim=...`).
+/// A lossless 10-bit 4:2:2 HEVC of smooth colour gradients squeezed into a log-like 25-70 %
+/// code range, with x265 VUI `params` (`colorprim=...`).
 fn fixture(path: &Path, params: &str, extra: &[&str]) {
     let x265 = format!("log-level=error:lossless=1:range=limited:{params}");
     let mut args = vec![
         "-f",
         "lavfi",
         "-i",
-        "testsrc2=size=1280x720:rate=25",
+        "gradients=size=1280x720:rate=25:speed=0.05",
+        "-vf",
+        "format=gbrp,lutrgb=r=val*0.45+64:g=val*0.45+64:b=val*0.45+64",
         "-frames:v",
         "4",
         "-pix_fmt",

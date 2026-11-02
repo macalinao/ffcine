@@ -156,11 +156,15 @@ SSIM / PSNR on yuv420p10le against a reference running render.py's colour-in cha
 | the same, `--decode cuda` | | | 0.9997 | 58.4 |
 
 `crates/ffcine/tests/color_gpu.rs` (`--ignored`, needs a GPU) repeats the colour paths on
-synthetic 10-bit 4:2:2 HEVC (`testsrc2`, lossless x265): a C-Log 3 clip (BT.2020, untagged
-transfer, `CAEP` brand) is detected as `clog3` and its analytic LUT on the GPU matches ffmpeg's
-`lut3d`; an HDR10 PQ clip goes PQ -> PQ unchanged and comes out tagged with our mastering display
-and content light metadata, and PQ -> SDR comes out BT.709; a camera + grade LUT pair renders the
-same as the baker's single LUT.
+synthetic 10-bit 4:2:2 HEVC (smooth `gradients` squeezed into a log-like code range, lossless
+x265; run on 2026-11-02, software decode, as above):
+
+| check | result |
+|---|---|
+| C-Log 3 clip (BT.2020, untagged transfer, `CAEP` brand) | detected as `clog3`; analytic LUT on the GPU vs ffmpeg `lut3d` (trilinear), RGB 48.6 dB |
+| HDR10 PQ -> `--hdr pq`-style output | 65.4 dB against the source; BT.2020 PQ tags, our mastering display (1000 cd/m²) and MaxCLL in the output |
+| PQ -> SDR | tone-mapped, tagged BT.709 |
+| camera + grade LUT vs the baker's single LUT | 50.5 dB |
 
 There is no iPhone HLG shot in render.py's bench and its cached renders are stale, so the HLG
 reference is render.py's colour-in filter on its own. The look on top of it matches as payday does
