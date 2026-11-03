@@ -5,6 +5,8 @@ changelog_update = false
 git_tag_enable = false
 git_release_enable = false
 publish = true
+# Publish only when the pushed commit is a merged release-plz PR, not on any version bump.
+release_always = false
 
 [[package]]
 name = "ffcine-cli"
