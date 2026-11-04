@@ -174,6 +174,7 @@ impl<const N: usize> Keys<N> {
     /// Reads keys whose values are numbers (`N` = 1 also takes a bare number; a number
     /// for `N` = 2 fills both, for scale; colours may leave out alpha). Keys that don't read
     /// are skipped; an expression that doesn't compile is dropped with a warning.
+    #[allow(clippy::many_single_char_names)]
     fn parse(v: Option<&Value>) -> Self {
         let Some(v) = v else {
             return Self::default();
