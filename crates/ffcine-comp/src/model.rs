@@ -29,7 +29,15 @@ pub fn is_comp(v: &Value) -> bool {
 /// Whether the file at `path` is a comp document (JSON, or YAML by extension); `false` for
 /// timelines and unreadable files.
 pub fn is_comp_file(path: &Path) -> bool {
-    read(path).is_ok_and(|v| is_comp(&v))
+    // By name first, so a comp with a syntax error reports it as a comp.
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    [".comp.json", ".comp.yaml", ".comp.yml"]
+        .iter()
+        .any(|e| name.ends_with(e))
+        || read(path).is_ok_and(|v| is_comp(&v))
 }
 
 /// A JSON or (by extension) YAML document.
@@ -320,6 +328,12 @@ impl Comp {
             c.get("size").ok_or_else(|| err("canvas.size", "missing"))?,
             "canvas.size",
         )?;
+        if size.iter().any(|v| *v > 32768.0) {
+            return Err(err(
+                "canvas.size",
+                format!("{size:?}: at most 32768 px a side"),
+            ));
+        }
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let size = size.map(|v| v.round().max(1.0) as u32);
         let fps = fps(

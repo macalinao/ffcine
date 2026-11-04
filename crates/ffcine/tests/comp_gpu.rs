@@ -300,6 +300,7 @@ fn bench_layers() {
         grader: None,
         detect: None,
     };
+    let (mut tried, mut failed) = (0, 0);
     for size in [[1080u32, 1920u32], [2160, 3840]] {
         for n in [2usize, 4, 8] {
             // A column of n tiles with gutters, rounded, sliding and fading in.
@@ -330,6 +331,7 @@ fn bench_layers() {
             let out = d.join(format!("bench-{n}-{}.mp4", size[1]));
             let t0 = std::time::Instant::now();
             let mut res = Ok(());
+            tried += 1;
             let vram = vram_peak(|| {
                 res = r.render_piece(
                     &piece,
@@ -343,6 +345,7 @@ fn bench_layers() {
             if let Err(e) = res {
                 // Out of VRAM on a shared GPU, say: report it and go on.
                 eprintln!("{}x{}: {n} video layers: failed: {e}", size[0], size[1]);
+                failed += 1;
                 continue;
             }
             eprintln!(
@@ -354,4 +357,5 @@ fn bench_layers() {
         }
     }
     let _ = std::fs::remove_dir_all(&d);
+    assert!(failed < tried, "no case rendered");
 }

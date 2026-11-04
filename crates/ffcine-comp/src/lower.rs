@@ -357,12 +357,17 @@ impl Comp {
                 &local(&canvas_fade),
                 &local4(&canvas_colour),
             ));
-            // Box px to texture px.
+            // Box px to texture px, horizontally; `ky` is the vertical factor over it (a
+            // non-uniform scale), so corners and feathers stay round in box px.
             let px = tw / pic[0].max(1e-6);
+            let ky = (th / pic[1].max(1e-6)) / px;
             let has_mask = l.mask.is_some();
             if has_mask || radius.iter().any(|r| *r > 0.0) || s.opacity.iter().any(|o| *o < 1.0) {
                 let mut h = hook("alpha", shaders::layer_alpha());
                 param(&mut h, "opacity", f32s(s.opacity.iter().copied()));
+                if (ky - 1.0).abs() > 1e-9 {
+                    param(&mut h, "ky", vec![ky as f32]);
+                }
                 param(
                     &mut h,
                     "radius",

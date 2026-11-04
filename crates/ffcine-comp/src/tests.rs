@@ -352,3 +352,27 @@ fn fades_and_masks_become_hooks() {
     assert_eq!(p.grade.hooks[1].name, "canvas_fade");
     assert_eq!(p.layers[0].grade.hooks[1].name, "canvas_fade");
 }
+
+#[test]
+fn uneven_scale_keeps_corners_round() {
+    let c = comp(
+        json!([{ "source": { "solid": "white" }, "size": [100, 100], "radius": 10,
+        "transform": { "scale": [2, 1] } }]),
+    );
+    let p = c.lower(0..1, OUT, &Fake).expect("lower");
+    let alpha = p.layers[0]
+        .grade
+        .hooks
+        .iter()
+        .find(|h| h.name == "alpha")
+        .expect("alpha");
+    // 2 texture px per box px across, 1 down: the radius is 20 px across, 10 down.
+    assert!(alpha.params.contains(&("radius".into(), 20.0)));
+    assert!(alpha.params.contains(&("ky".into(), 0.5)));
+    // Comp files are known by name, so a broken one reports a comp error.
+    assert!(crate::is_comp_file(Path::new("/nonexistent/a.comp.yaml")));
+    assert!(!crate::is_comp_file(Path::new("/nonexistent/a.otio")));
+    let big =
+        json!({"schema": "ffcine.comp/1", "canvas": {"size": [4e9, 1], "fps": 30, "duration": 1}});
+    assert!(Comp::from_value(&big, Path::new(".")).is_err());
+}

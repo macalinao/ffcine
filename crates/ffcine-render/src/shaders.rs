@@ -250,10 +250,16 @@ vec4 hook() {
 /// `opacity` and rounded corners (`radius`, texture pixels), times a shape mask: `shape` 0 none,
 /// 1 rectangle, 2 ellipse, inside `mask_x/y/w/h` (fractions of the texture), with a soft edge
 /// `feather` texture pixels wide centred on the shape's edge (antialiased over one pixel at 0),
-/// and `invert` (1 keeps the outside). An `OUTPUT` hook; every value can be a per-frame track.
+/// and `invert` (1 keeps the outside). `radius` and `feather` are horizontal texture pixels; `ky`
+/// is how many vertical texture pixels make one horizontal (a layer scaled unevenly). An `OUTPUT`
+/// hook; every value can be a per-frame track.
 pub fn layer_alpha() -> &'static str {
     r"//!PARAM opacity
 //!TYPE float
+1.0
+//!PARAM ky
+//!TYPE float
+//!MINIMUM 0.001
 1.0
 //!PARAM radius
 //!TYPE float
@@ -284,15 +290,17 @@ pub fn layer_alpha() -> &'static str {
 //!DESC ffcine comp layer alpha (opacity, rounded corners, mask)
 vec4 hook() {
     vec4 c = HOOKED_texOff(vec2(0.0));
-    vec2 h = 0.5 * HOOKED_size;
-    vec2 p = HOOKED_pos * HOOKED_size - h;
+    // In horizontal texture pixels.
+    vec2 size = HOOKED_size / vec2(1.0, ky);
+    vec2 h = 0.5 * size;
+    vec2 p = HOOKED_pos * size - h;
     float r = clamp(radius, 0.0, min(h.x, h.y));
     vec2 q = abs(p) - h + vec2(r);
     float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
     float a = clamp(0.5 - d, 0.0, 1.0) * clamp(opacity, 0.0, 1.0);
     if (shape > 0.5) {
-        vec2 mh = max(0.5 * vec2(mask_w, mask_h) * HOOKED_size, vec2(1e-3));
-        vec2 mp = HOOKED_pos * HOOKED_size - vec2(mask_x, mask_y) * HOOKED_size - mh;
+        vec2 mh = max(0.5 * vec2(mask_w, mask_h) * size, vec2(1e-3));
+        vec2 mp = HOOKED_pos * size - vec2(mask_x, mask_y) * size - mh;
         float md;
         if (shape < 1.5) {
             vec2 mq = abs(mp) - mh;

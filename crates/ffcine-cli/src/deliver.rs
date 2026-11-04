@@ -317,7 +317,8 @@ pub struct StillArgs {
 fn comp_still(a: StillArgs, ff: &backend::Ffmpeg) -> anyhow::Result<()> {
     let c = super::comp::load(&a.timeline)?;
     let at = delivery::parse_time(&a.at)?;
-    let n = ((at * c.canvas.fps).round() as i64).clamp(0, c.frames() - 1);
+    // The frame showing at `at` (frames start at i / fps).
+    let n = ((at * c.canvas.fps + 1e-6).floor() as i64).clamp(0, c.frames() - 1);
     let [w, h] = c.canvas.size;
     let out = a.size.unwrap_or(Size {
         width: w,
