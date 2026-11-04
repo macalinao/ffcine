@@ -250,6 +250,11 @@ Importing Resolve, FCP/Premiere, EDL, Kdenlive and CapCut projects: [import.md](
 - **Rust model**: our own serde types for the core schemas, each with
   `#[serde(flatten)] extra: Map<String, Value>` so foreign metadata (`Resolve_OTIO`, ...) round-trips.
 
+**Compositing** (design, [compositing.md](compositing.md)): `ffcine.comp/1`, a canvas plus
+ordered layers (video, stills incl. HEIC, solids, text, nested comps) whose parameters are tracks
+(constants, eased keyframes or expressions), with per-layer grade, time remapping and a
+libavfilter escape hatch; split-screens and templates lower to it.
+
 **Rendering reads, never writes, the timeline** ([assembly.md](assembly.md)): the first video
 track is the picture, `ffcine.text` clips on other video tracks are text, audio tracks are mixed.
 Render units are keyed by content (media fingerprint, source range, speed, resolved grade with LUTs
