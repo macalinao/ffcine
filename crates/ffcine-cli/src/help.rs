@@ -218,8 +218,40 @@ pub const STILL: &str = concat!(
         "ffcine still --at 1:23 timeline.otio",
         "ffcine still --at 95.5 --size 1280x720 -o thumb.png timeline.otio",
         "ffcine still --at 0:42 --no-text -o frame.png timeline.otio",
+        "ffcine still --at 2.6 -o f.png story.comp.json   # a comp: every layer",
     ),
     see!("delivery.md#stills")
+);
+
+pub const COMP: &str = concat!(
+    examples!(
+        "ffcine comp check story.comp.json",
+        "ffcine render -o story.mp4 story.comp.json",
+        "ffcine still --at 2.6 -o f.png story.comp.json",
+    ),
+    see!("compositing.md")
+);
+
+pub const COMP_CHECK: &str = concat!(
+    reference!(
+        "Comp file (ffcine.comp/1, JSON or YAML; unknown keys are errors, x_* keys are ignored):",
+        "schema    \"ffcine.comp/1\"",
+        "canvas    size [w, h] px, fps, duration s, background (colour), fade (1 = picture),",
+        "          fade_colour",
+        "vars      {name: track}, readable by every expression",
+        "layers    bottom first: id, source {video: PATH} or {solid: COLOUR}, in, out, source_in,",
+        "          size [w, h], fit (cover, contain, fill, none), transform {position, anchor,",
+        "          scale, rotation, opacity}, radius, mask {shape: rect|ellipse, rect, feather,",
+        "          invert}, blend, fade, fade_colour, vars",
+        "Every number is a track: a constant, keys [{t, v, interp}] (t: s from the layer's in),",
+        "an expression string (t, lt, n, W, H, w, h, in, out, dur, T, vars; ffmpeg's functions),",
+        "or {keys, expr}. Colours: [r, g, b(, a)] sRGB 0..1, black, white, #rrggbb[aa].",
+    ),
+    examples!(
+        "ffcine comp check story.comp.json",
+        "ffcine comp check --profile master story.comp.json",
+    ),
+    see!("compositing.md")
 );
 
 pub const LOOKS: &str = concat!(

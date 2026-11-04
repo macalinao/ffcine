@@ -14,6 +14,7 @@ rust-version.workspace = true
 
 [dependencies]
 ffcine-core.workspace = true
+ffcine-comp.workspace = true
 ffcine-timeline.workspace = true
 ffcine-audio.workspace = true
 ffcine-render.workspace = true

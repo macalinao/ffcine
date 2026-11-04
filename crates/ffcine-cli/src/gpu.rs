@@ -21,6 +21,8 @@ use ffcine::{
 
 #[path = "assemble.rs"]
 mod assemble;
+#[path = "comp.rs"]
+mod comp;
 #[path = "deliver.rs"]
 mod deliver;
 #[path = "looks.rs"]
@@ -188,7 +190,8 @@ pub(crate) enum Cmd {
     },
     /// Write a full-resolution PNG of the timeline at a time, text included.
     ///
-    /// The shot under TIME with its grade and the timeline's text clips, e.g. for thumbnails.
+    /// The shot under TIME with its grade and the timeline's text clips, e.g. for thumbnails. Of
+    /// a comp (ffcine.comp/1), every layer composited at TIME, at the canvas size.
     #[bpaf(command, footer(crate::help::STILL))]
     Still(#[bpaf(external(deliver::still_args))] deliver::StillArgs),
     /// Compare grade variants (looks, LUTs, overrides) on shots, with contact sheets.
@@ -233,9 +236,16 @@ pub(crate) enum Cmd {
     /// in its project.output aspect (or --render-profile), and draws its text clips. Segments are
     /// cached by content: after an edit only changed ones render, the master joins them by stream
     /// copy, and an audio-only change is a remux. Re-run after an interruption to resume. The
-    /// audio is the finished mix, as `ffcine audio`; the mix flags override project.mix.
+    /// audio is the finished mix, as `ffcine audio`; the mix flags override project.mix. A comp
+    /// file (ffcine.comp/1) renders the same way, picture only, at its canvas aspect.
     #[bpaf(command, footer(crate::help::RENDER))]
     Render(#[bpaf(external(assemble::render_args))] assemble::RenderArgs),
+    /// Check compositions (ffcine.comp/1): `ffcine comp check COMP`.
+    ///
+    /// A comp is a canvas and layers whose parameters are constants, keyframes or expressions
+    /// (docs/compositing.md). Render one with `ffcine render`, a frame with `ffcine still`.
+    #[bpaf(command, footer(crate::help::COMP))]
+    Comp(#[bpaf(external(comp::comp_cmd))] comp::CompCmd),
     /// List which segments of NEW would render that OLD's render already has.
     ///
     /// Compares the segment keys of two versions of a timeline (and whether the audio changed),
@@ -1217,6 +1227,7 @@ pub(crate) fn run(cmd: Cmd) -> anyhow::Result<()> {
         | Cmd::Jitter(_)
         | Cmd::Import(_)
         | Cmd::Render(_)
+        | Cmd::Comp(_)
         | Cmd::Diff { .. }
         | Cmd::Chapters { .. }
         | Cmd::Tag(_)
@@ -1307,6 +1318,7 @@ pub(crate) fn run(cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Jitter(args) => args.run()?,
         Cmd::Import(args) => import(&args)?,
         Cmd::Render(args) => args.run(&ff)?,
+        Cmd::Comp(cmd) => comp::run(cmd, &ff)?,
         Cmd::Diff {
             profile,
             render_profile,

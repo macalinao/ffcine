@@ -182,6 +182,28 @@ impl Profile {
         Ok(p)
     }
 
+    /// The `name` profile for a comp whose canvas is `w`x`h` px: the canvas's aspect at the
+    /// profile's short side (a 1080x1920 comp previews at 1080x1920 and masters at 2160x3840).
+    /// Comps decode their sources (no proxies).
+    pub fn for_canvas(name: &str, w: u32, h: u32) -> Result<Self, String> {
+        let mut p = Self::by_name(name)
+            .ok_or_else(|| format!("unknown profile {name:?} (preview, master, review)"))?;
+        let mut a: Aspect = format!("{w}x{h}")
+            .parse()
+            .map_err(|e| format!("canvas size: {e}"))?;
+        let short = match p.name.as_str() {
+            "master" => MASTER_SHORT,
+            "review" => REVIEW_SHORT,
+            _ => PREVIEW_SHORT,
+        };
+        let size = sized(&a, short);
+        (a.width, a.height) = (size.width, size.height);
+        p.size = size;
+        p.aspect = a;
+        p.proxies = false;
+        Ok(p)
+    }
+
     /// What of the profile changes pixels (not its name).
     pub fn recipe(&self) -> Value {
         let mut v = json!({

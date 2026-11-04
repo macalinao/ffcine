@@ -431,6 +431,8 @@ pub enum Unit {
         shot: Shot,
         split_out: bool,
     },
+    /// A piece of a comp (`ffcine.comp/1`), lowered.
+    Comp(Arc<ffcine_comp::Piece>),
 }
 
 impl Unit {
@@ -453,6 +455,7 @@ impl Unit {
                 shot,
                 split_out,
             } => json!({"split_dissolve": [split.recipe(), shot.recipe()], "split_out": split_out}),
+            Self::Comp(p) => p.recipe.clone(),
         }
     }
 }
@@ -673,6 +676,66 @@ pub fn plan(
     })
 }
 
+/// What a comp's lowering reads of its media: probed sizes (`dims`) and fingerprints.
+pub struct CompMedia<'a> {
+    pub fp: &'a dyn Fingerprinter,
+    pub dims: &'a dyn Fn(&Path) -> ffcine_core::Result<(u32, u32)>,
+}
+
+impl ffcine_comp::Media for CompMedia<'_> {
+    fn dims(&self, path: &Path) -> ffcine_core::Result<(u32, u32)> {
+        (self.dims)(path)
+    }
+    fn identity(&self, path: &Path) -> Value {
+        serde_json::to_value(self.fp.fingerprint(path)).unwrap_or(Value::Null)
+    }
+}
+
+/// Plans a comp (`docs/compositing.md`) for `profile` (see [`Profile::for_canvas`]): one
+/// segment per piece ([`ffcine_comp::Comp::pieces`]), keyed by its lowered, sampled values, so
+/// the segment cache, `diff` and the manifest work as for timelines. No audio.
+pub fn plan_comp(
+    comp: &ffcine_comp::Comp,
+    profile: &Profile,
+    media: &dyn ffcine_comp::Media,
+) -> Result<Plan, PlanError> {
+    let rate = comp.canvas.fps;
+    let mut segments = Vec::new();
+    for r in comp.pieces() {
+        let piece = comp.lower(r.clone(), profile.size, media)?;
+        let unit = Unit::Comp(Arc::new(piece));
+        let recipe = json!({
+            "rev": RENDER_REVISION,
+            "ffcine": env!("CARGO_PKG_VERSION"),
+            "rate": rate,
+            "profile": profile.recipe(),
+            "frames": r.end - r.start,
+            "unit": unit.recipe(),
+        });
+        #[allow(clippy::cast_precision_loss)]
+        segments.push(Segment {
+            key: Key::of(&recipe),
+            name: format!(
+                "comp {:.2}-{:.2} s",
+                r.start as f64 / rate,
+                r.end as f64 / rate
+            ),
+            start: r.start,
+            frames: r.end - r.start,
+            unit,
+            layers: Vec::new(),
+        });
+    }
+    Ok(Plan {
+        rate,
+        profile: profile.clone(),
+        segments,
+        audio: None,
+        grain: None,
+        warnings: Vec::new(),
+    })
+}
+
 /// `ffcine.fx.grain/1` on the timeline's top-level stack, `profiles.<name>` folded in.
 fn timeline_grain(timeline: &Timeline, profile: &str) -> Option<Map<String, Value>> {
     let g = timeline.tracks.effects.iter().find_map(|e| match e {
@@ -734,7 +797,7 @@ fn set_spans(units: &mut [(String, i64, Unit)]) {
                     f(b);
                 }
                 Unit::SplitDissolve { shot, .. } => f(shot),
-                Unit::Gap | Unit::Split(_) => {}
+                Unit::Gap | Unit::Split(_) | Unit::Comp(_) => {}
             }
         }
     }

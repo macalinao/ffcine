@@ -26,6 +26,28 @@ pub fn is_comp(v: &Value) -> bool {
         .is_some_and(|s| s.starts_with("ffcine.comp/"))
 }
 
+/// Whether the file at `path` is a comp document (JSON, or YAML by extension); `false` for
+/// timelines and unreadable files.
+pub fn is_comp_file(path: &Path) -> bool {
+    read(path).is_ok_and(|v| is_comp(&v))
+}
+
+/// A JSON or (by extension) YAML document.
+fn read(path: &Path) -> Result<Value> {
+    let text = std::fs::read_to_string(path).map_err(|source| Error::Io {
+        path: path.to_owned(),
+        source,
+    })?;
+    let yaml = path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("yaml") || e.eq_ignore_ascii_case("yml"));
+    if yaml {
+        yaml_serde::from_str(&text).map_err(|e| err(path.display().to_string(), e.to_string()))
+    } else {
+        Ok(serde_json::from_str(&text)?)
+    }
+}
+
 /// The canvas: size, rate, duration, and the animated background and fade.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Canvas {
@@ -235,19 +257,7 @@ impl Comp {
     /// Reads `NAME.comp.json` or `NAME.comp.yaml`; relative media paths resolve against its
     /// directory.
     pub fn from_file(path: &Path) -> Result<Self> {
-        let text = std::fs::read_to_string(path).map_err(|source| Error::Io {
-            path: path.to_owned(),
-            source,
-        })?;
-        let yaml = path
-            .extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("yaml") || e.eq_ignore_ascii_case("yml"));
-        let v: Value = if yaml {
-            yaml_serde::from_str(&text)
-                .map_err(|e| err(path.display().to_string(), e.to_string()))?
-        } else {
-            serde_json::from_str(&text)?
-        };
+        let v = read(path)?;
         Self::from_value(&v, path.parent().unwrap_or(Path::new(".")))
     }
 

@@ -581,6 +581,7 @@ dependencies = [
  "ffcine-assembly",
  "ffcine-audio",
  "ffcine-breakdown",
+ "ffcine-comp",
  "ffcine-core",
  "ffcine-delivery",
  "ffcine-filters",
@@ -601,6 +602,7 @@ name = "ffcine-assembly"
 version = "0.3.0"
 dependencies = [
  "ffcine-audio",
+ "ffcine-comp",
  "ffcine-core",
  "ffcine-filters",
  "ffcine-import",
