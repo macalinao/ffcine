@@ -588,6 +588,20 @@ targets, not measurements):
 - Composite pass: one canvas-sized dispatch per composited layer per frame, cheap at 1080x1920
   and worth measuring at 4K with many rotated layers.
 
+Measured (step 2, `cargo test -p ffcine --release --test comp_gpu -- --ignored --nocapture
+bench`: 120 frames of N rounded, fading, moving 1080p H.264 video tiles in a column, NVENC HEVC
+out, wall time including setup). The reference GPU was shared with other jobs at the time
+(about 13 of its 16 GB and much of its compute in use), so these are lower bounds, not the
+budget's verdict; re-run on an idle GPU:
+
+| Output | 2 layers | 4 layers | 8 layers |
+|---|---|---|---|
+| 1080x1920 | 3.7-6.4 fps, +0.85 GB | 3.0-30 fps, +0.83 GB | 3.7-25 fps, +1.3 GB |
+| 2160x3840 | 7.6-24 fps, +1.5 GB | 8.5-30 fps, +1.2-1.6 GB | out of VRAM (~2.8 GB free) |
+
+The ranges are two runs minutes apart under different load from the other jobs; the VRAM is the
+peak rise of the GPU's `memory.used` during the render.
+
 **Caching** (incremental renders):
 
 - A comp is cut into pieces like a shot: at layer in/out points and text cuts, never leaving a

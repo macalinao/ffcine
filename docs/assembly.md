@@ -156,6 +156,13 @@ key includes both sides, so changing a dissolve or its neighbours re-renders onl
 and the trimmed shot next to it. Keys don't depend on how the timeline got there:
 `edit.yaml` imported to OTIO, written and read back plans the same keys.
 
+A comp file (`ffcine render story.comp.json`, [compositing.md](compositing.md)) plans through
+the same cache: `plan_comp` cuts it into pieces at layer in/out points (none under a second),
+and each piece is a segment (`Unit::Comp`) whose key is the profile, the rate, the frame count and
+the piece's lowered values: source fingerprints and start times, rects and rotations, and every
+hook value, as `f32` digests. Equivalent rewrites (keys to an expression) keep their keys, and an
+edit after a cut re-renders only the pieces whose values changed.
+
 ## Per-clip filters
 
 Everything is read from the OTIO timeline (effects on the clip, `project.output`), so `ffcine

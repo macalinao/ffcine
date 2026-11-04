@@ -329,17 +329,22 @@ fn bench_layers() {
             let piece = comp.lower(0..FRAMES, out_size, &media).expect("lower");
             let out = d.join(format!("bench-{n}-{}.mp4", size[1]));
             let t0 = std::time::Instant::now();
+            let mut res = Ok(());
             let vram = vram_peak(|| {
-                r.render_piece(
+                res = r.render_piece(
                     &piece,
                     30.0,
                     &out,
                     EncoderSettings::nvenc_hevc_master(),
                     None,
-                )
-                .expect("render");
+                );
             });
             let secs = t0.elapsed().as_secs_f64();
+            if let Err(e) = res {
+                // Out of VRAM on a shared GPU, say: report it and go on.
+                eprintln!("{}x{}: {n} video layers: failed: {e}", size[0], size[1]);
+                continue;
+            }
             eprintln!(
                 "{}x{}: {n} video layers, {FRAMES} frames in {secs:.2} s = {:.1} fps (with setup), VRAM +{vram} MiB",
                 size[0],
