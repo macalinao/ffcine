@@ -2,7 +2,8 @@
 //! --ignored`; needs a Vulkan GPU and `ffmpeg` on PATH, as in the dev shell): solids over a
 //! promoted `testsrc2` base (normal at half opacity, multiply), solids over the canvas
 //! background with a layer fade, and a canvas fade over multiply and difference layers, each
-//! lowered by `ffcine-comp`, rendered as a PNG and compared at ≥ 50 dB PSNR.
+//! lowered by `ffcine-comp`, rendered as a PNG and compared at ≥ 50 dB PSNR; and an ellipse
+//! mask's feather, the same width on both axes.
 
 #![allow(
     clippy::cast_possible_truncation,
@@ -24,8 +25,8 @@ const H: u32 = 640;
 /// Frames per bench case.
 const FRAMES: i64 = 120;
 
-fn dir() -> PathBuf {
-    let d = std::env::temp_dir().join(format!("ffcine-comp-gpu-{}", std::process::id()));
+fn dir(name: &str) -> PathBuf {
+    let d = std::env::temp_dir().join(format!("ffcine-comp-gpu-{name}-{}", std::process::id()));
     std::fs::create_dir_all(&d).expect("temp dir");
     d
 }
@@ -122,7 +123,7 @@ fn render(comp: &Comp, at: i64, out: &Path, d: &Path) -> Base {
 #[test]
 #[ignore = "needs a Vulkan GPU and ffmpeg"]
 fn solids_over_video_and_background_match_the_cpu() {
-    let d = dir();
+    let d = dir("ref");
     let src = d.join("src.mkv");
     // RGB, lossless: the reference reads the same values the GPU does.
     ffmpeg(&[
@@ -221,9 +222,16 @@ fn solids_over_video_and_background_match_the_cpu() {
     let db = psnr(&got, &want);
     eprintln!("background + solids: {db:.1} dB");
     assert!(db >= 50.0, "background + solids: {db:.1} dB");
+    let _ = std::fs::remove_dir_all(&d);
+}
 
-    // The canvas fade covers the composite whatever the blend modes: a multiply layer faded
-    // halfway to black is half its composite, and fade 0 to white is all white.
+/// The canvas fade covers the composite whatever the blend modes: multiply and difference layers
+/// faded to 0.6 towards black are 0.6 of their composite, and fade 0 to white is all white.
+#[test]
+#[ignore = "needs a Vulkan GPU and ffmpeg"]
+fn canvas_fade_covers_every_blend_mode() {
+    let d = dir("fade");
+    let bg = [0x33u8, 0x66, 0x99];
     let faded = |fade: f64, colour: &str, name: &str| {
         let comp = Comp::from_value(
             &json!({
@@ -234,7 +242,7 @@ fn solids_over_video_and_background_match_the_cpu() {
                     { "source": { "solid": "#808080" }, "size": [200, 200], "blend": "multiply",
                       "transform": { "anchor": [0, 0], "position": [40, 100] } },
                     { "source": { "solid": "#808080" }, "size": [80, 40], "blend": "difference",
-                      "transform": { "anchor": [0, 0], "position": [300, 160] } },
+                      "transform": { "anchor": [0, 0], "position": [260, 160] } },
                 ],
             }),
             &d,
@@ -254,13 +262,13 @@ fn solids_over_video_and_background_match_the_cpu() {
     );
     over(
         &mut want,
-        [300, 160, 80, 40],
+        [260, 160, 80, 40],
         [128.0 / 255.0; 3],
         1.0,
         BlendMode::Difference,
     );
-    over(&mut want, [0, 0, W, H], [0.0; 3], 0.5, BlendMode::Normal);
-    let got = faded(0.5, "black", "c.png");
+    over(&mut want, [0, 0, W, H], [0.0; 3], 0.4, BlendMode::Normal);
+    let got = faded(0.6, "black", "c.png");
     let db = psnr(&got, &want);
     eprintln!("canvas fade over blends: {db:.1} dB");
     assert!(db >= 50.0, "canvas fade over blends: {db:.1} dB");
@@ -269,6 +277,38 @@ fn solids_over_video_and_background_match_the_cpu() {
         got.iter().all(|v| *v == 255),
         "fade 0 to white is all white"
     );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// An ellipse mask's soft edge is `feather` px wide on both axes, not only the short one: on a
+/// 200x100 white ellipse feathered 20 px over black, 4.5 px inside the edge reads the same on
+/// the long axis as on the short one (0.725).
+#[test]
+#[ignore = "needs a Vulkan GPU and ffmpeg"]
+fn ellipse_feather_is_even_all_round() {
+    let d = dir("ellipse");
+    let comp = Comp::from_value(
+        &json!({
+            "schema": "ffcine.comp/1",
+            "canvas": { "size": [W, H], "fps": 30, "duration": 1.0 },
+            "layers": [
+                { "source": { "solid": "white" }, "size": [200, 100],
+                  "mask": { "shape": "ellipse", "feather": 20 },
+                  "transform": { "anchor": [0, 0], "position": [40, 100] } },
+            ],
+        }),
+        &d,
+    )
+    .expect("comp");
+    let out = d.join("e.png");
+    render(&comp, 0, &out, &d);
+    let got = rgb(&out, &[]);
+    let at = |x: u32, y: u32| f64::from(got[((y * W + x) * 3) as usize]);
+    // The box middle is (140, 150); pixel centres 95.5 px across and 45.5 px down from it.
+    let (long, short) = (at(235, 150), at(140, 195));
+    let want = 0.725 * 255.0;
+    eprintln!("ellipse feather: {long} across, {short} down, want {want:.0}");
+    assert!((long - want).abs() <= 4.0 && (short - want).abs() <= 4.0);
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -311,7 +351,7 @@ fn vram_peak(f: impl FnOnce()) -> u64 {
 #[test]
 #[ignore = "bench: needs a Vulkan GPU, NVENC and ffmpeg"]
 fn bench_layers() {
-    let d = dir();
+    let d = dir("bench");
     let src = d.join("src.mp4");
     ffmpeg(&[
         "-f",

@@ -306,7 +306,11 @@ vec4 hook() {
             vec2 mq = abs(mp) - mh;
             md = length(max(mq, 0.0)) + min(max(mq.x, mq.y), 0.0);
         } else {
-            md = (length(mp / mh) - 1.0) * min(mh.x, mh.y);
+            // The implicit (|p/h| - 1) over its gradient: px from the edge near it, so the
+            // soft edge is `feather` px wide all round, not only on the short axis.
+            float l = length(mp / mh);
+            vec2 g = mp / (mh * mh);
+            md = l < 1e-4 ? -min(mh.x, mh.y) : (l - 1.0) * l / max(length(g), 1e-9);
         }
         float m = clamp(0.5 - md / max(feather, 1.0), 0.0, 1.0);
         a *= invert > 0.5 ? 1.0 - m : m;
