@@ -5,6 +5,8 @@
 //! [`Scope`] (names to variable slots), constant-folded and flattened to stack ops. Evaluating
 //! the ops is a pure function of the [`Frame`]: no state, no loops, so it always terminates.
 
+#![allow(clippy::many_single_char_names)] // maths: x, y, z, a, b
+
 use std::f64::consts::{E, PI};
 
 use super::{Ease, Frame, Scope};
