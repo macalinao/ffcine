@@ -359,7 +359,8 @@ compile every expression and sample every frame.
   (`layers[2].transform.position[0]: col 14: expected ")"`). An unknown variable or function, a
   wrong argument count, a var that shadows a built-in, a cycle, or an expression over 4 KiB or
   nested deeper than 64 levels is also an error. Each operator of a chain counts as a level
-  (`a + b + c` nests to the left), so a chain is at most 64 operators long.
+  (`a + b + c` nests to the left) and the whole expression takes one, so a chain is at most 63
+  operators (64 terms) long.
   An expression that is constant and not finite (`1/0`, `log(-1)`) is an error here.
 - Evaluate: a non-finite result (`log(-1)`, `1/0`) is an error with the parameter, layer, frame
   and time. Values outside a parameter's range are clamped as constants are today (opacity

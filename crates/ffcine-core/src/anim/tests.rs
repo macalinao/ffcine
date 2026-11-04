@@ -486,6 +486,14 @@ fn long_chains_are_capped_not_a_stack_overflow() {
         let e = compile_err(&long);
         assert!(e.msg.contains("deeper than 64"), "{op}: {e:?}");
     }
+    // The top-level expression takes one level, so a chain is at most 63 operators long.
+    let at_limit = format!("1{}", "+t".repeat(63));
+    assert!(close(ev(&at_limit, &layer(2.0)), 127.0, 1e-9));
+    let over = format!("1{}", "+t".repeat(64));
+    assert!(
+        compile_err(&over).msg.contains("deeper than 64"),
+        "64 operators"
+    );
 }
 
 #[test]
