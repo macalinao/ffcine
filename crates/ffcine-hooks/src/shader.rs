@@ -129,10 +129,10 @@ impl ShaderEffect {
             })?;
             match v {
                 Keyed::Const(c) => hook.params.push((k.clone(), p.check(*c)?)),
-                Keyed::Keys(_) => {
+                Keyed::Keys(_) | Keyed::Track(_) => {
                     let values = (0..frames.max(1))
                         .map(|i| {
-                            let x = v.eval(start + i as f64 / rate).unwrap_or_default();
+                            let x = v.try_eval(start + i as f64 / rate)?.unwrap_or_default();
                             p.check(x).map(|x| x as f32)
                         })
                         .collect::<Result<_>>()?;
@@ -231,5 +231,27 @@ mod tests {
         assert!(h.source.starts_with("//!PARAM g"));
         assert!(h.source.contains("//!HOOK PREOUTPUT\n"));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn params_take_expressions() {
+        let project = Project::default();
+        let e = |v: Value| ShaderEffect::parse(v.as_object().expect("object")).unwrap();
+        let fx = e(json!({"shader": "adaptive-sharpen", "params": {"curve_height": "st / 2"}}));
+        let h = fx.hook(&project, Path::new("/"), (48, 24.0, 0.5)).unwrap();
+        let t = &h.tracks[0];
+        assert!((t.values[0] - 0.25).abs() < 1e-6 && (t.values[24] - 0.75).abs() < 1e-6);
+        // A constant expression is a plain param.
+        let fx = e(json!({"shader": "adaptive-sharpen", "params": {"curve_height": "PI / 4"}}));
+        let h = fx.hook(&project, Path::new("/"), (48, 24.0, 0.0)).unwrap();
+        assert!(h.tracks.is_empty() && (h.params[0].1 - std::f64::consts::FRAC_PI_4).abs() < 1e-12);
+        // Range checks see every sampled value.
+        let fx = e(json!({"shader": "adaptive-sharpen", "params": {"overshoot_ctrl": "st"}}));
+        assert!(fx.hook(&project, Path::new("/"), (48, 24.0, 1.5)).is_err());
+        let bad = json!({"shader": "adaptive-sharpen", "params": {"curve_height": "st +"}});
+        let msg = ShaderEffect::parse(bad.as_object().expect("o"))
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("col 5"), "{msg}");
     }
 }

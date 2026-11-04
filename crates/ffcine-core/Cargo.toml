@@ -1,6 +1,6 @@
 [package]
 name = "ffcine-core"
-description = "ffcine core types: errors, colour spaces, 3D LUTs, media info, 2D geometry"
+description = "ffcine core types: errors, colour spaces, 3D LUTs, media info, 2D geometry, param tracks and expressions"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

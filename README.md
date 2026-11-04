@@ -5,8 +5,9 @@ LUTs, crop/scale, 3D LUTs, denoise, stabilization, user shaders) and encodes it 
 kept in VRAM end to end: libav* (ffmpeg) for demux/decode/encode/mux on NVDEC/NVENC, libplacebo
 on Vulkan for the processing. Around that it renders whole timelines (OTIO, imported from
 DaVinci Resolve, Final Cut Pro, Kdenlive/Shotcut, CapCut or EDL) with a content-keyed segment
-cache, mixes audio to EBU R128, and handles the jobs before and after the edit: card offload,
-clip catalog, triage with transcripts, chapters and stills.
+cache (animated effect parameters take keyframes or ffmpeg-style expressions), mixes audio to
+EBU R128, and handles the jobs before and after the edit: card offload, clip catalog, triage
+with transcripts, chapters and stills.
 
 It is a set of library crates (`ffcine` is the facade) with the `ffcine` CLI on top. Design:
 [docs/design.md](docs/design.md).

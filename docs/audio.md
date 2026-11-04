@@ -95,7 +95,7 @@ Per clip, after cleaning and drift correction: R128 integrated loudness (`ebur12
 | `mode` | by bus: `dialogue` (`orig`) −18 LUFS, `music` −20 (on the whole track, so quiet intros stay quiet), `ambience` −36, `sfx`; also `nat` −22, `off`. `music` on a dialogue track (a shot without its own audio) is muted unless `nat_db` gives it −22 + `nat_db` |
 | `lufs` | explicit target, overrides `mode` |
 | `ref_dbfs` | `sfx`: the loudest 100 ms at −18 dBFS RMS, peaks under −1 dBFS, so `gain_db` 0 is as loud as the talking |
-| `gain_db` | 0; number or keyframes (`docs/timeline.md`), e.g. Resolve clip volume |
+| `gain_db` | 0; number, keyframes or an expression over `st` (`docs/timeline.md`), e.g. Resolve clip volume; a key's `ease` is smoothstep (also in `{keys, expr}`), and an array with a key that doesn't read is an error |
 | `duck_db` | how far the music dips while this clip plays: `orig` −14, `nat` −7, others 0 (SFX: punchlines like a record scratch) |
 | `fade_in`, `fade_out` | dialogue 0.125 s (the cut crossfade: each dialogue clip reads 62.5 ms past both ends), ambience 0.8 s, others 10 ms; a `Transition` on the track is an equal-power crossfade instead |
 

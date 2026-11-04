@@ -17,6 +17,17 @@ pub enum Error {
     },
     #[error("invalid {what}: {value:?}")]
     Invalid { what: &'static str, value: String },
+    /// A param track that doesn't parse or evaluate.
+    #[error("{path}: {msg}")]
+    Track { path: String, msg: String },
+    /// An expression that doesn't compile: the column (1-based, characters) and a caret.
+    #[error("{path}: col {col}: {msg}\n  {src}\n  {caret}^", caret = " ".repeat(col.saturating_sub(1)))]
+    Expr {
+        path: String,
+        col: usize,
+        msg: String,
+        src: String,
+    },
     #[error("{path}: {msg}")]
     Import { path: PathBuf, msg: String },
     #[error("invalid OTIO JSON: {0}")]

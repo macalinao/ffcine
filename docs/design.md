@@ -115,7 +115,7 @@ uses it.
 
 | Crate | What | Depends on |
 |---|---|---|
-| `ffcine-core` | `Error`/`Result`, `ColorSpace`, `Lut` (.cube), `MediaInfo`/`Rational`, `geom` (`Mat3`), libav-free probes (`bmff` MP4/MOV/CR3, `wav`) and picture profile detection (`profile`); no GPU, feature `ffmpeg` adds `Error::Ffmpeg` | - |
+| `ffcine-core` | `Error`/`Result`, `ColorSpace`, `Lut` (.cube), `MediaInfo`/`Rational`, `geom` (`Mat3`), `anim` (param tracks, eases, expressions and vars, [compositing.md](compositing.md#param-tracks)), libav-free probes (`bmff` MP4/MOV/CR3, `wav`) and picture profile detection (`profile`); no GPU, feature `ffmpeg` adds `Error::Ffmpeg` | - |
 | `ffcine-ingest` | card offload (verified copy, manifest, backup), per-camera clock fixes and checks, `catalog.json` ([ingest.md](ingest.md)); no GPU or libav, runs on macOS | core |
 | `ffcine-timeline` | OTIO JSON model, `ffcine` metadata namespace, `Project`/`GradeParams` layering | core |
 | `ffcine-import` | edit.yaml, Resolve OTIO, FCPXML, Kdenlive/Shotcut MLT importers | core, timeline |
@@ -231,7 +231,9 @@ Importing Resolve, FCP/Premiere, EDL, Kdenlive and CapCut projects: [import.md](
 - **Never a custom `OTIO_SCHEMA` in a typed slot** (`clip.effects`, `track.children`, ...): other OTIO
   readers fail the whole file with `expected Effect, found UnknownSchema`. Custom data only ever
   appears as stock objects plus metadata.
-- **Keyframes** have one form everywhere: `[{ "t": RationalTime, "v": ..., "interp": "linear" | "ease" | "hold" }]`.
+- **Keyframes** have one form everywhere: `[{ "t": RationalTime, "v": ..., "interp": "linear" | "ease" | "hold" }]`,
+  parsed by one track type (`ffcine_core::anim`), which also takes expressions
+  ([compositing.md](compositing.md#param-tracks)).
 - **Text** (titles, cards, captions) = clips on their own track with
   `GeneratorReference(generator_kind = "ffcine.text", parameters = {...})`.
 - **Settled 2026-11-01** (open questions from PR #5; details in [timeline.md](timeline.md)):

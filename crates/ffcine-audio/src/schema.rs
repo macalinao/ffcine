@@ -5,6 +5,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use ffcine_core::anim::{Clock, Ease, Track as ParamTrack};
 use ffcine_core::{Error, Result};
 
 use crate::mix::ClipDefaults;
@@ -22,8 +23,20 @@ pub const LOOP: &str = "ffcine.audio.loop";
 pub enum Interp {
     #[default]
     Linear,
+    /// Smoothstep, `3u² − 2u³` ([`Ease::Smoothstep`]).
     Ease,
     Hold,
+}
+
+impl Interp {
+    /// The shared easing curve this names.
+    pub fn ease(self) -> Ease {
+        match self {
+            Self::Linear => Ease::Linear,
+            Self::Ease => Ease::Smoothstep,
+            Self::Hold => Ease::Hold,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -35,12 +48,76 @@ pub struct Key {
     pub interp: Interp,
 }
 
-/// A number, or keyframes over the clip's source time (`docs/timeline.md`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// A number, keyframes over the clip's source time (`docs/timeline.md`), or an expression over
+/// it (`st`, `docs/compositing.md#expressions`). An array holding any object is keys, and a
+/// key that doesn't read is an error (never an expression, whose `ease` is another curve).
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum Param {
     Value(f64),
     Keys(Vec<Key>),
+    Expr(ExprParam),
+}
+
+/// An expression param: its JSON as written (serialised back verbatim) and its compiled track.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExprParam {
+    src: Value,
+    track: ParamTrack<f64>,
+}
+
+impl ExprParam {
+    /// An expression, or `{"keys", "expr"}` whose keys' `ease` is smoothstep as in [`Interp`].
+    pub fn parse(v: &Value) -> Result<Self> {
+        let mut norm = v.clone();
+        if let Some(Value::Array(keys)) = norm.get_mut("keys") {
+            for k in keys.iter_mut().filter_map(Value::as_object_mut) {
+                for name in ["interp", "ease"] {
+                    if k.get(name).and_then(Value::as_str) == Some("ease") {
+                        k.insert(name.into(), "smoothstep".into());
+                    }
+                }
+            }
+        }
+        Ok(Self {
+            track: ParamTrack::parse(&norm, Clock::Source, "audio param")?,
+            src: v.clone(),
+        })
+    }
+}
+
+impl Serialize for ExprParam {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        self.src.serialize(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for ExprParam {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        let v = Value::deserialize(d)?;
+        Self::parse(&v).map_err(serde::de::Error::custom)
+    }
+}
+
+impl<'de> Deserialize<'de> for Param {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        use serde::de::Error as _;
+        let v = Value::deserialize(d)?;
+        match &v {
+            Value::Number(n) => n
+                .as_f64()
+                .map(Param::Value)
+                .ok_or_else(|| D::Error::custom(format!("invalid number {n}"))),
+            Value::Array(a) if a.is_empty() || a.iter().any(Value::is_object) => {
+                Vec::<Key>::deserialize(v)
+                    .map(Param::Keys)
+                    .map_err(|e| D::Error::custom(format!("audio param keyframes: {e}")))
+            }
+            _ => ExprParam::parse(&v)
+                .map(Param::Expr)
+                .map_err(D::Error::custom),
+        }
+    }
 }
 
 impl Default for Param {
@@ -65,6 +142,7 @@ impl Param {
         let keys = match self {
             Param::Value(v) => return *v,
             Param::Keys(k) => k,
+            Param::Expr(e) => return e.track.at(Clock::Source, t, 0.0).unwrap_or(0.0),
         };
         let Some(first) = keys.first() else {
             return 0.0;
@@ -81,12 +159,7 @@ impl Param {
         } else {
             1.0
         };
-        let u = match a.interp {
-            Interp::Linear => u,
-            Interp::Ease => u * u * (3.0 - 2.0 * u),
-            Interp::Hold => 0.0,
-        };
-        a.v + (b.v - a.v) * u
+        a.v + (b.v - a.v) * a.interp.ease().at(u)
     }
 }
 
@@ -481,5 +554,36 @@ mod tests {
             Clean::for_mode(LevelMode::Nat).filter_spec(LevelMode::Nat),
             "highpass=f=80"
         );
+    }
+
+    #[test]
+    fn gain_takes_expressions() {
+        let v = serde_json::json!({"gain_db": "-6 + 6 * clip(st - 1, 0, 1)"});
+        let l: Level = serde_json::from_value(v.clone()).expect("level");
+        assert!(!l.gain_db.is_constant());
+        assert!((l.gain_db.at(0.5) + 6.0).abs() < 1e-9 && (l.gain_db.at(1.5) + 3.0).abs() < 1e-9);
+        // Written back as it was read.
+        let back = serde_json::to_value(&l).expect("ser");
+        assert_eq!(back["gain_db"], v["gain_db"]);
+        assert!(serde_json::from_value::<Level>(serde_json::json!({"gain_db": "st +"})).is_err());
+        // `ease` stays smoothstep.
+        assert!((Interp::Ease.ease().at(0.25) - 0.156_25).abs() < 1e-12);
+    }
+
+    #[test]
+    fn bad_keys_are_an_error_not_an_expression() {
+        let e = serde_json::from_value::<Level>(serde_json::json!({
+            "gain_db": [{"t": 1, "v": -6, "interp": "ease"}]
+        }))
+        .expect_err("bad key");
+        assert!(e.to_string().contains("audio param keyframes"), "{e}");
+        let l: Level = serde_json::from_value(serde_json::json!({"gain_db": []})).expect("[]");
+        assert_eq!(l.gain_db, Param::Keys(Vec::new()));
+        // In `{keys, expr}`, a key's `ease` is smoothstep too.
+        let l: Level = serde_json::from_value(serde_json::json!({"gain_db": {
+            "keys": [{"t": 0, "v": 0, "interp": "ease"}, {"t": 1, "v": 1}], "expr": "value"
+        }}))
+        .expect("keys expr");
+        assert!((l.gain_db.at(0.25) - 0.156_25).abs() < 1e-12);
     }
 }

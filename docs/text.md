@@ -116,12 +116,15 @@ shows with its first piece otherwise.
 `keyframes.<param>` is a list of `{t, v, interp}` (the reframe keyframes' form):
 `t` in seconds from the clip's start (negative: from its end; a `RationalTime` works too),
 `interp` (any `ease` above, `linear` default) shaping the move to the next key. Before the first
-key the first value holds, after the last the last.
+key the first value holds, after the last the last. A param may instead be an expression over
+`lt` (seconds from the clip's start) and `dur` (the clip's length), e.g. `"opacity":
+"0.5 + 0.5*sin(lt*6)"`, an array of constants and expressions (`"position": [0, "0.3 - 0.05*lt"]`),
+or `{"keys": [...], "expr": "value * ..."}` ([compositing.md](compositing.md#expressions)).
 
 | Param | `v` |
 |---|---|
 | `position` | `[x, y]` like `position`: the anchor moves there |
-| `scale` | a number or `[x, y]`, about the anchor; text is rasterised at the largest scale (up to 4) so it stays sharp |
+| `scale` | a number or `[x, y]`, about the anchor; text is rasterised at the largest scale (up to 4; an expression's is sampled on every frame) so it stays sharp |
 | `opacity` | multiplies the alpha (shadow, outline and box too) |
 | `colour` | `[r, g, b]` or `[r, g, b, a]`: replaces the text's colour (a `rect`'s fill) |
 
