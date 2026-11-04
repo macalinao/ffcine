@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use ffcine_core::anim::{Clock, Ease, Track};
+use ffcine_core::anim::{Clock, Ease, Track as ParamTrack};
 use ffcine_core::{Error, Result};
 
 use crate::mix::ClipDefaults;
@@ -62,13 +62,13 @@ pub enum Param {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExprParam {
     src: Value,
-    track: Track<f64>,
+    track: ParamTrack<f64>,
 }
 
 impl ExprParam {
     pub fn parse(v: &Value) -> Result<Self> {
         Ok(Self {
-            track: Track::parse(v, Clock::Source, "audio param")?,
+            track: ParamTrack::parse(v, Clock::Source, "audio param")?,
             src: v.clone(),
         })
     }

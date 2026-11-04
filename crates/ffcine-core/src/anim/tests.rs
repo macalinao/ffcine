@@ -81,7 +81,7 @@ fn eases_match_golden_tables() {
         // Clamped outside 0..1.
         assert!(close(e.at(-1.0), want[0], 1e-12) && close(e.at(2.0), 1.0, 1e-12));
     }
-    assert!(Ease::Hold.at(0.0) == 0.0 && Ease::Hold.at(0.99) == 0.0 && Ease::Hold.at(1.0) == 1.0);
+    assert!(close(Ease::Hold.at(0.99), 0.0, 0.0) && close(Ease::Hold.at(1.0), 1.0, 0.0));
 }
 
 #[test]

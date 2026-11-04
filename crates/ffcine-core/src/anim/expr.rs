@@ -128,7 +128,11 @@ impl Node {
         match self {
             Self::Num(_) => {}
             Self::Var(n, _) => out.push(n.clone()),
-            Self::Call(_, _, a) => a.iter().for_each(|a| a.names(out)),
+            Self::Call(_, _, a) => {
+                for a in a {
+                    a.names(out);
+                }
+            }
         }
     }
 }
@@ -550,6 +554,7 @@ enum Ir {
     Op(F, Vec<Ir>),
 }
 
+#[allow(clippy::too_many_lines)]
 fn resolve(n: &Node, scope: &Scope) -> Res<Ir> {
     let ir = match n {
         Node::Num(v) => Ir::Num(*v),

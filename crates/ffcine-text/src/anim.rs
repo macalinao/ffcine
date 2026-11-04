@@ -201,10 +201,10 @@ impl<const N: usize> Keys<N> {
                     o.insert("t".into(), t.into());
                     o.insert("v".into(), v);
                     // Unknown names are linear, as before.
-                    if let Some(e) = k.get("interp").or_else(|| k.get("ease")) {
-                        if Ease::parse(e).is_some() {
-                            o.insert("interp".into(), e.clone());
-                        }
+                    if let Some(e) = k.get("interp").or_else(|| k.get("ease"))
+                        && Ease::parse(e).is_some()
+                    {
+                        o.insert("interp".into(), e.clone());
                     }
                     Some(Value::Object(o))
                 })
@@ -220,10 +220,7 @@ impl<const N: usize> Keys<N> {
                 }
                 Value::Object(o)
             }
-            Value::Number(_) | Value::Array(_) => match value(v) {
-                Some(c) => c,
-                None => v.clone(),
-            },
+            Value::Number(_) | Value::Array(_) => value(v).unwrap_or_else(|| v.clone()),
             _ => v.clone(),
         };
         if norm.as_array().is_some_and(Vec::is_empty) {

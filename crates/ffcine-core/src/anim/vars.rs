@@ -74,37 +74,9 @@ impl Vars {
             names.dedup();
             deps.insert(name, names);
         }
-        // Depth-first topological order; a grey node met again closes a cycle.
         let mut order: Vec<&str> = Vec::new();
         let mut state: HashMap<&str, u8> = HashMap::new();
         let mut stack: Vec<&str> = Vec::new();
-        fn visit<'a>(
-            n: &'a str,
-            deps: &'a HashMap<&str, Vec<String>>,
-            state: &mut HashMap<&'a str, u8>,
-            stack: &mut Vec<&'a str>,
-            order: &mut Vec<&'a str>,
-        ) -> std::result::Result<(), String> {
-            match state.get(n) {
-                Some(2) => return Ok(()),
-                Some(1) => {
-                    let at = stack.iter().position(|s| *s == n).unwrap_or(0);
-                    let mut cyc: Vec<&str> = stack[at..].to_vec();
-                    cyc.push(n);
-                    return Err(cyc.join(" -> "));
-                }
-                _ => {}
-            }
-            state.insert(n, 1);
-            stack.push(n);
-            for d in &deps[n] {
-                visit(d, deps, state, stack, order)?;
-            }
-            stack.pop();
-            state.insert(n, 2);
-            order.push(n);
-            Ok(())
-        }
         for name in m.keys() {
             visit(name, &deps, &mut state, &mut stack, &mut order)
                 .map_err(|c| err(path, format!("vars cycle: {c}")))?;
@@ -133,12 +105,41 @@ impl Vars {
     }
 }
 
+/// Depth-first topological order; a grey node met again closes a cycle.
+fn visit<'a>(
+    n: &'a str,
+    deps: &'a HashMap<&str, Vec<String>>,
+    state: &mut HashMap<&'a str, u8>,
+    stack: &mut Vec<&'a str>,
+    order: &mut Vec<&'a str>,
+) -> std::result::Result<(), String> {
+    match state.get(n) {
+        Some(2) => return Ok(()),
+        Some(1) => {
+            let at = stack.iter().position(|s| *s == n).unwrap_or(0);
+            let mut cyc: Vec<&str> = stack[at..].to_vec();
+            cyc.push(n);
+            return Err(cyc.join(" -> "));
+        }
+        _ => {}
+    }
+    state.insert(n, 1);
+    stack.push(n);
+    for d in &deps[n] {
+        visit(d, deps, state, stack, order)?;
+    }
+    stack.pop();
+    state.insert(n, 2);
+    order.push(n);
+    Ok(())
+}
+
 /// The expression strings in a track's JSON.
 fn sources(v: &Value) -> Vec<&str> {
     match v {
         Value::String(s) => vec![s],
         Value::Array(a) => a.iter().filter_map(Value::as_str).collect(),
-        Value::Object(o) => o.get("expr").map(sources).unwrap_or_default(),
+        Value::Object(o) => o.get("expr").map_or_else(Vec::new, sources),
         _ => Vec::new(),
     }
 }
