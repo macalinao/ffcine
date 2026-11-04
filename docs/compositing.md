@@ -1,6 +1,7 @@
 # Compositing and keyframes (design)
 
-Status: design, not built. It turns what assembly already composites (split-screens,
+Status: design. Step 1 of the [phased plan](#phased-plan) (param tracks and expressions,
+`ffcine_core::anim`) is built; the rest is not. It turns what assembly already composites (split-screens,
 picture-in-picture, transitions, stills, text) into one general model: a **composition** of
 ordered **layers** whose parameters are **tracks**. Anything one would write today as a
 hand-made ffmpeg filter graph should be expressible in ffcine itself, and layouts and
@@ -202,31 +203,42 @@ pub enum Track<T: Animatable> {
     Sampled(Vec<T>),                      // per frame, internal only (exact lowering)
 }
 pub struct Key<T> { pub t: f64, pub v: T, pub ease: Ease }
-pub enum Ease { Linear, Hold, Ease, In, Out, InOut, Back, Bezier([f64; 4]) }
+pub enum Ease { Linear, Hold, Ease, In, Out, InOut, Back, Smoothstep, Bezier([f64; 4]) }
 pub trait Animatable: Copy { const N: usize; fn lerp(a: Self, b: Self, k: f64) -> Self; ... }
-// f64, [f64; 2], [f64; 3], [f64; 4]
+// f64, [f64; N]
 impl<T> Track<T> {
-    pub fn parse(v: &Value, clock: Clock, what: &'static str) -> Result<Self>;
-    pub fn eval(&self, ctx: &Frame) -> Result<T>;
-    pub fn sample(&self, frames: Range<i64>, env: &Env) -> Result<Vec<T>>; // -> ParamTrack, rects
+    pub fn parse(v: &Value, clock: Clock, what: &str) -> Result<Self>;
+    pub fn parse_in(v: &Value, scope: &Scope, what: &str) -> Result<Self>; // clock + vars
+    pub fn eval(&self, ctx: &Frame) -> Result<T>;                          // keys on `lt`
+    pub fn try_eval(&self, clock: Clock, ctx: &Frame) -> Result<Option<T>>;
+    pub fn at(&self, clock: Clock, t: f64, dur: f64) -> Option<T>;         // timeline effects
+    pub fn sample(&self, clock: Clock, frames: Range<i64>, env: &Env) -> Result<Vec<T>>;
 }
 ```
 
-- `Ease` is text's set, which already contains reframe's and audio's (`linear`, `ease` the
-  cosine, `hold`) with the same maths. On top of those it has `in`, `out`, `in_out` (cubic),
-  `back` and CSS `cubic-bezier` `[x1, y1, x2, y2]`. A key's `ease` shapes the segment to the
-  next key. The JSON key is `interp`, as everywhere now; `ease` is accepted as an alias (text
-  accepts it already).
+- `Ease` is text's set, which already contains reframe's (`linear`, `ease` the cosine, `hold`)
+  with the same maths. On top of those it has `in`, `out`, `in_out` (cubic), `back` and CSS
+  `cubic-bezier` `[x1, y1, x2, y2]`. Audio's `ease` is a different curve, smoothstep
+  (`3u² − 2u³`), so `Ease` also has `smoothstep`, and the audio schemas keep mapping their
+  `ease` to it: changing it would move existing level automation. A key's `ease` shapes the
+  segment to the next key. The JSON key is `interp`, as everywhere now; `ease` is accepted as an
+  alias (text accepts it already).
 - `Clock` says what `t` means. That is what differs between today's schemas, and each keeps its
   meaning: reframe, transform, crop and shader keys use the clip's source time; text keys use
   seconds from the clip's start (negative counts from its end); a comp layer's keys use seconds
   from the layer's `in` (negative from its `out`). A comp layer's clock is not its source
-  time, so a speed ramp doesn't warp its animation.
+  time, so a speed ramp doesn't warp its animation. The clock also says which
+  [variables](#expressions) an expression sees: a comp layer's (`Clock::Layer`) sees all of
+  them. Until the planner passes the rest (step 2 onwards), a timeline effect's expression sees
+  only its own clock's time: `st` on source-time schemas (`Clock::Source`), `lt` and `dur` on
+  text (`Clock::Clip`). Any other name is a compile error, so nothing changes meaning later.
 - Sampling is at the frame's start time, `i / fps`, as reframe and ffmpeg's expressions do.
   `Sampled` exists so lowered features (a dissolve's `comp::progress`, sampled at the frame
   middle) keep their exact values.
 - `ffcine_reframe::Keyed`/`Interp`, `ffcine_text::anim::Keys`/`Ease` and
-  `ffcine_audio::schema::Interp` become re-exports or thin wrappers. `ParamTrack` stays as the
+  `ffcine_audio::schema::Interp` become re-exports or thin wrappers. `Keyed` keeps its `Const`
+  and `Keys` variants (matched on across the workspace) and gains `Track` for expressions;
+  `ffcine_audio::schema::Param` gains `Expr`, which serialises back to the JSON as written. `ParamTrack` stays as the
   render side's sampled form (per-frame `f32`).
 - Vector and colour params animate as a whole (keys of `[x, y]`), or per component with an
   array whose items are constants or expressions (`[0, "H*0.4 + 20*sin(t)"]`). A colour string
@@ -318,8 +330,10 @@ name  = ( letter | "_" ) { letter | digit | "_" }
 **Functions**: ffmpeg's names and semantics, `if(c, a[, b])`, `ifnot(c, a[, b])`, `lt`, `lte`,
 `gt`, `gte`, `eq`, `between(x, a, b)` (inclusive), `clip(x, lo, hi)`, `min`, `max`
 (2 or more arguments), `abs`, `floor`, `ceil`, `round`, `trunc`, `mod(a, b)` and `%`
-(truncating, ffmpeg's), `sqrt`, `pow`, `exp`, `log`, `sin`, `cos`, `tan`, `asin`, `acos`,
-`atan`, `atan2`, `hypot`, `sign`, `squish`, `gauss`. Ours: `lerp(a, b, k)`,
+(ffmpeg's: `a − floor(a / b)·b`, so `mod(-7, 3)` is 2), `not`, `sqrt`, `pow`, `exp`, `log`,
+`sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `hypot`, `sign` (and ffmpeg's `sgn`),
+`squish`, `gauss`. ffmpeg has no infix comparisons, `&&`, `||` or `?:`; they are ours. Its `^`
+is left-associative (`2^3^2` is 64 there); ours is right-associative as in the grammar (512). Ours: `lerp(a, b, k)`,
 `smoothstep(e0, e1, x)`, the easing curves on a progress `u` (clamped to 0..1): `ease`,
 `ease_in`, `ease_out`, `ease_in_out`, `back`, `bezier(x1, y1, x2, y2, u)`. Also
 `random(seed)`, uniform in [0, 1) from a hash (SplitMix64) of `seed` and `n`, so it is the same
@@ -330,7 +344,7 @@ frame.
 
 **Vars**: `vars` on a comp or a layer, `{name: track}`. Lookup goes layer, then its comp, then
 the parent comps. A var may be keyframed, which is how an expression references a keyframed
-track (`"vars": {"kick": [{"t": 2, "v": 0}, {"t": 2.2, "v": 1, "interp": "out"}]}`, then
+track (`"vars": {"kick": [{"t": 2, "v": 0, "interp": "out"}, {"t": 2.2, "v": 1}]}`, then
 `"scale": "1 + 0.05*kick"`). Vars that reference each other are ordered topologically when the
 comp is read, and a cycle is an error naming it. Referring to another layer's parameters is
 [Not yet](#not-yet); a shared var does the job.
@@ -738,7 +752,9 @@ Each step is one PR, in dependency order. Each keeps the existing tests green an
 1. **Param tracks and expressions** (`ffcine-core::anim`). `Track`, `Key`, `Ease`,
    `Animatable`, `Clock`, the expression compiler and evaluator, and `vars` resolution with
    cycle detection. `Keyed`, text `Keys`/`Ease`, audio `Interp` and hooks' shader params
-   are ported onto it, so expressions work in every existing effect schema.
+   are ported onto it, so expressions work in every existing effect schema. **Built.** The
+   ffmpeg fixture is `crates/ffcine-core/src/anim/testdata/ffmpeg_eval.json`, regenerated by the
+   `gen_ffmpeg_eval.py` next to it.
    *Tests*: today's keyframe tests in reframe, text, hooks and audio unchanged; golden eval
    tables for each ease (bezier against CSS values); a grammar table (precedence,
    associativity, every function's ffmpeg value against `av_expr_eval`, generated once and

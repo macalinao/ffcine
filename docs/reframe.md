@@ -63,7 +63,8 @@ over unchanged), all optional:
 | `profiles` | `{profile: {any field above}}`: replaces those fields when rendering that profile | none |
 | `mode` | Resolve's sizing: `fit` = `contain`, else `cover` | |
 
-Keyframes use the one form, `[{"t": RationalTime, "v": ..., "interp": "linear" | "ease" | "hold"}]`.
+Keyframes use the one form, `[{"t": RationalTime, "v": ..., "interp": "linear" | "ease" | "hold"}]`
+(or any [track](compositing.md#param-tracks): an expression over the source time `st`).
 `t` is the clip's source time (`source_range.start_time` plus the time since the clip's first
 frame, [timeline.md](timeline.md)); the prototype's `[[t, x], ...]` and `punch` times stay seconds
 from the clip's first frame. `ease` is `0.5 - 0.5 cos(πu)`, the prototype's pan curve.

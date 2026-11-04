@@ -133,8 +133,12 @@ footage): no LUT, `gamma` 1, `lift` 0, `gain` 1, `denoise` 0, no `exposure`/`rgb
 next to `"schema": "ffcine.<domain>.<name>/<major>"`. Times are seconds unless noted. Any
 parameter may instead be keyframes, `[{t: RationalTime, v, interp: linear | ease | hold}]`, with `t`
 in the clip's source time (like a marker's range: `source_range.start_time` + frames since the
-clip's first frame on the track) and `interp` shaping the segment to the next key. Vector
-parameters (`anchor`, `colour`, ...) keyframe as a whole; scalar ones (`translate_x`) on their own.
+clip's first frame on the track) and `interp` shaping the segment to the next key (also `in`,
+`out`, `in_out`, `back`, `smoothstep` or a CSS `[x1, y1, x2, y2]` bezier; `ease` is accepted as
+the key's name). Vector parameters (`anchor`, `colour`, ...) keyframe as a whole; scalar ones
+(`translate_x`) on their own. A parameter may also be an expression string over the source time
+`st` (`"0.5 + 0.1*sin(st*2)"`), an array of constants and expressions for a vector, or
+`{"keys": [...], "expr": "value * ..."}` ([compositing.md](compositing.md#expressions)).
 
 Geometry `units`:
 - `"picture"`: fractions of the source picture as sized into the frame by `ffcine.geo.reframe/1`

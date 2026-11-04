@@ -5,6 +5,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use ffcine_core::anim::{Clock, Ease, Track};
 use ffcine_core::{Error, Result};
 
 use crate::mix::ClipDefaults;
@@ -22,8 +23,20 @@ pub const LOOP: &str = "ffcine.audio.loop";
 pub enum Interp {
     #[default]
     Linear,
+    /// Smoothstep, `3u² − 2u³` ([`Ease::Smoothstep`]).
     Ease,
     Hold,
+}
+
+impl Interp {
+    /// The shared easing curve this names.
+    pub fn ease(self) -> Ease {
+        match self {
+            Self::Linear => Ease::Linear,
+            Self::Ease => Ease::Smoothstep,
+            Self::Hold => Ease::Hold,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -35,12 +48,43 @@ pub struct Key {
     pub interp: Interp,
 }
 
-/// A number, or keyframes over the clip's source time (`docs/timeline.md`).
+/// A number, keyframes over the clip's source time (`docs/timeline.md`), or an expression over
+/// it (`st`, `docs/compositing.md#expressions`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Param {
     Value(f64),
     Keys(Vec<Key>),
+    Expr(ExprParam),
+}
+
+/// An expression param: its JSON as written (serialised back verbatim) and its compiled track.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExprParam {
+    src: Value,
+    track: Track<f64>,
+}
+
+impl ExprParam {
+    pub fn parse(v: &Value) -> Result<Self> {
+        Ok(Self {
+            track: Track::parse(v, Clock::Source, "audio param")?,
+            src: v.clone(),
+        })
+    }
+}
+
+impl Serialize for ExprParam {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        self.src.serialize(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for ExprParam {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        let v = Value::deserialize(d)?;
+        Self::parse(&v).map_err(serde::de::Error::custom)
+    }
 }
 
 impl Default for Param {
@@ -65,6 +109,7 @@ impl Param {
         let keys = match self {
             Param::Value(v) => return *v,
             Param::Keys(k) => k,
+            Param::Expr(e) => return e.track.at(Clock::Source, t, 0.0).unwrap_or(0.0),
         };
         let Some(first) = keys.first() else {
             return 0.0;
@@ -81,12 +126,7 @@ impl Param {
         } else {
             1.0
         };
-        let u = match a.interp {
-            Interp::Linear => u,
-            Interp::Ease => u * u * (3.0 - 2.0 * u),
-            Interp::Hold => 0.0,
-        };
-        a.v + (b.v - a.v) * u
+        a.v + (b.v - a.v) * a.interp.ease().at(u)
     }
 }
 
@@ -481,5 +521,19 @@ mod tests {
             Clean::for_mode(LevelMode::Nat).filter_spec(LevelMode::Nat),
             "highpass=f=80"
         );
+    }
+
+    #[test]
+    fn gain_takes_expressions() {
+        let v = serde_json::json!({"gain_db": "-6 + 6 * clip(st - 1, 0, 1)"});
+        let l: Level = serde_json::from_value(v.clone()).expect("level");
+        assert!(!l.gain_db.is_constant());
+        assert!((l.gain_db.at(0.5) + 6.0).abs() < 1e-9 && (l.gain_db.at(1.5) + 3.0).abs() < 1e-9);
+        // Written back as it was read.
+        let back = serde_json::to_value(&l).expect("ser");
+        assert_eq!(back["gain_db"], v["gain_db"]);
+        assert!(serde_json::from_value::<Level>(serde_json::json!({"gain_db": "st +"})).is_err());
+        // `ease` stays smoothstep.
+        assert!((Interp::Ease.ease().at(0.25) - 0.156_25).abs() < 1e-12);
     }
 }

@@ -5,103 +5,16 @@
 //! The text is rasterised once per clip; every frame then only moves, scales, crops and tints
 //! pieces of its masks, so animating costs no extra GPU pass.
 
-use std::f64::consts::PI;
 use std::sync::Arc;
 
+use ffcine_core::anim::{Clock, Track, is_keys, seconds};
 use ffcine_render::{Mask, Motion, Overlay, OverlayPart};
 use serde_json::{Map, Value};
 
 use crate::layout::{Glyph, Rendered, Role};
 
-/// The shape of a move over its progress `u` (0..1).
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub enum Ease {
-    #[default]
-    Linear,
-    /// Cubic, accelerating.
-    In,
-    /// Cubic, decelerating.
-    Out,
-    /// Cubic ease in and out.
-    InOut,
-    /// `0.5 - 0.5 cos(pi u)` (the reframe keyframes' `ease`).
-    Ease,
-    /// Decelerates past the end and settles back (overshoot).
-    Back,
-    /// Stays at the start until the end.
-    Hold,
-    /// CSS `cubic-bezier(x1, y1, x2, y2)`.
-    Bezier([f64; 4]),
-}
-
-impl Ease {
-    /// A name (`linear`, `in`, `out`, `in_out`, `ease`, `back`, `hold`) or `[x1, y1, x2, y2]`.
-    pub fn parse(v: &Value) -> Option<Self> {
-        if let Some(a) = v.as_array() {
-            let c: Vec<f64> = a.iter().filter_map(Value::as_f64).collect();
-            return match c[..] {
-                [x1, y1, x2, y2] => Some(Self::Bezier([x1, y1, x2, y2])),
-                _ => None,
-            };
-        }
-        Some(match v.as_str()? {
-            "linear" => Self::Linear,
-            "in" | "ease_in" => Self::In,
-            "out" | "ease_out" => Self::Out,
-            "in_out" | "ease_in_out" => Self::InOut,
-            "ease" => Self::Ease,
-            "back" | "overshoot" => Self::Back,
-            "hold" => Self::Hold,
-            _ => return None,
-        })
-    }
-
-    /// Progress at `u`, clamped to 0..1 (`Back` overshoots 1 on the way).
-    pub fn at(self, u: f64) -> f64 {
-        let u = u.clamp(0.0, 1.0);
-        match self {
-            Self::Linear => u,
-            Self::In => u * u * u,
-            Self::Out => 1.0 - (1.0 - u).powi(3),
-            Self::InOut if u < 0.5 => 4.0 * u * u * u,
-            Self::InOut => 1.0 - (-2.0 * u + 2.0).powi(3) / 2.0,
-            Self::Ease => 0.5 - 0.5 * (PI * u).cos(),
-            Self::Back => {
-                let (c1, c3) = (1.701_58, 2.701_58);
-                1.0 + c3 * (u - 1.0).powi(3) + c1 * (u - 1.0).powi(2)
-            }
-            Self::Hold => {
-                if u >= 1.0 {
-                    1.0
-                } else {
-                    0.0
-                }
-            }
-            Self::Bezier(c) => bezier(c, u),
-        }
-    }
-}
-
-/// `y` of a CSS cubic bezier at `x` (bisection).
-fn bezier([x1, y1, x2, y2]: [f64; 4], x: f64) -> f64 {
-    let curve = |a: f64, b: f64, t: f64| {
-        3.0 * a * t * (1.0 - t).powi(2) + 3.0 * b * t * t * (1.0 - t) + t.powi(3)
-    };
-    let (mut lo, mut hi, mut t) = (0.0, 1.0, x);
-    for _ in 0..32 {
-        let v = curve(x1, x2, t) - x;
-        if v.abs() < 1e-7 {
-            break;
-        }
-        if v > 0.0 {
-            hi = t;
-        } else {
-            lo = t;
-        }
-        t = f64::midpoint(lo, hi);
-    }
-    curve(y1, y2, t)
-}
+/// The shape of a move over its progress `u` (0..1): `ffcine_core::anim::Ease`.
+pub use ffcine_core::anim::Ease;
 
 /// What an entrance or exit does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -249,94 +162,102 @@ impl Anim {
 }
 
 /// A keyframed value: `[{t, v, interp}]` (the reframe keyframes' form), `t` seconds from the
-/// clip's start (negative: from its end), `interp` shaping the move to the next key.
+/// clip's start (negative: from its end), `interp` shaping the move to the next key. Also an
+/// expression over `lt` and `dur` (`docs/compositing.md#expressions`), per component in an
+/// array, or `{"keys", "expr"}`: an `ffcine_core::anim::Track` on [`Clock::Clip`].
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Keys<const N: usize> {
-    keys: Vec<(f64, [f64; N], Ease)>,
+    track: Option<Track<[f64; N]>>,
 }
 
 impl<const N: usize> Keys<N> {
     /// Reads keys whose values are numbers (`N` = 1 also takes a bare number; a number
-    /// for `N` = 2 fills both, for scale).
-    #[allow(clippy::many_single_char_names)]
+    /// for `N` = 2 fills both, for scale; colours may leave out alpha). Keys that don't read
+    /// are skipped; an expression that doesn't compile is dropped with a warning.
     fn parse(v: Option<&Value>) -> Self {
-        let keys = v
-            .and_then(Value::as_array)
-            .map(|a| {
-                a.iter()
-                    .filter_map(|k| {
-                        let t = k.get("t").and_then(seconds)?;
-                        let v = k.get("v").or_else(|| k.get("value"))?;
-                        let val: [f64; N] = match v {
-                            Value::Number(n) => [n.as_f64()?; N],
-                            Value::Array(a) => {
-                                let c: Vec<f64> = a.iter().filter_map(Value::as_f64).collect();
-                                match (N, c.len()) {
-                                    // Colours may leave out alpha.
-                                    (4, 3) => {
-                                        std::array::from_fn(|i| c.get(i).copied().unwrap_or(1.0))
-                                    }
-                                    (n, l) if n == l => std::array::from_fn(|i| c[i]),
-                                    _ => return None,
-                                }
-                            }
-                            _ => return None,
-                        };
-                        let e = k
-                            .get("interp")
-                            .or_else(|| k.get("ease"))
-                            .and_then(Ease::parse)
-                            .unwrap_or_default();
-                        Some((t, val, e))
-                    })
-                    .collect()
+        let Some(v) = v else {
+            return Self::default();
+        };
+        let value = |v: &Value| -> Option<Value> {
+            Some(match v {
+                Value::Number(n) => Value::Array(vec![Value::from(n.as_f64()?); N]),
+                Value::Array(a) => {
+                    let c: Vec<f64> = a.iter().filter_map(Value::as_f64).collect();
+                    match (N, c.len()) {
+                        (4, 3) => Value::from([c[0], c[1], c[2], 1.0].to_vec()),
+                        (n, l) if n == l => Value::from(c),
+                        _ => return None,
+                    }
+                }
+                _ => return None,
             })
-            .unwrap_or_default();
-        Self { keys }
+        };
+        let keys = |a: &[Value]| -> Value {
+            a.iter()
+                .filter_map(|k| {
+                    let t = k.get("t").and_then(seconds)?;
+                    let v = value(k.get("v").or_else(|| k.get("value"))?)?;
+                    let mut o = Map::new();
+                    o.insert("t".into(), t.into());
+                    o.insert("v".into(), v);
+                    // Unknown names are linear, as before.
+                    if let Some(e) = k.get("interp").or_else(|| k.get("ease")) {
+                        if Ease::parse(e).is_some() {
+                            o.insert("interp".into(), e.clone());
+                        }
+                    }
+                    Some(Value::Object(o))
+                })
+                .collect()
+        };
+        let norm = match v {
+            Value::Array(a) if is_keys(v) => keys(a),
+            Value::Object(o) if o.contains_key("expr") => {
+                let mut o = o.clone();
+                if let Some(Value::Array(a)) = o.get("keys") {
+                    let k = keys(a);
+                    o.insert("keys".into(), k);
+                }
+                Value::Object(o)
+            }
+            Value::Number(_) | Value::Array(_) => match value(v) {
+                Some(c) => c,
+                None => v.clone(),
+            },
+            _ => v.clone(),
+        };
+        if norm.as_array().is_some_and(Vec::is_empty) {
+            return Self::default();
+        }
+        match Track::parse(&norm, Clock::Clip, "text keyframes") {
+            Ok(t) => Self { track: Some(t) },
+            Err(e) => {
+                eprintln!("warning: {e}");
+                Self::default()
+            }
+        }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.keys.is_empty()
+        self.track.is_none()
     }
 
     /// The value at `t` seconds into a clip `len` seconds long.
-    #[allow(clippy::many_single_char_names)]
     pub fn at(&self, t: f64, len: f64) -> Option<[f64; N]> {
-        let mut k: Vec<(f64, [f64; N], Ease)> = self
-            .keys
-            .iter()
-            .map(|&(kt, v, e)| (if kt < 0.0 { len + kt } else { kt }, v, e))
-            .collect();
-        k.sort_by(|a, b| a.0.total_cmp(&b.0));
-        let first = k.first()?;
-        if t <= first.0 {
-            return Some(first.1);
-        }
-        for w in k.windows(2) {
-            let ((t0, a, e), (t1, b, _)) = (w[0], w[1]);
-            if t < t1 {
-                let u = if t1 > t0 { (t - t0) / (t1 - t0) } else { 1.0 };
-                let s = e.at(u);
-                return Some(std::array::from_fn(|i| a[i] + (b[i] - a[i]) * s));
-            }
-        }
-        k.last().map(|l| l.1)
+        self.track.as_ref()?.at(Clock::Clip, t, len)
     }
 
     fn max(&self) -> Option<f64> {
-        self.keys
-            .iter()
-            .flat_map(|(_, v, _)| v.iter().copied())
-            .reduce(f64::max)
+        let t = self.track.as_ref()?;
+        match t {
+            Track::Const(c) => c.iter().copied().reduce(f64::max),
+            _ => t
+                .keys()?
+                .iter()
+                .flat_map(|k| k.v.iter().copied())
+                .reduce(f64::max),
+        }
     }
-}
-
-/// Plain seconds or an OTIO `RationalTime` (`{value, rate}`).
-fn seconds(v: &Value) -> Option<f64> {
-    v.as_f64().or_else(|| {
-        let r = v.get("rate").and_then(Value::as_f64)?;
-        Some(v.get("value").and_then(Value::as_f64)? / r)
-    })
 }
 
 /// A clip's animation: its entrance, exit and keyframed parameters.
@@ -1150,5 +1071,20 @@ mod tests {
         assert_eq!(p.pos, [77.5, 48.0]);
         assert_eq!(p.size, Some([45.0, 4.0]));
         assert_eq!(p.src, None);
+    }
+
+    #[test]
+    fn keyframes_take_expressions() {
+        let o: Keys<1> = Keys::parse(Some(&json!("lt / dur")));
+        assert_eq!(o.at(2.5, 10.0), Some([0.25]));
+        let p: Keys<2> = Keys::parse(Some(&json!([0.1, "0.3 - 0.05 * lt"])));
+        let v = p.at(2.0, 10.0).unwrap();
+        assert!((v[0] - 0.1).abs() < 1e-12 && (v[1] - 0.2).abs() < 1e-12);
+        let k: Keys<1> = Keys::parse(Some(&json!({
+            "keys": [{"t": 0, "v": 0}, {"t": -1, "v": 1}], "expr": "value * 0.5"
+        })));
+        assert_eq!(k.at(4.5, 10.0), Some([0.25]));
+        // An expression that doesn't compile is dropped.
+        assert!(Keys::<1>::parse(Some(&json!("st * 2"))).is_empty());
     }
 }

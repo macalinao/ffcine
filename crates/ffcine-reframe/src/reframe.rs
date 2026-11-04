@@ -62,7 +62,7 @@ impl Slide {
         if v.is_null() {
             return Ok(Self::default());
         }
-        if is_keys(v) || v.is_number() {
+        if is_keys(v) || v.is_number() || v.is_string() || v.get("expr").is_some() {
             return Keyed::parse(v, what).map(Self::Keyed);
         }
         let a = v.as_array().ok_or_else(invalid)?;
@@ -73,7 +73,7 @@ impl Slide {
                     Some([t, x]) => Some(Key {
                         t: t.as_f64()?,
                         v: x.as_f64()?,
-                        interp: crate::keyframe::Interp::Ease,
+                        ease: crate::keyframe::Interp::Ease,
                     }),
                     _ => None,
                 })
