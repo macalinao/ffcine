@@ -246,6 +246,90 @@ vec4 hook() {
 "
 }
 
+/// Alpha for a comp layer (`ffcine-comp`, `docs/compositing.md#placement`): [`alpha`]'s
+/// `opacity` and rounded corners (`radius`, texture pixels), times a shape mask: `shape` 0 none,
+/// 1 rectangle, 2 ellipse, inside `mask_x/y/w/h` (fractions of the texture), with a soft edge
+/// `feather` texture pixels wide centred on the shape's edge (antialiased over one pixel at 0),
+/// and `invert` (1 keeps the outside). An `OUTPUT` hook; every value can be a per-frame track.
+pub fn layer_alpha() -> &'static str {
+    r"//!PARAM opacity
+//!TYPE float
+1.0
+//!PARAM radius
+//!TYPE float
+0.0
+//!PARAM shape
+//!TYPE float
+0.0
+//!PARAM mask_x
+//!TYPE float
+0.0
+//!PARAM mask_y
+//!TYPE float
+0.0
+//!PARAM mask_w
+//!TYPE float
+1.0
+//!PARAM mask_h
+//!TYPE float
+1.0
+//!PARAM feather
+//!TYPE float
+0.0
+//!PARAM invert
+//!TYPE float
+0.0
+//!HOOK OUTPUT
+//!BIND HOOKED
+//!DESC ffcine comp layer alpha (opacity, rounded corners, mask)
+vec4 hook() {
+    vec4 c = HOOKED_texOff(vec2(0.0));
+    vec2 h = 0.5 * HOOKED_size;
+    vec2 p = HOOKED_pos * HOOKED_size - h;
+    float r = clamp(radius, 0.0, min(h.x, h.y));
+    vec2 q = abs(p) - h + vec2(r);
+    float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+    float a = clamp(0.5 - d, 0.0, 1.0) * clamp(opacity, 0.0, 1.0);
+    if (shape > 0.5) {
+        vec2 mh = max(0.5 * vec2(mask_w, mask_h) * HOOKED_size, vec2(1e-3));
+        vec2 mp = HOOKED_pos * HOOKED_size - vec2(mask_x, mask_y) * HOOKED_size - mh;
+        float md;
+        if (shape < 1.5) {
+            vec2 mq = abs(mp) - mh;
+            md = length(max(mq, 0.0)) + min(max(mq.x, mq.y), 0.0);
+        } else {
+            md = (length(mp / mh) - 1.0) * min(mh.x, mh.y);
+        }
+        float m = clamp(0.5 - md / max(feather, 1.0), 0.0, 1.0);
+        a *= invert > 0.5 ? 1.0 - m : m;
+    }
+    c.a *= a;
+    return c;
+}
+"
+}
+
+/// A solid colour layer's picture (`ffcine-comp`): `solid_r/g/b` (gamma-encoded output values,
+/// as [`background`]) replacing the picture, a `PREOUTPUT` hook ahead of the finish.
+pub fn solid() -> &'static str {
+    r"//!PARAM solid_r
+//!TYPE float
+0.0
+//!PARAM solid_g
+//!TYPE float
+0.0
+//!PARAM solid_b
+//!TYPE float
+0.0
+//!HOOK PREOUTPUT
+//!BIND HOOKED
+//!DESC ffcine solid
+vec4 hook() {
+    return vec4(clamp(vec3(solid_r, solid_g, solid_b), 0.0, 1.0), 1.0);
+}
+"
+}
+
 /// Directional motion blur for whip transitions: `blur` output pixels along `(dir_x, dir_y)`
 /// (32 taps, box), a `PREOUTPUT` hook. `blur` is a per-frame track; 0 passes the picture.
 pub fn motion_blur() -> &'static str {

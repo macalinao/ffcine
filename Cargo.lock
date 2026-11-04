@@ -656,6 +656,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ffcine-comp"
+version = "0.3.0"
+dependencies = [
+ "ffcine-core",
+ "ffcine-render",
+ "serde_json",
+ "sha2",
+ "yaml_serde",
+]
+
+[[package]]
 name = "ffcine-core"
 version = "0.3.0"
 dependencies = [
