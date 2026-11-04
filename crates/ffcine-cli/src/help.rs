@@ -246,6 +246,10 @@ pub const COMP_CHECK: &str = concat!(
         "Every number is a track: a constant, keys [{t, v, interp}] (t: s from the layer's in),",
         "an expression string (t, lt, n, W, H, w, h, in, out, dur, T, vars; ffmpeg's functions),",
         "or {keys, expr}. Colours: [r, g, b(, a)] sRGB 0..1, black, white, #rrggbb[aa].",
+        "Limits: canvas ≤ 16384 px a side, ≤ 8192x8192 px, aspect ≤ 4:1; fps 1..240;",
+        "duration, in, out, source_in 0..3600 s; ≤ 64 layers (≤ 16 video); unique string ids;",
+        "layer size ≤ 65536 px; a layer's texture at its largest scale ≤ 16384 px a side;",
+        "rotation within ±1e6 degrees. The canvas fade covers the composite, every blend mode.",
     ),
     examples!(
         "ffcine comp check story.comp.json",

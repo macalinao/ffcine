@@ -286,7 +286,8 @@ pub fn grade(mut args: GradeArgs, ff: &dyn Backend) -> anyhow::Result<()> {
 
 #[derive(Debug, Clone, Bpaf)]
 pub struct StillArgs {
-    /// Timeline time: seconds, M:SS or H:MM:SS (required).
+    /// Timeline or comp time: seconds, M:SS or H:MM:SS (required; past a comp's end is an
+    /// error).
     #[bpaf(argument("TIME"))]
     at: String,
     /// Output size in px, e.g. 1280x720 (default: the timeline's `frame_size`, else the source's).
@@ -318,7 +319,15 @@ fn comp_still(a: StillArgs, ff: &backend::Ffmpeg) -> anyhow::Result<()> {
     let c = super::comp::load(&a.timeline)?;
     let at = delivery::parse_time(&a.at)?;
     // The frame showing at `at` (frames start at i / fps).
-    let n = ((at * c.canvas.fps + 1e-6).floor() as i64).clamp(0, c.frames() - 1);
+    let n = (at * c.canvas.fps + 1e-6).floor() as i64;
+    if n >= c.frames() {
+        anyhow::bail!(
+            "--at {}: past the comp's end ({} s, {} frames)",
+            a.at,
+            c.canvas.duration,
+            c.frames()
+        );
+    }
     let [w, h] = c.canvas.size;
     let out = a.size.unwrap_or(Size {
         width: w,

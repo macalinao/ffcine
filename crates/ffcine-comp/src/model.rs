@@ -19,6 +19,32 @@ pub(crate) fn err(path: impl Into<String>, msg: impl Into<String>) -> Error {
     }
 }
 
+/// Limits a comp is checked against (`docs/compositing.md#limits`).
+pub mod limits {
+    /// Canvas px a side.
+    pub const CANVAS_SIDE: f64 = 16384.0;
+    /// Canvas px in all.
+    pub const CANVAS_PIXELS: f64 = 8192.0 * 8192.0;
+    /// Long side over short side, canvas and render.
+    pub const ASPECT: f64 = 4.0;
+    /// Frames per second, at least and at most.
+    pub const FPS: (f64, f64) = (1.0, 240.0);
+    /// Comp seconds (and layer `in`/`out`, `source_in`).
+    pub const DURATION: f64 = 3600.0;
+    /// Layers in a comp.
+    pub const LAYERS: usize = 64;
+    /// Video layers in a comp (each one a decoder while it shows).
+    pub const VIDEO_LAYERS: usize = 16;
+    /// A layer's box, px a side.
+    pub const BOX_SIDE: f64 = 65536.0;
+    /// A layer's texture (its picture at its largest scale, render px), px a side.
+    pub const TEXTURE_SIDE: f64 = 16384.0;
+    /// Position and anchor values, either way (px, box fractions).
+    pub const COORD: f64 = 1e9;
+    /// Rotation, degrees either way.
+    pub const ROTATION: f64 = 1e6;
+}
+
 /// Whether `v` is a comp document (`schema` is `ffcine.comp/N`), as opposed to a timeline.
 pub fn is_comp(v: &Value) -> bool {
     v.get("schema")
@@ -257,8 +283,9 @@ fn fps(v: &Value, path: &str) -> Result<f64> {
         },
         _ => None,
     };
-    r.filter(|r| r.is_finite() && *r > 0.0)
-        .ok_or_else(|| err(path, format!("expected a frame rate, got {v}")))
+    let (lo, hi) = limits::FPS;
+    r.filter(|r| r.is_finite() && (lo..=hi).contains(r))
+        .ok_or_else(|| err(path, format!("expected a frame rate {lo} to {hi}, got {v}")))
 }
 
 impl Comp {
@@ -270,7 +297,7 @@ impl Comp {
     }
 
     /// Reads a comp document; `dir` resolves relative media paths.
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines, clippy::many_single_char_names)]
     pub fn from_value(v: &Value, dir: &Path) -> Result<Self> {
         let m = object(v, "comp")?;
         match m.get("schema").and_then(Value::as_str) {
@@ -328,10 +355,24 @@ impl Comp {
             c.get("size").ok_or_else(|| err("canvas.size", "missing"))?,
             "canvas.size",
         )?;
-        if size.iter().any(|v| *v > 32768.0) {
+        let [w, h] = size.map(|v| v.round().max(1.0));
+        if w.max(h) > limits::CANVAS_SIDE || w * h > limits::CANVAS_PIXELS {
             return Err(err(
                 "canvas.size",
-                format!("{size:?}: at most 32768 px a side"),
+                format!(
+                    "{w}x{h}: at most {} px a side and {} px in all",
+                    limits::CANVAS_SIDE,
+                    limits::CANVAS_PIXELS
+                ),
+            ));
+        }
+        if w.max(h) / w.min(h) > limits::ASPECT {
+            return Err(err(
+                "canvas.size",
+                format!(
+                    "{w}x{h}: the long side is at most {} times the short",
+                    limits::ASPECT
+                ),
             ));
         }
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -343,8 +384,13 @@ impl Comp {
         let duration = c
             .get("duration")
             .and_then(Value::as_f64)
-            .filter(|d| d.is_finite() && *d > 0.0)
-            .ok_or_else(|| err("canvas.duration", "expected seconds > 0"))?;
+            .filter(|d| d.is_finite() && *d > 0.0 && *d <= limits::DURATION)
+            .ok_or_else(|| {
+                err(
+                    "canvas.duration",
+                    format!("expected seconds > 0, at most {}", limits::DURATION),
+                )
+            })?;
         let black = Track::Const([0.0, 0.0, 0.0, 1.0]);
         let canvas = Canvas {
             size,
@@ -371,8 +417,33 @@ impl Comp {
             Some(v) => return Err(err("layers", format!("expected an array, got {v}"))),
             None => &[],
         };
+        if layers.len() > limits::LAYERS {
+            return Err(err(
+                "layers",
+                format!("{} layers: at most {}", layers.len(), limits::LAYERS),
+            ));
+        }
+        let mut videos = 0;
         for (i, l) in layers.iter().enumerate() {
-            let layer = comp.layer(l, &format!("layers[{i}]"), dir)?;
+            let path = format!("layers[{i}]");
+            let layer = comp.layer(l, &path, dir)?;
+            if let Some(id) = &layer.id
+                && let Some(j) = comp.layers.iter().position(|o| o.id.as_ref() == Some(id))
+            {
+                return Err(err(
+                    format!("{path}.id"),
+                    format!("{id:?} is already layers[{j}]'s id"),
+                ));
+            }
+            if matches!(layer.source, Source::Video(_)) {
+                videos += 1;
+                if videos > limits::VIDEO_LAYERS {
+                    return Err(err(
+                        format!("{path}.source"),
+                        format!("at most {} video layers", limits::VIDEO_LAYERS),
+                    ));
+                }
+            }
             comp.layers.push(layer);
         }
         Ok(comp)
@@ -401,8 +472,8 @@ impl Comp {
                 "vars",
             ],
             &[
-                ("content", "reframe parameters inside the box"),
-                ("crop", "source crop"),
+                ("content", "compositing step 3, media layers"),
+                ("crop", "compositing step 3, media layers"),
                 ("grade", "compositing step 4, per-layer grade"),
                 ("time", "compositing step 5, time remapping"),
                 ("filter", "compositing step 6, libavfilter node"),
@@ -451,8 +522,13 @@ impl Comp {
                 format!("`out` ({out}) must be after `in` ({in_})"),
             ));
         }
-        if source_in < 0.0 {
-            return Err(err(format!("{path}.source_in"), "must be ≥ 0"));
+        for (name, v) in [("in", in_), ("out", out), ("source_in", source_in)] {
+            if !(0.0..=limits::DURATION).contains(&v) {
+                return Err(err(
+                    format!("{path}.{name}"),
+                    format!("{v}: must be 0 to {} s", limits::DURATION),
+                ));
+            }
         }
 
         let sp = format!("{path}.source");
@@ -483,6 +559,12 @@ impl Comp {
             Some(v) => pair(v, &format!("{path}.size"))?,
             None => [cw, ch],
         };
+        if size.iter().any(|v| *v > limits::BOX_SIDE) {
+            return Err(err(
+                format!("{path}.size"),
+                format!("{size:?}: at most {} px a side", limits::BOX_SIDE),
+            ));
+        }
         let fit = match m.get("fit").map(|v| (v.as_str(), v)) {
             None | Some((Some("cover"), _)) => Fit::Cover,
             Some((Some("contain"), _)) => Fit::Contain,
@@ -567,7 +649,16 @@ impl Comp {
                 .ok_or_else(|| err(format!("{path}.blend"), format!("unknown blend mode {v}")))?,
         };
         Ok(CompLayer {
-            id: m.get("id").and_then(Value::as_str).map(str::to_owned),
+            id: match m.get("id") {
+                None => None,
+                Some(Value::String(s)) => Some(s.clone()),
+                Some(v) => {
+                    return Err(err(
+                        format!("{path}.id"),
+                        format!("expected a string, got {v}"),
+                    ));
+                }
+            },
             source,
             in_,
             out,

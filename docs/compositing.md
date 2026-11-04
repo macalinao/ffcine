@@ -133,6 +133,25 @@ does opacity and the rounded rectangle; ellipse, feather and invert are a few li
 mask costs nothing extra. Track mattes, where one layer's alpha or luma cuts another, are
 [Not yet](#not-yet).
 
+### Limits
+
+`ffcine comp check` (and `render`, `still`) reject a comp past these before any GPU work,
+naming the parameter (`ffcine_comp::limits`):
+
+| what | limit |
+|------|-------|
+| canvas `size` | at most 16384 px a side and 8192x8192 px in all; the long side at most 4 times the short |
+| canvas `fps` | 1 to 240 |
+| canvas `duration`, layer `in`, `out`, `source_in` | 0 to 3600 s (`duration` > 0) |
+| `layers` | at most 64, of which at most 16 `video` (each is a decoder while it shows) |
+| layer `size` | at most 65536 px a side |
+| a layer's texture (its picture at its largest `scale`, in render px) | at most 16384 px a side, so a big `scale` fails at the render size that needs it |
+| `transform.position`, `anchor` | finite, at most 1e9 either way |
+| `transform.rotation` | finite, at most 1e6 degrees either way |
+| layer `id` | a string, unique in the comp |
+
+The render size a profile plans for a canvas is at most 16384 px a side.
+
 ### Serialisation
 
 **Standalone recipe**: `NAME.comp.json` (or `.comp.yaml`, the same serde model;
@@ -795,24 +814,27 @@ Each step is one PR, in dependency order. Each keeps the existing tests green an
    Canvas with animated background and fade, `video` layers without remapping, `solid`, the
    transform/anchor/scale/rotation/opacity, `radius`, shape `mask`, `blend`, `fade`, base
    promotion, comp segment keys with sampled values, and the unchanged-input texture reuse.
-   **Built.** `ffcine_comp::Comp` reads and validates a comp (JSON or YAML; keys of later steps,
+   **Built.** `ffcine_comp::Comp` reads and validates a comp (JSON or YAML, within the
+   [limits](#limits); keys of later steps,
    `still`/`text`/`comp` sources, `content`, `crop`, `grade`, `time`, `filter`, `project`,
    `comps`, `template`, are errors naming the step), `Comp::pieces` cuts it at layer in/out
    points, and `Comp::lower` turns a piece into a base input and grade plus `Layer`s. Solids
-   are a 1x1 image with `shaders::solid`; fades are `shaders::finish` hooks (the layer's, then
-   the canvas's, which also runs on the background); opacity, corners and the mask are
-   `shaders::layer_alpha`. `ffcine_assembly::plan_comp` makes the pieces segments (`Unit::Comp`)
+   are a 1x1 image with `shaders::solid`; a layer's fade is its `shaders::finish` hook, and the
+   canvas fade is one more layer on top of the others, a normal-blend solid of `fade_colour` at
+   opacity `1 - fade`, so it fades the composite whatever the layers' blend modes; opacity,
+   corners and the mask are `shaders::layer_alpha`. `ffcine_assembly::plan_comp` makes the pieces segments (`Unit::Comp`)
    keyed by the lowered values (rects, rotation, every hook value as an `f32` digest, the source
    fingerprint and start), so the segment cache, `--dry-run`, the manifest and `render_piece`
    (stills) are shared with timelines. Existing timelines plan and render as before
-   (`RENDER_REVISION` stays 8). The GPU test is `crates/ffcine/tests/comp_gpu.rs` (78 and 61 dB
-   against the CPU reference); the bench is its `bench_layers`.
+   (`RENDER_REVISION` stays 8). The GPU test is `crates/ffcine/tests/comp_gpu.rs` (78, 61 and 60 dB
+   against the CPU reference, the last a canvas fade over multiply and difference layers, and
+   an ellipse feather even on both axes); the bench is its `bench_layers`.
    *Tests*: lowering unit tests (rects and tracks from a comp, base promotion on/off); key tests
    (equivalent rewrites keep keys, an edit after a cut re-renders only later pieces, reorder
    changes keys); a GPU test (`--ignored`) compositing solids and a `testsrc2` clip against a
    CPU reference image at ≥ 50 dB; a bench recording fps and VRAM for 2, 4 and 8 layers at
    1080x1920 and 4K.
-3. **Media layers**: `still` through libav (HEIC tile grids, `irot`, colour tags -> libplacebo
+3. **Media layers**: `content` (the picture inside the box) and `crop`; `still` through libav (HEIC tile grids, `irot`, colour tags -> libplacebo
    conversion; untagged PNG/JPEG as today), decoded once and cached per piece; `text` layers in
    z-order (masks into a texture when covered); nested `comp` in-pass (parametric composite
    target, depth cap).

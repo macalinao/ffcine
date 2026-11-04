@@ -16,7 +16,7 @@ use ffcine_render::{
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::model::{Comp, CompLayer, Fit, MaskShape, Scale, Source, err};
+use crate::model::{Comp, CompLayer, Fit, MaskShape, Scale, Source, err, limits};
 
 /// What lowering needs to know about media files.
 pub trait Media {
@@ -320,6 +320,27 @@ impl Comp {
                 .fold([0.0f64; 2], |m, s| [m[0].max(s[0]), m[1].max(s[1])]);
             let tw = (pic[0] * smax[0].max(1e-3) * k[0]).ceil().max(2.0);
             let th = (pic[1] * smax[1].max(1e-3) * k[1]).ceil().max(2.0);
+            if !(tw.is_finite() && th.is_finite() && tw.max(th) <= limits::TEXTURE_SIDE) {
+                return Err(err(
+                    at("transform.scale"),
+                    format!(
+                        "the layer's texture would be {tw}x{th} px at its largest scale (at most {} \
+                         px a side at this render size)",
+                        limits::TEXTURE_SIDE
+                    ),
+                ));
+            }
+            finite(&at("transform.position"), position.iter().flatten())?;
+            finite(&at("transform.anchor"), anchor.iter().flatten())?;
+            if let Some(r) = rotation
+                .iter()
+                .find(|r| !r.is_finite() || r.abs() > limits::ROTATION)
+            {
+                return Err(err(
+                    at("transform.rotation"),
+                    format!("{r}: at most {} degrees either way", limits::ROTATION),
+                ));
+            }
             let s = Sampled {
                 rects: (0..position.len())
                     .map(|j| {
@@ -560,6 +581,20 @@ impl Comp {
             shown,
             recipe,
         })
+    }
+}
+
+/// An error at `what` unless every value is finite and within [`limits::COORD`].
+fn finite<'a>(what: &str, values: impl IntoIterator<Item = &'a f64>) -> Result<()> {
+    match values
+        .into_iter()
+        .find(|v| !v.is_finite() || v.abs() > limits::COORD)
+    {
+        Some(v) => Err(err(
+            what,
+            format!("{v}: out of range (at most {:e} either way)", limits::COORD),
+        )),
+        None => Ok(()),
     }
 }
 

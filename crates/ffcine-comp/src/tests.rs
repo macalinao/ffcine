@@ -396,3 +396,132 @@ fn uneven_scale_keeps_corners_round() {
         json!({"schema": "ffcine.comp/1", "canvas": {"size": [4e9, 1], "fps": 30, "duration": 1}});
     assert!(Comp::from_value(&big, Path::new(".")).is_err());
 }
+
+/// The error message of a comp with `canvas` and `layers` that should fail to read or lower.
+#[allow(clippy::needless_pass_by_value)] // json! literals at every call
+fn rejected(canvas: Value, layers: Value) -> String {
+    let c = Comp::from_value(
+        &json!({ "schema": "ffcine.comp/1", "canvas": canvas, "layers": layers }),
+        Path::new("/media"),
+    );
+    let e = match c {
+        Err(e) => e,
+        Ok(c) => match c
+            .pieces()
+            .into_iter()
+            .try_for_each(|r| c.lower(r, OUT, &Fake).map(drop))
+        {
+            Err(e) => e,
+            Ok(()) => panic!("accepted: {canvas} {layers}"),
+        },
+    };
+    e.to_string()
+}
+
+#[test]
+fn limits_are_checked_before_rendering() {
+    let canvas = json!({ "size": [1080, 1920], "fps": 30, "duration": 2 });
+    let solid = |extra: Value| {
+        let mut l = json!({ "source": { "solid": "white" }, "size": [100, 100] });
+        l.as_object_mut()
+            .expect("object")
+            .extend(extra.as_object().expect("object").clone());
+        l
+    };
+    let bad = |canvas: Value, layers: Value, want: &str| {
+        let e = rejected(canvas, layers);
+        assert!(e.contains(want), "{want:?} not in {e:?}");
+    };
+    // Layer textures, boxes, positions and rotations.
+    bad(
+        canvas.clone(),
+        json!([solid(json!({ "transform": { "scale": 1e6 } }))]),
+        "layers[0].transform.scale",
+    );
+    bad(
+        canvas.clone(),
+        json!([solid(json!({ "size": [1e300, 100] }))]),
+        "layers[0].size",
+    );
+    bad(
+        canvas.clone(),
+        json!([solid(json!({ "transform": { "rotation": 1e300 } }))]),
+        "layers[0].transform.rotation",
+    );
+    bad(
+        canvas.clone(),
+        json!([solid(json!({ "transform": { "position": [1e300, 0] } }))]),
+        "layers[0].transform.position",
+    );
+    // The canvas: pixels, aspect, duration and rate.
+    for size in [
+        json!([32768, 1]),
+        json!([16384, 16384]),
+        json!([16385, 8000]),
+    ] {
+        bad(
+            json!({ "size": size, "fps": 30, "duration": 1 }),
+            json!([]),
+            "canvas.size",
+        );
+    }
+    bad(
+        json!({ "size": [100, 100], "fps": 30, "duration": 1e7 }),
+        json!([]),
+        "canvas.duration",
+    );
+    for fps in [json!(1e9), json!(1e-9), json!("1/0")] {
+        bad(
+            json!({ "size": [100, 100], "fps": fps, "duration": 1 }),
+            json!([]),
+            "canvas.fps",
+        );
+    }
+    // Layer counts.
+    bad(
+        canvas.clone(),
+        Value::Array(vec![solid(json!({})); 65]),
+        "layers: 65 layers",
+    );
+    bad(
+        canvas.clone(),
+        Value::Array(vec![json!({ "source": { "video": "a.mp4" } }); 17]),
+        "layers[16].source",
+    );
+    // Ids and in points.
+    bad(
+        canvas.clone(),
+        json!([solid(json!({ "id": "a" })), solid(json!({ "id": "a" }))]),
+        "layers[1].id",
+    );
+    bad(
+        canvas.clone(),
+        json!([solid(json!({ "id": 3 }))]),
+        "layers[0].id",
+    );
+    bad(
+        canvas.clone(),
+        json!([solid(json!({ "in": -1 }))]),
+        "layers[0].in",
+    );
+    // Later steps' keys name the step.
+    for k in ["content", "crop"] {
+        bad(
+            canvas.clone(),
+            json!([solid(json!({ k: {} }))]),
+            "compositing step 3",
+        );
+    }
+    // At the limits: accepted.
+    let ok = Comp::from_value(
+        &json!({ "schema": "ffcine.comp/1",
+            "canvas": { "size": [8192, 8192], "fps": 240, "duration": 1 },
+            "layers": vec![json!({ "source": { "solid": "white" }, "size": [100, 100],
+                "transform": { "rotation": 720, "scale": 10 } }); 64] }),
+        Path::new("/media"),
+    )
+    .expect("comp at the limits");
+    for r in ok.pieces() {
+        ok.lower(r, OUT, &Fake).expect("lower");
+    }
+}

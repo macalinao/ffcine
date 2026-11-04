@@ -38,6 +38,9 @@ pub enum PlanError {
     Project(#[from] ffcine_core::Error),
     #[error("audio: {0}")]
     Audio(ffcine_core::Error),
+    /// A comp piece that doesn't lower (a parameter out of range, an unreadable layer source).
+    #[error("comp: {0}")]
+    Comp(ffcine_core::Error),
     #[error("clip {clip:?}: {source}")]
     Grade {
         clip: String,
@@ -702,7 +705,9 @@ pub fn plan_comp(
     let rate = comp.canvas.fps;
     let mut segments = Vec::new();
     for r in comp.pieces() {
-        let piece = comp.lower(r.clone(), profile.size, media)?;
+        let piece = comp
+            .lower(r.clone(), profile.size, media)
+            .map_err(PlanError::Comp)?;
         let unit = Unit::Comp(Arc::new(piece));
         let recipe = json!({
             "rev": RENDER_REVISION,

@@ -14,7 +14,9 @@ mod lower;
 mod model;
 
 pub use lower::{Base, Media, Piece};
-pub use model::{Canvas, Comp, CompLayer, Fit, MaskShape, SCHEMA, Source, is_comp, is_comp_file};
+pub use model::{
+    Canvas, Comp, CompLayer, Fit, MaskShape, SCHEMA, Source, is_comp, is_comp_file, limits,
+};
 
 #[cfg(test)]
 mod tests;
