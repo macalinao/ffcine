@@ -311,6 +311,7 @@ impl Comp {
                 None => None,
             };
             let radius = sample(&l.radius, &at("radius"), vis.clone(), &env)?;
+            finite(&at("radius"), &radius)?;
             let fade = sample(&l.fade, &at("fade"), vis.clone(), &env)?;
             let fade_colour = sample(&l.fade_colour, &at("fade_colour"), vis.clone(), &env)?;
 
@@ -398,6 +399,8 @@ impl Comp {
                 if let Some(m) = &l.mask {
                     let rect = sample(&m.rect, &at("mask.rect"), vis.clone(), &env)?;
                     let feather = sample(&m.feather, &at("mask.feather"), vis.clone(), &env)?;
+                    finite(&at("mask.rect"), rect.iter().flatten())?;
+                    finite(&at("mask.feather"), &feather)?;
                     param(
                         &mut h,
                         "shape",
@@ -584,7 +587,8 @@ impl Comp {
     }
 }
 
-/// An error at `what` unless every value is finite and within [`limits::COORD`].
+/// An error at `what` unless every value is finite and within [`limits::COORD`] (position,
+/// anchor, radius, mask).
 fn finite<'a>(what: &str, values: impl IntoIterator<Item = &'a f64>) -> Result<()> {
     match values
         .into_iter()

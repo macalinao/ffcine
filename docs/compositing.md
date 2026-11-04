@@ -146,7 +146,7 @@ naming the parameter (`ffcine_comp::limits`):
 | `layers` | at most 64, of which at most 16 `video` (each is a decoder while it shows) |
 | layer `size` | at most 65536 px a side |
 | a layer's texture (its picture at its largest `scale`, in render px) | at most 16384 px a side, so a big `scale` fails at the render size that needs it |
-| `transform.position`, `anchor` | finite, at most 1e9 either way |
+| `transform.position`, `anchor`, `radius`, `mask.rect`, `mask.feather` | finite, at most 1e9 either way |
 | `transform.rotation` | finite, at most 1e6 degrees either way |
 | layer `id` | a string, unique in the comp |
 

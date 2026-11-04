@@ -419,6 +419,7 @@ fn rejected(canvas: Value, layers: Value) -> String {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // one case per limit
 fn limits_are_checked_before_rendering() {
     let canvas = json!({ "size": [1080, 1920], "fps": 30, "duration": 2 });
     let solid = |extra: Value| {
@@ -452,6 +453,18 @@ fn limits_are_checked_before_rendering() {
         canvas.clone(),
         json!([solid(json!({ "transform": { "position": [1e300, 0] } }))]),
         "layers[0].transform.position",
+    );
+    bad(
+        canvas.clone(),
+        json!([solid(
+            json!({ "mask": { "shape": "rect", "rect": [0, 0, 1e300, 1e300] } })
+        )]),
+        "layers[0].mask.rect",
+    );
+    bad(
+        canvas.clone(),
+        json!([solid(json!({ "radius": 1e300 }))]),
+        "layers[0].radius",
     );
     // The canvas: pixels, aspect, duration and rate.
     for size in [
