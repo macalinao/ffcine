@@ -13,8 +13,11 @@ use super::{Ease, Frame, Scope};
 
 /// Longest accepted source, bytes.
 pub const MAX_LEN: usize = 4096;
-/// Deepest accepted nesting (parentheses, calls, unary operators, the right side of `^`).
+/// Deepest accepted nesting (parentheses, calls, unary operators, the right side of `^`, and
+/// each operator of a chain like `a + b + c`, which nests to the left).
 pub const MAX_DEPTH: usize = 64;
+/// Most arguments a call takes (`min`, `max`).
+pub const MAX_ARGS: usize = 255;
 
 /// The golden ratio, ffmpeg's `PHI`.
 const PHI: f64 = 1.618_033_988_749_895;
@@ -214,22 +217,35 @@ impl Parser {
 
     fn binary(&mut self, min: u8) -> Res<Node> {
         let mut lhs = self.unary()?;
-        while let Some((p, op)) = binary(self.peek()) {
+        // Each operator of a chain nests the tree one level deeper on the left.
+        let mut chain = 0;
+        let out = loop {
+            let Some((p, op)) = binary(self.peek()) else {
+                break Ok(lhs);
+            };
             if p < min {
-                break;
+                break Ok(lhs);
             }
+            if let Err(e) = self.enter() {
+                break Err(e);
+            }
+            chain += 1;
             let col = self.col();
             self.next();
-            let rhs = self.binary(p + 1)?;
+            let rhs = match self.binary(p + 1) {
+                Ok(r) => r,
+                Err(e) => break Err(e),
+            };
             if p == 3 && binary(self.peek()).is_some_and(|(q, _)| q == 3) {
-                return Err(ExprError::new(
+                break Err(ExprError::new(
                     self.col(),
                     "comparisons don't chain: use `&&`",
                 ));
             }
             lhs = Node::Call(op.into(), col, vec![lhs, rhs]);
-        }
-        Ok(lhs)
+        };
+        self.depth -= chain;
+        out
     }
 
     fn unary(&mut self) -> Res<Node> {
@@ -278,6 +294,12 @@ impl Parser {
                 if *self.peek() != Tok::Sym(")") {
                     args.push(self.expr()?);
                     while *self.peek() == Tok::Sym(",") {
+                        if args.len() == MAX_ARGS {
+                            return Err(ExprError::new(
+                                col,
+                                format!("{n}() takes at most {MAX_ARGS} arguments"),
+                            ));
+                        }
                         self.next();
                         args.push(self.expr()?);
                     }
@@ -495,7 +517,7 @@ pub fn noise(seed: f64, x: f64) -> f64 {
 
 /// A function's op and its accepted argument counts.
 fn function(name: &str) -> Option<(F, usize, usize)> {
-    let many = usize::MAX;
+    let many = MAX_ARGS;
     Some(match name {
         "lt" => (F::Lt, 2, 2),
         "lte" => (F::Le, 2, 2),
@@ -579,7 +601,7 @@ fn resolve(n: &Node, scope: &Scope) -> Res<Ir> {
                 if a.len() < lo || a.len() > hi {
                     let want = match (lo, hi) {
                         (l, h) if l == h => format!("{l}"),
-                        (l, usize::MAX) => format!("{l} or more"),
+                        (l, MAX_ARGS) => format!("{l} or more"),
                         (l, h) => format!("{l} or {h}"),
                     };
                     Err(ExprError::new(
@@ -690,8 +712,9 @@ fn emit(ir: &Ir, ops: &mut Vec<Op>, sp: &mut usize, max: &mut usize) {
             for x in a {
                 emit(x, ops, sp, max);
             }
-            #[allow(clippy::cast_possible_truncation)]
-            ops.push(Op::Apply(*f, a.len().min(255) as u8));
+            // The parser caps calls at `MAX_ARGS` (255) arguments.
+            let n = u8::try_from(a.len()).expect("at most MAX_ARGS arguments");
+            ops.push(Op::Apply(*f, n));
             *sp = *sp + 1 - a.len();
         }
     }
@@ -699,9 +722,15 @@ fn emit(ir: &Ir, ops: &mut Vec<Op>, sp: &mut usize, max: &mut usize) {
 }
 
 impl Compiled {
-    /// Compiles `src` against `scope`.
+    /// Compiles `src` against `scope`. An expression that folds to a non-finite constant
+    /// (`1/0`, `log(-1)`) is an error.
     pub fn new(src: &str, scope: &Scope) -> Res<Self> {
         let ir = resolve(&parse(src)?, scope)?;
+        if let Ir::Num(v) = ir
+            && !v.is_finite()
+        {
+            return Err(ExprError::new(1, format!("always {v}: not finite")));
+        }
         let (mut ops, mut sp, mut depth) = (Vec::new(), 0, 0);
         emit(&ir, &mut ops, &mut sp, &mut depth);
         Ok(Self {

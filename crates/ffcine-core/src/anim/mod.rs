@@ -58,12 +58,15 @@ impl Ease {
         })
     }
 
-    /// A name or `[x1, y1, x2, y2]`.
+    /// A name or `[x1, y1, x2, y2]` (`x1` and `x2` in 0..1, as in CSS).
     pub fn parse(v: &Value) -> Option<Self> {
         if let Some(a) = v.as_array() {
             let c: Vec<f64> = a.iter().filter_map(Value::as_f64).collect();
+            let unit = |x: f64| (0.0..=1.0).contains(&x);
             return match c[..] {
-                [x1, y1, x2, y2] if c.len() == a.len() => Some(Self::Bezier([x1, y1, x2, y2])),
+                [x1, y1, x2, y2] if c.len() == a.len() && unit(x1) && unit(x2) => {
+                    Some(Self::Bezier([x1, y1, x2, y2]))
+                }
                 _ => None,
             };
         }
@@ -97,8 +100,10 @@ impl Ease {
     }
 }
 
-/// `y` of a CSS cubic bezier at `x` (bisection on the curve's `x`).
+/// `y` of a CSS cubic bezier at `x` (bisection on the curve's `x`). `x1` and `x2` are clamped
+/// to 0..1, where the curve's `x` is monotonic.
 fn bezier([x1, y1, x2, y2]: [f64; 4], x: f64) -> f64 {
+    let (x1, x2) = (x1.clamp(0.0, 1.0), x2.clamp(0.0, 1.0));
     let curve = |a: f64, b: f64, t: f64| {
         3.0 * a * t * (1.0 - t).powi(2) + 3.0 * b * t * t * (1.0 - t) + t.powi(3)
     };
@@ -204,7 +209,7 @@ pub struct Key<T> {
 /// The value of sorted keys at `t`: held before the first and after the last.
 pub fn keys_at<T: Animatable>(keys: &[Key<T>], t: f64) -> Option<T> {
     let first = keys.first()?;
-    if t <= first.t {
+    if t.is_nan() || t <= first.t {
         return Some(first.v);
     }
     // The last key at or before t.
@@ -640,6 +645,7 @@ impl<T: Animatable> Track<T> {
                 })
             }
         };
+        const { assert!(T::N <= 4, "tracks have at most 4 components") };
         let comps = |e: &[Compiled], f: &Frame| -> Result<T> {
             let mut out = [0.0; 4];
             for (i, c) in e.iter().enumerate().take(4) {

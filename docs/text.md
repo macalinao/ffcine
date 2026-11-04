@@ -124,7 +124,7 @@ or `{"keys": [...], "expr": "value * ..."}` ([compositing.md](compositing.md#exp
 | Param | `v` |
 |---|---|
 | `position` | `[x, y]` like `position`: the anchor moves there |
-| `scale` | a number or `[x, y]`, about the anchor; text is rasterised at the largest scale (up to 4) so it stays sharp |
+| `scale` | a number or `[x, y]`, about the anchor; text is rasterised at the largest scale (up to 4; an expression's is sampled on every frame) so it stays sharp |
 | `opacity` | multiplies the alpha (shadow, outline and box too) |
 | `colour` | `[r, g, b]` or `[r, g, b, a]`: replaces the text's colour (a `rect`'s fill) |
 

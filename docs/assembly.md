@@ -127,7 +127,8 @@ it covers:
   version and `RENDER_REVISION`. Bump `RENDER_REVISION` whenever the render path changes its
   output (4: per-clip filters and exposure; 5: denoiser context across pieces, ramp pieces
   seek; 6: `rgb_gain`, `extra` and temporal blend; 7: overlay rotation, anchor, blend modes and
-  HDR layers). A temporally denoised piece also keys its context frames.
+  HDR layers; 8: param tracks, which read some lenient keyframe and expression inputs
+  differently). A temporally denoised piece also keys its context frames.
 
 Changing one filter re-renders that clip's segments (and a dissolve it is part of) only, and an
 unchanged timeline renders nothing (`plan::tests::filter_edits_rerender_only_their_clip`). A

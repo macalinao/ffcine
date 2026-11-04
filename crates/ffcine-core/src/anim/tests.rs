@@ -462,3 +462,81 @@ fn sample_and_vars() {
         [0.1, 0.2, 0.3]
     );
 }
+
+#[test]
+fn constant_non_finite_is_a_compile_error() {
+    for src in ["1/0", "log(-1)", "0/0", "sqrt(-1)", "-1/0 + 2"] {
+        let e = compile_err(src);
+        assert!(e.msg.contains("not finite") && e.col == 1, "{src}: {e:?}");
+        assert!(Track::<f64>::parse(&json!(src), Clock::Layer, "x").is_err());
+        let ke = json!({"keys": [{"t": 0, "v": 1}], "expr": src});
+        assert!(Track::<f64>::parse(&ke, Clock::Layer, "x").is_err());
+    }
+    // A non-finite constant in an untaken branch still compiles.
+    assert!(Compiled::new("if(t, 1, 1/0)", &Scope::new(Clock::Layer)).is_ok());
+}
+
+#[test]
+fn long_chains_are_capped_not_a_stack_overflow() {
+    let ok = format!("1{}", "+t".repeat(60));
+    assert!(close(ev(&ok, &layer(2.0)), 121.0, 1e-9));
+    // Just under the 4 KiB limit, so the depth check is what stops them.
+    for op in ["+", "*", "&&", "||"] {
+        let long = format!("1{}", format!("{op}t").repeat(4090 / (op.len() + 1)));
+        let e = compile_err(&long);
+        assert!(e.msg.contains("deeper than 64"), "{op}: {e:?}");
+    }
+}
+
+#[test]
+fn calls_take_at_most_255_arguments() {
+    let args = |n: usize| (0..n).map(|i| i.to_string()).collect::<Vec<_>>().join(", ");
+    // 255 arguments: t and 0..=253.
+    assert!(close(
+        ev(&format!("max(t, {})", args(254)), &layer(0.5)),
+        253.0,
+        0.0
+    ));
+    let e = compile_err(&format!("max(t, {})", args(300)));
+    assert_eq!(e.col, 1, "{e:?}");
+    assert!(e.msg.contains("at most 255"), "{e:?}");
+}
+
+#[test]
+fn nan_time_and_bezier_bounds() {
+    let k = [
+        Key {
+            t: 0.0,
+            v: 1.0,
+            ease: Ease::Linear,
+        },
+        Key {
+            t: 1.0,
+            v: 2.0,
+            ease: Ease::Linear,
+        },
+    ];
+    assert_eq!(keys_at(&k, f64::NAN), Some(1.0));
+    assert!(Ease::parse(&json!([0.25, 0.1, 0.25, 1.0])).is_some());
+    assert!(Ease::parse(&json!([1.5, 0.1, 0.25, 1.0])).is_none());
+    assert!(Ease::parse(&json!([0.25, 0.1, -0.1, 1.0])).is_none());
+    // y may leave 0..1 (overshoot).
+    assert!(Ease::parse(&json!([0.3, -0.5, 0.7, 1.5])).is_some());
+}
+
+#[test]
+fn an_inner_var_named_like_an_outer_one_is_a_cycle() {
+    let mut v = Vars::new();
+    let outer = json!({"x": 2});
+    v.push_level(outer.as_object().expect("o"), Clock::Layer, "comp.vars")
+        .expect("outer");
+    let inner = json!({"x": "x * 2"});
+    let e = v
+        .push_level(
+            inner.as_object().expect("o"),
+            Clock::Layer,
+            "layers[0].vars",
+        )
+        .expect_err("cycle");
+    assert!(e.to_string().contains("cycle: x -> x"), "{e}");
+}

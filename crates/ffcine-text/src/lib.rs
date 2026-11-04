@@ -248,7 +248,7 @@ impl TextLayer {
             let raster = if rect.is_some() {
                 1.0
             } else {
-                anim.raster_scale()
+                anim.raster_scale_over(c.end - c.start, rate)
             };
             let r = match rect {
                 Some(size) => anim::rect(size, s.position, s.anchor, [ow, oh], s.colour),

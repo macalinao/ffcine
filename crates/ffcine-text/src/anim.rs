@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use ffcine_core::anim::{Clock, Track, is_keys, seconds};
+use ffcine_core::anim::{Clock, Track, seconds};
 use ffcine_render::{Mask, Motion, Overlay, OverlayPart};
 use serde_json::{Map, Value};
 
@@ -179,6 +179,7 @@ impl<const N: usize> Keys<N> {
         let Some(v) = v else {
             return Self::default();
         };
+        // A key's value: numbers only, others in an array skipped (as before tracks).
         let value = |v: &Value| -> Option<Value> {
             Some(match v {
                 Value::Number(n) => Value::Array(vec![Value::from(n.as_f64()?); N]),
@@ -192,6 +193,18 @@ impl<const N: usize> Keys<N> {
                 }
                 _ => return None,
             })
+        };
+        // A whole value: numbers or expressions per component, a colour's alpha defaulting to 1.
+        let whole = |v: &Value| -> Value {
+            match v {
+                Value::Number(_) => value(v).unwrap_or_else(|| v.clone()),
+                Value::Array(a) if N == 4 && a.len() == 3 => {
+                    let mut a = a.clone();
+                    a.push(1.0.into());
+                    Value::Array(a)
+                }
+                _ => v.clone(),
+            }
         };
         let keys = |a: &[Value]| -> Value {
             a.iter()
@@ -211,8 +224,9 @@ impl<const N: usize> Keys<N> {
                 })
                 .collect()
         };
+        // Any key object makes it keys; those that don't read are skipped, as before tracks.
         let norm = match v {
-            Value::Array(a) if is_keys(v) => keys(a),
+            Value::Array(a) if a.iter().any(Value::is_object) => keys(a),
             Value::Object(o) if o.contains_key("expr") => {
                 let mut o = o.clone();
                 if let Some(Value::Array(a)) = o.get("keys") {
@@ -221,8 +235,7 @@ impl<const N: usize> Keys<N> {
                 }
                 Value::Object(o)
             }
-            Value::Number(_) | Value::Array(_) => value(v).unwrap_or_else(|| v.clone()),
-            _ => v.clone(),
+            _ => whole(v),
         };
         if norm.as_array().is_some_and(Vec::is_empty) {
             return Self::default();
@@ -245,18 +258,32 @@ impl<const N: usize> Keys<N> {
         self.track.as_ref()?.at(Clock::Clip, t, len)
     }
 
-    fn max(&self) -> Option<f64> {
+    /// The largest component over a clip `len` seconds long: the keys' values, or an
+    /// expression sampled on every frame at `fps` (at most [`MAX_SAMPLES`] samples).
+    fn max(&self, len: f64, fps: f64) -> Option<f64> {
         let t = self.track.as_ref()?;
         match t {
             Track::Const(c) => c.iter().copied().reduce(f64::max),
-            _ => t
-                .keys()?
-                .iter()
-                .flat_map(|k| k.v.iter().copied())
-                .reduce(f64::max),
+            Track::Keys(k) => k.iter().flat_map(|k| k.v.iter().copied()).reduce(f64::max),
+            _ => {
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    clippy::cast_precision_loss
+                )]
+                let n = ((len.max(0.0) * fps.max(1.0)).ceil() as usize).clamp(1, MAX_SAMPLES);
+                #[allow(clippy::cast_precision_loss)]
+                (0..=n)
+                    .filter_map(|i| self.at(len * i as f64 / n as f64, len))
+                    .flatten()
+                    .reduce(f64::max)
+            }
         }
     }
 }
+
+/// Most frames an expression scale is sampled on for [`Animation::raster_scale_over`].
+const MAX_SAMPLES: usize = 100_000;
 
 /// A clip's animation: its entrance, exit and keyframed parameters.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -308,10 +335,20 @@ impl Animation {
             && self.colour.is_empty()
     }
 
-    /// The largest scale keyframed (at least 1): rasterise at it so the text stays sharp.
-    #[allow(clippy::cast_possible_truncation)]
+    /// The largest scale keyframed (at least 1, at most 4): rasterise at it so the text stays
+    /// sharp. An expression scale is read at the clip's start only: use
+    /// [`Animation::raster_scale_over`] when the clip's length is known.
     pub fn raster_scale(&self) -> f32 {
-        self.scale.max().map_or(1.0, |s| s.clamp(1.0, 4.0) as f32)
+        self.raster_scale_over(0.0, 1.0)
+    }
+
+    /// [`Animation::raster_scale`] for a clip `len` seconds long at `fps`: an expression scale
+    /// is sampled on every frame.
+    #[allow(clippy::cast_possible_truncation)]
+    pub fn raster_scale_over(&self, len: f64, fps: f64) -> f32 {
+        self.scale
+            .max(len, fps)
+            .map_or(1.0, |s| s.clamp(1.0, 4.0) as f32)
     }
 }
 
@@ -1084,5 +1121,39 @@ mod tests {
         assert_eq!(k.at(4.5, 10.0), Some([0.25]));
         // An expression that doesn't compile is dropped.
         assert!(Keys::<1>::parse(Some(&json!("st * 2"))).is_empty());
+    }
+
+    #[test]
+    fn keyframes_stay_lenient() {
+        // `value` for `v`, as before tracks.
+        let o: Keys<1> = Keys::parse(Some(&json!([{"t": 0, "value": 0}, {"t": 2, "value": 1}])));
+        assert_eq!(o.at(1.0, 10.0), Some([0.5]));
+        // A key that doesn't read is skipped, even the first.
+        let o: Keys<1> = Keys::parse(Some(&json!([
+            {"t": "soon", "v": 5}, {"t": 0, "v": 0}, {"t": 2, "v": 1}
+        ])));
+        assert_eq!(o.at(1.0, 10.0), Some([0.5]));
+        // A colour mixing an expression with numbers keeps the expression.
+        let c: Keys<4> = Keys::parse(Some(&json!(["lt / dur", 0.5, 0.5, 1])));
+        assert_eq!(c.at(2.5, 10.0), Some([0.25, 0.5, 0.5, 1.0]));
+        let c: Keys<4> = Keys::parse(Some(&json!(["lt / dur", 0.5, 0.5])));
+        assert_eq!(c.at(2.5, 10.0), Some([0.25, 0.5, 0.5, 1.0]));
+    }
+
+    #[test]
+    fn expression_scale_rasterises_at_its_peak() {
+        let a = Animation::parse(&obj(json!({"keyframes": {"scale": ["1 + lt / dur", 1]}})));
+        assert!((a.raster_scale_over(4.0, 30.0) - 2.0).abs() < 1e-6);
+        let a = Animation::parse(&obj(json!({"keyframes": {"scale": [
+            "1 + 2 * between(lt, 1, 1.1)", 1
+        ]}})));
+        assert!((a.raster_scale_over(4.0, 30.0) - 3.0).abs() < 1e-6);
+        let a = Animation::parse(&obj(json!({"keyframes": {"scale": {
+            "keys": [{"t": 0, "v": 1}, {"t": -1, "v": 2}], "expr": "value * 1.5"
+        }}})));
+        assert!((a.raster_scale_over(4.0, 30.0) - 3.0).abs() < 1e-6);
+        // Capped at 4.
+        let a = Animation::parse(&obj(json!({"keyframes": {"scale": 10}})));
+        assert!((a.raster_scale_over(4.0, 30.0) - 4.0).abs() < 1e-6);
     }
 }
