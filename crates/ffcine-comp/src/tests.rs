@@ -340,17 +340,37 @@ fn fades_and_masks_become_hooks() {
             alpha.params
         );
     }
-    // The canvas fade lands on the background and on every layer.
+    // The canvas fade is one top-most normal solid of the fade colour at opacity 1 - fade,
+    // whatever the layers' blend modes; the background and the layers don't fade.
     let c = Comp::from_value(
         &json!({ "schema": "ffcine.comp/1",
-            "canvas": { "size": [1080, 1920], "fps": 30, "duration": 2, "fade": "1 - clip(t - 1, 0, 1)" },
-            "layers": [{ "source": { "solid": "white" } }] }),
+            "canvas": { "size": [1080, 1920], "fps": 30, "duration": 2,
+                "fade": "1 - clip(t - 1, 0, 1)", "fade_colour": "white" },
+            "layers": [{ "source": { "solid": "#808080" }, "blend": "difference" }] }),
         Path::new("."),
     )
     .expect("comp");
     let p = c.lower(0..60, OUT, &Fake).expect("lower");
-    assert_eq!(p.grade.hooks[1].name, "canvas_fade");
-    assert_eq!(p.layers[0].grade.hooks[1].name, "canvas_fade");
+    assert_eq!(p.grade.hooks.len(), 1);
+    assert_eq!(p.layers.len(), 2);
+    assert_eq!(p.shown, vec![0]);
+    assert!(
+        p.layers[0]
+            .grade
+            .hooks
+            .iter()
+            .all(|h| h.name != "canvas_fade")
+    );
+    let top = &p.layers[1];
+    assert_eq!(top.blend, BlendMode::Normal);
+    assert!(top.rects.is_empty() && (top.from, top.to) == (0, 60));
+    assert!(top.grade.hooks[0].params.contains(&("solid_r".into(), 1.0)));
+    let op = &top.grade.hooks[1].tracks[0];
+    assert_eq!(op.name, "opacity");
+    assert!(op.values[0] == 0.0 && op.values[59] > 0.9);
+    // No fade, no extra layer.
+    let c = comp(json!([{ "source": { "solid": "white" } }]));
+    assert_eq!(c.lower(0..1, OUT, &Fake).expect("lower").layers.len(), 1);
 }
 
 #[test]

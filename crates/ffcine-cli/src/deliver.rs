@@ -350,7 +350,7 @@ fn comp_still(a: StillArgs, ff: &backend::Ffmpeg) -> anyhow::Result<()> {
         out.width,
         out.height,
         n as f64 / c.canvas.fps,
-        piece.layers.len() + usize::from(matches!(piece.base, ffcine::comp::Base::Video { .. }))
+        piece.shown.len() + usize::from(matches!(piece.base, ffcine::comp::Base::Video { .. }))
     );
     Ok(())
 }

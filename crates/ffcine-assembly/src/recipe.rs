@@ -18,7 +18,7 @@ pub const RENDER_REVISION: u32 = 8;
 
 /// Bump when the audio mix changes its output for the same recipe: the mix re-renders, the
 /// picture doesn't.
-pub const AUDIO_REVISION: u32 = 1;
+pub const AUDIO_REVISION: u32 = 2;
 
 /// A content key: 128 bits of SHA-256, hex.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]

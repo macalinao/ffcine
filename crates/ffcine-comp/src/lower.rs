@@ -129,6 +129,15 @@ fn grade_recipe(g: &Grade) -> Value {
     })
 }
 
+/// A solid layer's picture: one white pixel, coloured by [`shaders::solid`].
+fn solid_image() -> LayerSource {
+    LayerSource::Image(Arc::new(Image {
+        width: 1,
+        height: 1,
+        data: vec![255; 4],
+    }))
+}
+
 /// A sampled layer over its visible frames.
 struct Sampled {
     rects: Vec<Crop>,
@@ -339,7 +348,7 @@ impl Comp {
                 opacity,
             };
 
-            // Hooks: the solid colour, the layer's fade, the canvas fade, then alpha.
+            // Hooks: the solid colour, the layer's fade, then alpha.
             let mut hooks = Vec::new();
             if let Some(c) = &solid {
                 let mut h = hook("solid", shaders::solid());
@@ -349,14 +358,6 @@ impl Comp {
                 hooks.push(h);
             }
             hooks.extend(fade_hook("fade", &fade, &fade_colour));
-            let local = |v: &[f64]| v[(vis.start - p0) as usize..(vis.end - p0) as usize].to_vec();
-            let local4 =
-                |v: &[[f64; 4]]| v[(vis.start - p0) as usize..(vis.end - p0) as usize].to_vec();
-            hooks.extend(fade_hook(
-                "canvas_fade",
-                &local(&canvas_fade),
-                &local4(&canvas_colour),
-            ));
             // Box px to texture px, horizontally; `ky` is the vertical factor over it (a
             // non-uniform scale), so corners and feathers stay round in box px.
             let px = tw / pic[0].max(1e-6);
@@ -411,11 +412,7 @@ impl Comp {
                         start: Duration::from_secs_f64(st.max(0.0)),
                     }
                 }
-                (Source::Solid(_), _) => LayerSource::Image(Arc::new(Image {
-                    width: 1,
-                    height: 1,
-                    data: vec![255; 4],
-                })),
+                (Source::Solid(_), _) => solid_image(),
             };
 
             // Base promotion: the bottom layer, a normal opaque unturned video covering the
@@ -507,14 +504,46 @@ impl Comp {
             for (n, name) in ["bg_r", "bg_g", "bg_b"].into_iter().enumerate() {
                 param(&mut h, name, f32s(bg.iter().map(|v| v[n])));
             }
-            let mut hooks = vec![h];
-            hooks.extend(fade_hook("canvas_fade", &canvas_fade, &canvas_colour));
             Grade {
                 size: Some(out),
-                hooks,
+                hooks: vec![h],
                 ..Grade::default()
             }
         };
+        // The canvas fade: a top-most normal solid of `fade_colour` at opacity `1 - fade`, so
+        // it fades the composite whatever the layers' blend modes.
+        if canvas_fade.iter().any(|f| *f < 1.0) {
+            let mut h = hook("solid", shaders::solid());
+            for (n, name) in ["solid_r", "solid_g", "solid_b"].into_iter().enumerate() {
+                param(&mut h, name, f32s(canvas_colour.iter().map(|v| v[n])));
+            }
+            let mut a = hook("alpha", shaders::layer_alpha());
+            param(
+                &mut a,
+                "opacity",
+                f32s(canvas_fade.iter().map(|f| 1.0 - f.clamp(0.0, 1.0))),
+            );
+            let layer = Layer {
+                source: solid_image(),
+                grade: Grade {
+                    size: Some(Size {
+                        width: 2,
+                        height: 2,
+                    }),
+                    hooks: vec![h, a],
+                    ..Grade::default()
+                },
+                from: 0,
+                to: frames,
+                rects: Vec::new(),
+                rotation: Vec::new(),
+                blend: BlendMode::Normal,
+            };
+            recipes.push(json!({
+                "canvas_fade": grade_recipe(&layer.grade),
+            }));
+            layers.push(layer);
+        }
         let recipe = json!({
             "comp": 1,
             "canvas": self.canvas.size,

@@ -152,7 +152,7 @@ pub(crate) fn run(cmd: CompCmd, ff: &backend::Ffmpeg) -> anyhow::Result<()> {
                     "piece {} ({} frames): {} layers{}  {}",
                     s.name,
                     s.frames,
-                    p.layers.len(),
+                    p.shown.len(),
                     match p.base {
                         Base::Video { .. } => ", bottom video promoted to the pass input",
                         Base::Black => "",

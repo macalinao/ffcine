@@ -1,8 +1,8 @@
 //! Comps on the GPU against a CPU reference (`cargo test -p ffcine --test comp_gpu --
 //! --ignored`; needs a Vulkan GPU and `ffmpeg` on PATH, as in the dev shell): solids over a
-//! promoted `testsrc2` base (normal at half opacity, multiply), and solids over the canvas
-//! background with a fade, each lowered by `ffcine-comp`, rendered as a PNG and compared at
-//! ≥ 50 dB PSNR.
+//! promoted `testsrc2` base (normal at half opacity, multiply), solids over the canvas
+//! background with a layer fade, and a canvas fade over multiply and difference layers, each
+//! lowered by `ffcine-comp`, rendered as a PNG and compared at ≥ 50 dB PSNR.
 
 #![allow(
     clippy::cast_possible_truncation,
@@ -221,6 +221,54 @@ fn solids_over_video_and_background_match_the_cpu() {
     let db = psnr(&got, &want);
     eprintln!("background + solids: {db:.1} dB");
     assert!(db >= 50.0, "background + solids: {db:.1} dB");
+
+    // The canvas fade covers the composite whatever the blend modes: a multiply layer faded
+    // halfway to black is half its composite, and fade 0 to white is all white.
+    let faded = |fade: f64, colour: &str, name: &str| {
+        let comp = Comp::from_value(
+            &json!({
+                "schema": "ffcine.comp/1",
+                "canvas": { "size": [W, H], "fps": 30, "duration": 1.0, "background": "#336699",
+                    "fade": fade, "fade_colour": colour },
+                "layers": [
+                    { "source": { "solid": "#808080" }, "size": [200, 200], "blend": "multiply",
+                      "transform": { "anchor": [0, 0], "position": [40, 100] } },
+                    { "source": { "solid": "#808080" }, "size": [80, 40], "blend": "difference",
+                      "transform": { "anchor": [0, 0], "position": [300, 160] } },
+                ],
+            }),
+            &d,
+        )
+        .expect("comp");
+        let out = d.join(name);
+        render(&comp, 0, &out, &d);
+        rgb(&out, &[])
+    };
+    let mut want: Vec<u8> = bg.repeat((W * H) as usize);
+    over(
+        &mut want,
+        [40, 100, 200, 200],
+        [128.0 / 255.0; 3],
+        1.0,
+        BlendMode::Multiply,
+    );
+    over(
+        &mut want,
+        [300, 160, 80, 40],
+        [128.0 / 255.0; 3],
+        1.0,
+        BlendMode::Difference,
+    );
+    over(&mut want, [0, 0, W, H], [0.0; 3], 0.5, BlendMode::Normal);
+    let got = faded(0.5, "black", "c.png");
+    let db = psnr(&got, &want);
+    eprintln!("canvas fade over blends: {db:.1} dB");
+    assert!(db >= 50.0, "canvas fade over blends: {db:.1} dB");
+    let got = faded(0.0, "white", "d.png");
+    assert!(
+        got.iter().all(|v| *v == 255),
+        "fade 0 to white is all white"
+    );
     let _ = std::fs::remove_dir_all(&d);
 }
 
