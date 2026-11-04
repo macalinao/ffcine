@@ -364,7 +364,7 @@ impl Comp {
         Ok(comp)
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines, clippy::many_single_char_names)]
     fn layer(&self, v: &Value, path: &str, dir: &Path) -> Result<CompLayer> {
         let m = object(v, path)?;
         check_keys(
@@ -431,7 +431,7 @@ impl Comp {
         let in_ = once("in", 0.0)?;
         let out = once("out", self.canvas.duration)?;
         let source_in = once("source_in", 0.0)?;
-        if !(out > in_) {
+        if out.partial_cmp(&in_) != Some(std::cmp::Ordering::Greater) {
             return Err(err(
                 path,
                 format!("`out` ({out}) must be after `in` ({in_})"),
@@ -470,8 +470,7 @@ impl Comp {
             None => [cw, ch],
         };
         let fit = match m.get("fit").map(|v| (v.as_str(), v)) {
-            None => Fit::Cover,
-            Some((Some("cover"), _)) => Fit::Cover,
+            None | Some((Some("cover"), _)) => Fit::Cover,
             Some((Some("contain"), _)) => Fit::Contain,
             Some((Some("fill"), _)) => Fit::Fill,
             Some((Some("none"), _)) => Fit::None,

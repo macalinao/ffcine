@@ -311,7 +311,8 @@ pub struct StillArgs {
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
-    clippy::needless_pass_by_value
+    clippy::needless_pass_by_value,
+    clippy::many_single_char_names
 )]
 fn comp_still(a: StillArgs, ff: &backend::Ffmpeg) -> anyhow::Result<()> {
     let c = super::comp::load(&a.timeline)?;

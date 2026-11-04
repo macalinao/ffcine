@@ -1,7 +1,7 @@
 # Compositing and keyframes (design)
 
-Status: design. Step 1 of the [phased plan](#phased-plan) (param tracks and expressions,
-`ffcine_core::anim`) is built; the rest is not. It turns what assembly already composites (split-screens,
+Status: design. Steps 1 and 2 of the [phased plan](#phased-plan) (param tracks and expressions,
+`ffcine_core::anim`; the compositor core, `ffcine-comp`) are built; the rest is not. It turns what assembly already composites (split-screens,
 picture-in-picture, transitions, stills, text) into one general model: a **composition** of
 ordered **layers** whose parameters are **tracks**. Anything one would write today as a
 hand-made ffmpeg filter graph should be expressible in ffcine itself, and layouts and
@@ -115,6 +115,12 @@ fade      = 1 = picture, 0 = fade_colour (the finish hook's fade), so "fade in f
             doesn't reveal what is under the layer
 ```
 
+`fit: contain` and `fit: none` draw the picture centred inside the box (smaller than it), and
+`radius` and `mask` then apply to that picture; with `none` a source pixel is a canvas pixel
+and the part outside the box is cropped. `scale` below 0 is taken as 0 (no flips yet). A mask's
+`rect` defaults to the whole box, and `feather` is the width in box pixels of its soft edge,
+centred on the shape's edge.
+
 `content` and `transform` are kept apart on purpose. A Ken Burns or a punch-in zooms the
 picture inside a fixed tile: that is `content.zoom`, one sub-pixel source window
 (`Grade::crops`, no wobble, [reframe.md](reframe.md#sub-pixel-no-wobble)). Scaling the tile
@@ -184,7 +190,8 @@ ffcine comp lower story.comp.json      # templates expanded: the explicit layers
 ffcine comp new --template story --media a.mov b.heic c.mov d.heic e.mov f.heic -o story.comp.json
 ```
 
-`render` and `still` take a comp wherever they take a timeline (`still` composites every
+Built so far: `render`, `still` and `comp check` (step 2); `comp lower` and `comp new` come
+with templates (step 7). `render` and `still` take a comp wherever they take a timeline (`still` composites every
 layer, where today's still of a timeline draws the top-most clip and the text). It goes through the same
 planner, segment cache, profiles and manifest. A comp has no audio of its own yet
 ([Not yet](#not-yet)); as a clip in a timeline, it uses the timeline's audio tracks.
@@ -229,7 +236,7 @@ impl<T> Track<T> {
   from the layer's `in` (negative from its `out`). A comp layer's clock is not its source
   time, so a speed ramp doesn't warp its animation. The clock also says which
   [variables](#expressions) an expression sees: a comp layer's (`Clock::Layer`) sees all of
-  them. Until the planner passes the rest (step 2 onwards), a timeline effect's expression sees
+  them. Until the timeline planner lowers through comps (step 7), a timeline effect's expression sees
   only its own clock's time: `st` on source-time schemas (`Clock::Source`), `lt` and `dur` on
   text (`Clock::Clip`). Any other name is a compile error, so nothing changes meaning later.
 - Sampling is at the frame's start time, `i / fps`, as reframe and ffmpeg's expressions do.
@@ -558,7 +565,8 @@ hand-built layer lists.
    as a `pl_overlay` (normal, unrotated, SDR) or by the composite pass (rotated, blended, HDR),
    bottom first. A layer whose inputs are the same as on the previous frame (a still with no
    animated content, grade or alpha) reuses its texture instead of re-rendering, which makes
-   static stills and solids free after the first frame.
+   static stills and solids free after the first frame (`Grade::same_frame`: the same crop and
+   hook values, and nothing that moves by itself such as temporal dither, grain or a warp).
 4. **Nested comps** render in-pass: the sub-comp's background and layers go into the nested
    layer's texture through the same code (the composite pass's target becomes a parameter, not
    always the output), then that texture is a layer of the parent. No intermediate file and no
@@ -773,6 +781,18 @@ Each step is one PR, in dependency order. Each keeps the existing tests green an
    Canvas with animated background and fade, `video` layers without remapping, `solid`, the
    transform/anchor/scale/rotation/opacity, `radius`, shape `mask`, `blend`, `fade`, base
    promotion, comp segment keys with sampled values, and the unchanged-input texture reuse.
+   **Built.** `ffcine_comp::Comp` reads and validates a comp (JSON or YAML; keys of later steps,
+   `still`/`text`/`comp` sources, `content`, `crop`, `grade`, `time`, `filter`, `project`,
+   `comps`, `template`, are errors naming the step), `Comp::pieces` cuts it at layer in/out
+   points, and `Comp::lower` turns a piece into a base input and grade plus `Layer`s. Solids
+   are a 1x1 image with `shaders::solid`; fades are `shaders::finish` hooks (the layer's, then
+   the canvas's, which also runs on the background); opacity, corners and the mask are
+   `shaders::layer_alpha`. `ffcine_assembly::plan_comp` makes the pieces segments (`Unit::Comp`)
+   keyed by the lowered values (rects, rotation, every hook value as an `f32` digest, the source
+   fingerprint and start), so the segment cache, `--dry-run`, the manifest and `render_piece`
+   (stills) are shared with timelines. Existing timelines plan and render as before
+   (`RENDER_REVISION` stays 8). The GPU test is `crates/ffcine/tests/comp_gpu.rs` (78 and 61 dB
+   against the CPU reference); the bench is its `bench_layers`.
    *Tests*: lowering unit tests (rects and tracks from a comp, base promotion on/off); key tests
    (equivalent rewrites keep keys, an edit after a cut re-renders only later pieces, reorder
    changes keys); a GPU test (`--ignored`) compositing solids and a `testsrc2` clip against a

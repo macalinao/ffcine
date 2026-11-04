@@ -498,7 +498,9 @@ mod tests {
             for word in usage.split_whitespace() {
                 let word = word.trim_start_matches("\\[");
                 if let Some(meta) = word.strip_prefix("_`").and_then(|w| w.split('`').next()) {
-                    if !md.contains(&format!("- _`{meta}`_")) {
+                    // A command group (`comp check`) lists its commands instead.
+                    let group = meta == "COMMAND" && md.contains("Available commands");
+                    if !group && !md.contains(&format!("- _`{meta}`_")) {
                         problems.push(format!("{name}: no help for positional {meta}"));
                     }
                 }

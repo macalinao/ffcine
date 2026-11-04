@@ -79,7 +79,7 @@ fn digest(values: &[f32]) -> Value {
 /// A hook param: a constant (`params`) or a per-frame track.
 fn param(h: &mut Hook, name: &str, values: Vec<f32>) {
     match values.first() {
-        Some(v) if values.iter().all(|x| x == v) => {
+        Some(v) if values.iter().all(|x| x.to_bits() == v.to_bits()) => {
             h.params.push((name.into(), f64::from(*v)));
         }
         Some(_) => h.tracks.push(ParamTrack {
@@ -210,6 +210,7 @@ impl Comp {
     /// Lowers comp frames `range` for a render of `out` px (lengths scale by out/canvas).
     #[allow(
         clippy::too_many_lines,
+        clippy::many_single_char_names,
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         clippy::cast_precision_loss
@@ -488,26 +489,25 @@ impl Comp {
             shown.push(i);
         }
 
-        let grade = match base_grade {
-            Some(g) => g,
-            None => {
-                let bg = sample(
-                    &self.canvas.background,
-                    "canvas.background",
-                    range.clone(),
-                    &cenv,
-                )?;
-                let mut h = hook("background", shaders::background());
-                for (n, name) in ["bg_r", "bg_g", "bg_b"].into_iter().enumerate() {
-                    param(&mut h, name, f32s(bg.iter().map(|v| v[n])));
-                }
-                let mut hooks = vec![h];
-                hooks.extend(fade_hook("canvas_fade", &canvas_fade, &canvas_colour));
-                Grade {
-                    size: Some(out),
-                    hooks,
-                    ..Grade::default()
-                }
+        let grade = if let Some(g) = base_grade {
+            g
+        } else {
+            let bg = sample(
+                &self.canvas.background,
+                "canvas.background",
+                range.clone(),
+                &cenv,
+            )?;
+            let mut h = hook("background", shaders::background());
+            for (n, name) in ["bg_r", "bg_g", "bg_b"].into_iter().enumerate() {
+                param(&mut h, name, f32s(bg.iter().map(|v| v[n])));
+            }
+            let mut hooks = vec![h];
+            hooks.extend(fade_hook("canvas_fade", &canvas_fade, &canvas_colour));
+            Grade {
+                size: Some(out),
+                hooks,
+                ..Grade::default()
             }
         };
         let recipe = json!({

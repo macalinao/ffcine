@@ -65,6 +65,9 @@ top-most enabled video clip with media there, at the matching source time (speed
 freezes included), through the GPU grade with the clip's resolved grade (LUT and look, as in `looks`), at the timeline's `frame_size`
 (else the source's size), with the text clips on that frame composited.
 
+Of a comp (`ffcine still story.comp.json --at 2.6`, [compositing.md](compositing.md)), every
+layer at that frame, composited at the canvas size (or `--size`); `--no-text` has nothing to do.
+
 ## Look comparisons
 
 ```sh

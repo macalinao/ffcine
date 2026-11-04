@@ -27,6 +27,7 @@ fn comp(layers: Value) -> Comp {
     try_comp(layers).expect("comp")
 }
 
+#[allow(clippy::needless_pass_by_value)] // json! literals at every call
 fn try_comp(layers: Value) -> Result<Comp> {
     Comp::from_value(
         &json!({
@@ -118,7 +119,7 @@ fn tiles_land_where_the_transform_says() {
             height: 632.0
         }
     );
-    assert!(a.rotation.is_empty());
+    assert_eq!(a.rotation, [] as [f32; 0]);
     let alpha = a
         .grade
         .hooks

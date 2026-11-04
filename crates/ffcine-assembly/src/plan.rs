@@ -1558,6 +1558,47 @@ mod tests {
         }
     }
 
+    #[test]
+    fn comp_pieces_are_segments_keyed_by_their_values() {
+        let comp = |fade: &str| {
+            ffcine_comp::Comp::from_value(
+                &json!({
+                    "schema": "ffcine.comp/1",
+                    "canvas": { "size": [1080, 1920], "fps": 30, "duration": 4.0 },
+                    "layers": [
+                        { "source": { "video": "a.mov" }, "out": 2.0 },
+                        { "source": { "solid": "white" }, "in": 2.0, "fade": fade },
+                    ],
+                }),
+                Path::new("/media"),
+            )
+            .expect("comp")
+        };
+        let dims = |_: &Path| Ok((1920, 1080));
+        let media = CompMedia {
+            fp: &Fake,
+            dims: &dims,
+        };
+        let profile = Profile::for_canvas("master", 1080, 1920).expect("profile");
+        assert_eq!(
+            (profile.size.width, profile.size.height),
+            (2160, 3840),
+            "the canvas aspect at the master's short side"
+        );
+        let a = plan_comp(&comp("1"), &profile, &media).expect("plan");
+        let b = plan_comp(&comp("clip(4 - t, 0, 1)"), &profile, &media).expect("plan");
+        assert_eq!(a.segments.len(), 2);
+        assert_eq!(a.frames(), 120);
+        assert!(
+            matches!(&a.segments[0].unit, Unit::Comp(p) if matches!(p.base, ffcine_comp::Base::Video { .. }))
+        );
+        assert_eq!(a.segments[0].key, b.segments[0].key);
+        assert_ne!(a.segments[1].key, b.segments[1].key);
+        // The diff sees it like a timeline edit.
+        let d = Diff::new(&a, &b);
+        assert!(d.report(&b, false).contains("comp 2.00-4.00 s"));
+    }
+
     fn clip(name: &str, file: &str, start: f64, frames: f64, look: &str) -> Item {
         let range = TimeRange::from_frames(start, start + frames, RATE);
         let media = MediaReference::External(ExternalReference::from_path(
