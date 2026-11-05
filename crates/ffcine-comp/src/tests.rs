@@ -539,3 +539,167 @@ fn limits_are_checked_before_rendering() {
         ok.lower(r, OUT, &Fake).expect("lower");
     }
 }
+
+/// Piece 0's lowering of `layers`.
+fn lowered(layers: Value) -> crate::Piece {
+    let c = comp(layers);
+    c.lower(c.pieces()[0].clone(), OUT, &Fake).expect("lower")
+}
+
+fn crop_of(l: &ffcine_render::Layer) -> Crop {
+    l.grade.crop.expect("crop")
+}
+
+#[test]
+fn content_moves_the_source_window() {
+    let video = |extra: Value| {
+        let mut l =
+            json!({ "source": { "video": "a.mov" }, "size": [540, 960], "blend": "multiply" });
+        l.as_object_mut()
+            .expect("object")
+            .extend(extra.as_object().expect("object").clone());
+        json!([l])
+    };
+    // Cover: a 9:16 window of the 16:9 source, centred.
+    let c = crop_of(&lowered(video(json!({ "content": {} }))).layers[0]);
+    assert!((c.width - 607.5).abs() < 0.01 && (c.height - 1080.0).abs() < 0.01);
+    assert!((c.x - 656.25).abs() < 0.01 && c.y.abs() < 0.01);
+    // crop_x 0 puts it at the left edge; zoom 2 halves it about zoom_center.
+    let c = crop_of(&lowered(video(json!({ "content": { "crop_x": 0 } }))).layers[0]);
+    assert!(c.x.abs() < 0.01);
+    let c = crop_of(&lowered(video(json!({ "content": { "zoom": 2 } }))).layers[0]);
+    assert!((c.width - 303.75).abs() < 0.01 && (c.height - 540.0).abs() < 0.01);
+    assert!((c.x + c.width / 2.0 - 960.0).abs() < 0.01 && (c.y - 270.0).abs() < 0.01);
+    // A crop takes sides off the source first: the window stays inside what is left.
+    let c = crop_of(
+        &lowered(video(
+            json!({ "crop": { "left": 0.5 }, "content": { "crop_x": 0 } }),
+        ))
+        .layers[0],
+    );
+    assert!((c.x - 960.0).abs() < 0.01, "{c:?}");
+    // A punch-in zooms its frames only: the crop goes per frame.
+    let p = lowered(video(
+        json!({ "content": { "punch": [{ "at": 1, "to": 2 }] } }),
+    ));
+    let crops = &p.layers[0].grade.crops;
+    assert_eq!(crops.len(), 180);
+    assert!((crops[0].width - 607.5).abs() < 0.01);
+    assert!((crops[45].width - 607.5 / 1.25).abs() < 0.01);
+    assert!((crops[90].width - 607.5).abs() < 0.01);
+    // A push zooms smoothly from one zoom to the other.
+    let p = lowered(video(json!({ "content": { "push": [1, 2] } })));
+    let w: Vec<f32> = p.layers[0].grade.crops.iter().map(|c| c.width).collect();
+    assert!((w[0] - 607.5).abs() < 0.01 && (w[179] - 303.75).abs() < 0.01);
+    assert!(w.windows(2).all(|p| p[1] <= p[0]));
+    // A crop feather is a feathered rect mask.
+    let p = lowered(video(json!({ "crop": { "top": 0.1, "feather": 8 } })));
+    assert!(p.layers[0].grade.hooks.iter().any(|h| {
+        h.params
+            .iter()
+            .any(|(n, v)| n == "shape" && (*v - 1.0).abs() < 1e-9)
+    }));
+    // Rejected: bad sides, animated crops with contain, framing a solid, unknown keys.
+    for (l, want) in [
+        (
+            video(json!({ "crop": { "left": 0.6, "right": 0.5 } })),
+            "under 1",
+        ),
+        (
+            video(json!({ "crop": { "left": "t / 10" }, "fit": "contain" })),
+            "contain",
+        ),
+        (video(json!({ "content": { "zom": 2 } })), "unknown key"),
+        (
+            video(json!({ "content": { "punch": [{ "at": 1, "to": 2, "zoom": 0 }] } })),
+            "> 0",
+        ),
+        (
+            video(json!({ "crop": { "feather": 4 }, "mask": { "shape": "ellipse" } })),
+            "mask",
+        ),
+    ] {
+        let e = rejected(json!({ "size": [1080, 1920], "fps": 30, "duration": 6 }), l).to_string();
+        assert!(e.contains(want), "{want:?} not in {e:?}");
+    }
+}
+
+#[test]
+fn stills_text_and_nested_comps_lower() {
+    // A still: its identity in the key.
+    let still = |p: &str| json!([{ "source": { "still": p } , "size": [540, 540] }]);
+    let a = lowered(still("a.png"));
+    assert!(matches!(&a.layers[0].source, LayerSource::Still(p) if p.ends_with("a.png")));
+    assert_ne!(a.recipe, lowered(still("b.png")).recipe);
+    // Text lies under the next layer, or above all; its params are in the key.
+    let text = |s: &str| json!({ "source": { "text": { "text": s, "size": 80 } } });
+    let solid = json!({ "source": { "solid": "white" }, "size": [100, 100] });
+    let p = lowered(json!([text("hi"), solid]));
+    assert_eq!(p.layers.len(), 1);
+    assert!(!p.overlays.is_empty());
+    assert!(p.overlays.iter().all(|o| o.under == Some(0)));
+    let q = lowered(json!([solid, text("hi")]));
+    assert!(q.overlays.iter().all(|o| o.under == Some(1)));
+    assert_ne!(p.recipe, q.recipe);
+    assert_ne!(q.recipe, lowered(json!([solid, text("ho")])).recipe);
+    // A nested comp: its own layers in a scene, its values in the key.
+    let nested = |colour: &str| {
+        json!([{ "source": { "comp": { "layers": [
+            { "source": { "solid": colour }, "size": [200, 200] },
+            { "source": { "video": "a.mov" } },
+        ] } }, "size": [540, 960] }])
+    };
+    let n = lowered(nested("#ff0000"));
+    let LayerSource::Scene(s) = &n.layers[0].source else {
+        panic!("not a scene: {:?}", n.layers[0].source);
+    };
+    assert_eq!((s.size.width, s.size.height), (540, 960));
+    assert_eq!(s.layers.len(), 2);
+    assert_eq!(s.layers[0].to - s.layers[0].from, 180);
+    assert_ne!(n.recipe, lowered(nested("#0000ff")).recipe);
+    assert_eq!(n.recipe, lowered(nested("#ff0000")).recipe);
+}
+
+#[test]
+fn nested_comps_are_named_capped_and_counted() {
+    let doc = |comps: Value, layers: Value| {
+        Comp::from_value(
+            &json!({
+                "schema": "ffcine.comp/1",
+                "canvas": { "size": [1080, 1920], "fps": 30, "duration": 2 },
+                "comps": comps,
+                "layers": layers,
+            }),
+            Path::new("/media"),
+        )
+    };
+    let use_ = |name: &str| json!([{ "source": { "comp": name } }]);
+    let card = json!({ "layers": [{ "source": { "solid": "white" } }] });
+    assert!(doc(json!({ "card": card }), use_("card")).is_ok());
+    for (comps, layers, want) in [
+        (json!({}), use_("card"), "no comp \"card\""),
+        (
+            json!({ "loop": { "layers": use_("loop") } }),
+            use_("loop"),
+            "levels deep",
+        ),
+        (
+            json!({ "c": { "comps": {}, "layers": [] } }),
+            use_("c"),
+            "top level only",
+        ),
+        (
+            json!({ "c": { "canvas": { "fps": 25 }, "layers": [] } }),
+            use_("c"),
+            "time remapping",
+        ),
+        (
+            json!({ "v": { "layers": vec![json!({ "source": { "video": "a.mov" } }); 9] } }),
+            json!([{ "source": { "comp": "v" } }, { "source": { "comp": "v" } }]),
+            "at most 16 video layers",
+        ),
+    ] {
+        let e = doc(comps, layers).expect_err(want).to_string();
+        assert!(e.contains(want), "{want:?} not in {e:?}");
+    }
+}
