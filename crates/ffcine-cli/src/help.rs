@@ -12,7 +12,7 @@ macro_rules! examples {
 macro_rules! docs {
     ($page:literal) => {
         concat!(
-            "https://github.com/macalinao/ffcine/blob/master/docs/",
+            "https://github.com/talaagent/ffcine/blob/master/docs/",
             $page
         )
     };
