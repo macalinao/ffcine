@@ -92,6 +92,7 @@ fn render(comp: &Comp, at: i64, out: &Path, d: &Path) -> Base {
     let media = CompMedia {
         fp: &FsFingerprinter,
         dims: &dims,
+        profile: None,
     };
     let size = Size {
         width: W,
@@ -377,6 +378,7 @@ fn bench_layers() {
     let media = CompMedia {
         fp: &FsFingerprinter,
         dims: &dims,
+        profile: None,
     };
     let r = Renderer {
         backend: &ff,

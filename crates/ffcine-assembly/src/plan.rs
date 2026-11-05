@@ -679,10 +679,15 @@ pub fn plan(
     })
 }
 
-/// What a comp's lowering reads of its media: probed sizes (`dims`) and fingerprints.
+/// A source's camera profile, probed ([`ffcine_core::camera::Profile::detect_file`]).
+pub type ProbeProfile<'a> = &'a dyn Fn(&Path) -> ffcine_core::Result<ffcine_core::camera::Profile>;
+
+/// What a comp's lowering reads of its media: probed sizes (`dims`), camera profiles for
+/// `camera: auto` (`profile`; `None`: every source is display-referred) and fingerprints.
 pub struct CompMedia<'a> {
     pub fp: &'a dyn Fingerprinter,
     pub dims: &'a dyn Fn(&Path) -> ffcine_core::Result<(u32, u32)>,
+    pub profile: Option<ProbeProfile<'a>>,
 }
 
 impl ffcine_comp::Media for CompMedia<'_> {
@@ -691,6 +696,10 @@ impl ffcine_comp::Media for CompMedia<'_> {
     }
     fn identity(&self, path: &Path) -> Value {
         serde_json::to_value(self.fp.fingerprint(path)).unwrap_or(Value::Null)
+    }
+    fn profile(&self, path: &Path) -> ffcine_core::Result<ffcine_core::camera::Profile> {
+        self.profile
+            .map_or(Ok(ffcine_core::camera::Profile::Rec709), |f| f(path))
     }
 }
 
@@ -1583,6 +1592,7 @@ mod tests {
         let media = CompMedia {
             fp: &Fake,
             dims: &dims,
+            profile: None,
         };
         let profile = Profile::for_canvas("master", 1080, 1920).expect("profile");
         assert_eq!(

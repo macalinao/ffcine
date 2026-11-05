@@ -14,9 +14,12 @@ rust-version.workspace = true
 
 [dependencies]
 ffcine-core.workspace = true
+# Per-layer grade: the project, `grade_for` and shader loading.
+ffcine-hooks.workspace = true
 # Layer, Grade, Hook, BlendMode and the generated shaders (no backend features).
 ffcine-render.workspace = true
 ffcine-text.workspace = true
+ffcine-timeline.workspace = true
 serde_json.workspace = true
 # Digests of sampled tracks in piece keys.
 sha2.workspace = true

@@ -662,8 +662,10 @@ name = "ffcine-comp"
 version = "0.3.0"
 dependencies = [
  "ffcine-core",
+ "ffcine-hooks",
  "ffcine-render",
  "ffcine-text",
+ "ffcine-timeline",
  "serde_json",
  "sha2",
  "yaml_serde",

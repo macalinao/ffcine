@@ -325,6 +325,8 @@ fn num(f: &Filter, opts: &[&[&str]], i: usize, d: f64) -> Result<f64, String> {
     })
 }
 
+// One arm per filter: a table in code.
+#[allow(clippy::too_many_lines)]
 fn hook(f: &Filter) -> Result<(Option<Hook>, Vec<String>), String> {
     let opts = match f.name.as_str() {
         "eq" => EQ,

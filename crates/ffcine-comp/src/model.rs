@@ -2,10 +2,13 @@
 
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::Arc;
 
 use ffcine_core::anim::{Clock, Env, Scope, Track, Vars, is_keys};
+use ffcine_core::camera::ProfileChoice;
 use ffcine_core::{Error, Result};
 use ffcine_render::BlendMode;
+use ffcine_timeline::{ClipGrade, Project, Timeline};
 use serde_json::{Map, Value};
 
 /// The schema name (`"schema": "ffcine.comp/1"`).
@@ -231,8 +234,73 @@ pub struct CompLayer {
     pub blend: BlendMode,
     pub(crate) fade: Track<f64>,
     pub(crate) fade_colour: Track<[f64; 4]>,
+    /// `grade` (video, still and comp layers).
+    pub(crate) grade: Option<LayerGrade>,
     /// The comp's vars, then the layer's.
     pub(crate) vars: Vars,
+}
+
+/// The look params a layer's `grade` may animate (the look hook's `//!PARAM`s).
+pub(crate) const LOOK_PARAMS: [&str; 8] = [
+    "exposure",
+    "warmth",
+    "tint",
+    "contrast",
+    "gamma",
+    "lift",
+    "gain",
+    "saturation",
+];
+
+/// A layer's `grade` (`docs/compositing.md#per-layer-grade-and-filters`): resolved at lowering
+/// through the comp's project like a timeline clip's `ffcine.color.grade/1`.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(crate) struct LayerGrade {
+    /// The constant fields, as a clip's grade effect.
+    pub params: ClipGrade,
+    /// Animated look params ([`LOOK_PARAMS`]), set over the resolved grade per frame.
+    pub tracks: Vec<(&'static str, Track<f64>)>,
+    /// `filters`, after the resolved grade's `extra`.
+    pub filters: Vec<FilterSpec>,
+    /// `shaders`, after the filters.
+    pub shaders: Vec<ShaderSpec>,
+}
+
+/// A `grade.filters` entry.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum FilterSpec {
+    /// An ffmpeg filter chain (`ffcine_render::extra`), every filter and option supported.
+    Chain(String),
+    /// `{"name": {option: number, track or string}}`.
+    Object {
+        name: String,
+        opts: Vec<(String, FilterOpt)>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum FilterOpt {
+    Num(Track<f64>),
+    Text(String),
+}
+
+/// A `grade.shaders` entry, as `ffcine.fx.shader/1`: `//!PARAM`s as layer-clock tracks.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ShaderSpec {
+    pub shader: String,
+    pub params: Vec<(String, Track<f64>)>,
+}
+
+/// The project a comp's grades resolve through: `project` (inline, or a timeline's), else the
+/// default one.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompProject {
+    pub project: Project,
+    /// LUT and shader paths resolve against it: the timeline's directory for a borrowed
+    /// project, else the comp file's.
+    pub dir: PathBuf,
+    /// Whether `project` was given: then every video, still and comp layer is graded.
+    pub given: bool,
 }
 
 /// A composition: a canvas and layers, bottom first.
@@ -241,6 +309,8 @@ pub struct Comp {
     pub canvas: Canvas,
     pub layers: Vec<CompLayer>,
     pub(crate) vars: Vars,
+    /// Shared with nested comps.
+    pub project: Arc<CompProject>,
 }
 
 /// Rejects keys that aren't `known` (`x_*` keys are kept and ignored); `later` names keys of a
@@ -350,6 +420,7 @@ struct Ctx<'a> {
     dir: &'a Path,
     comps: &'a Map<String, Value>,
     depth: usize,
+    project: &'a Arc<CompProject>,
 }
 
 /// A nested comp's defaults, from the layer that uses it.
@@ -506,12 +577,17 @@ impl Comp {
         check_keys(
             m,
             "comp",
-            &["schema", "canvas", "vars", "comps", "layers"],
-            &[
-                ("project", "compositing step 4, per-layer grade"),
-                ("template", "compositing step 7, templates"),
-            ],
+            &["schema", "canvas", "vars", "comps", "layers", "project"],
+            &[("template", "compositing step 7, templates")],
         )?;
+        let project = Arc::new(match m.get("project") {
+            None => CompProject {
+                project: Project::default(),
+                dir: dir.to_owned(),
+                given: false,
+            },
+            Some(v) => comp_project(v, dir)?,
+        });
         let empty = Map::new();
         let comps = match m.get("comps") {
             Some(v) => object(v, "comps")?,
@@ -521,6 +597,7 @@ impl Comp {
             dir,
             comps,
             depth: 0,
+            project: &project,
         };
         Self::parse(m, "", &ctx, None)
     }
@@ -591,7 +668,7 @@ impl Comp {
                 "fade_colour",
             ],
             &[
-                ("grain", "compositing step 4, per-layer grade"),
+                ("grain", "canvas grain, see docs/compositing.md#not-yet"),
                 ("filter", "compositing step 6, libavfilter node"),
             ],
         )?;
@@ -672,6 +749,7 @@ impl Comp {
             canvas,
             layers: Vec::new(),
             vars,
+            project: Arc::clone(ctx.project),
         };
         let layers = match m.get("layers") {
             Some(Value::Array(a)) => a.as_slice(),
@@ -758,6 +836,7 @@ impl Comp {
                 "blend",
                 "fade",
                 "fade_colour",
+                "grade",
                 "vars",
             ]
         };
@@ -766,7 +845,6 @@ impl Comp {
             path,
             known,
             &[
-                ("grade", "compositing step 4, per-layer grade"),
                 ("time", "compositing step 5, time remapping"),
                 ("filter", "compositing step 6, libavfilter node"),
             ],
@@ -882,7 +960,7 @@ impl Comp {
                         &["schema", "canvas", "vars", "layers"],
                         &[
                             ("comps", "comps are named at the top level only"),
-                            ("project", "compositing step 4, per-layer grade"),
+                            ("project", "a nested comp uses its parent's project"),
                             ("template", "compositing step 7, templates"),
                         ],
                     )?;
@@ -890,6 +968,7 @@ impl Comp {
                         dir,
                         comps: ctx.comps,
                         depth: ctx.depth + 1,
+                        project: ctx.project,
                     };
                     let parent = Parent {
                         vars: &vars,
@@ -1027,6 +1106,30 @@ impl Comp {
                 })
             }
         };
+        let grade = match m.get("grade") {
+            None => None,
+            Some(_) if !picture => {
+                return Err(err(
+                    format!("{path}.grade"),
+                    "only video, still and comp layers have a picture to grade",
+                ));
+            }
+            Some(v) => {
+                let gp = format!("{path}.grade");
+                let g = layer_grade(v, &scope, &gp)?;
+                if !matches!(source, Source::Video(_))
+                    && let Some(c) = &g.params.params.camera
+                    && c != "auto"
+                {
+                    return Err(err(
+                        format!("{gp}.camera"),
+                        "a camera profile applies to video layers only (stills and comps are \
+                         display-referred)",
+                    ));
+                }
+                Some(g)
+            }
+        };
         let blend = match m.get("blend") {
             None => BlendMode::Normal,
             Some(v) => v
@@ -1062,7 +1165,233 @@ impl Comp {
                 Some(v) => colour(v, &scope, &format!("{path}.fade_colour"))?,
                 None => Track::Const([0.0, 0.0, 0.0, 1.0]),
             },
+            grade,
             vars,
         })
     }
+}
+
+/// `project`: an inline `ffcine.project/1`, or a timeline file (relative to `dir`) whose project
+/// is borrowed.
+fn comp_project(v: &Value, dir: &Path) -> Result<CompProject> {
+    match v {
+        Value::String(f) => {
+            let path = dir.join(f);
+            let t = Timeline::from_file(&path).map_err(|e| err("project", e.to_string()))?;
+            let project = t
+                .project()
+                .ok_or_else(|| err("project", format!("{f}: the timeline has no project")))?
+                .map_err(|e| err("project", format!("{f}: {e}")))?;
+            Ok(CompProject {
+                project,
+                dir: path.parent().unwrap_or(Path::new(".")).to_owned(),
+                given: true,
+            })
+        }
+        Value::Object(m) => {
+            match m.get("schema").and_then(Value::as_str) {
+                None | Some(ffcine_timeline::project::PROJECT_SCHEMA) => {}
+                Some(s) => {
+                    return Err(err(
+                        "project.schema",
+                        format!(
+                            "expected {:?}, got {s:?}",
+                            ffcine_timeline::project::PROJECT_SCHEMA
+                        ),
+                    ));
+                }
+            }
+            let mut m = m.clone();
+            m.entry("schema")
+                .or_insert_with(|| ffcine_timeline::project::PROJECT_SCHEMA.into());
+            let project: Project = serde_json::from_value(Value::Object(m))
+                .map_err(|e| err("project", e.to_string()))?;
+            Ok(CompProject {
+                project,
+                dir: dir.to_owned(),
+                given: true,
+            })
+        }
+        v => Err(err(
+            "project",
+            format!("expected an ffcine.project/1 object or a timeline path, got {v}"),
+        )),
+    }
+}
+
+/// A layer's `grade` object.
+#[allow(clippy::many_single_char_names, clippy::too_many_lines)]
+fn layer_grade(v: &Value, scope: &Scope, path: &str) -> Result<LayerGrade> {
+    let m = object(v, path)?;
+    let mut known = vec![
+        "look",
+        "camera",
+        "lut",
+        "lut_strength",
+        "rgb_gain",
+        "sharpen",
+        "filters",
+        "shaders",
+    ];
+    known.extend(LOOK_PARAMS);
+    check_keys(
+        m,
+        path,
+        &known,
+        &[
+            ("cdl", "per-layer CDL, see docs/compositing.md#not-yet"),
+            (
+                "denoise",
+                "per-layer denoise, see docs/compositing.md#not-yet",
+            ),
+            (
+                "stabilize",
+                "per-layer stabilize, see docs/compositing.md#not-yet",
+            ),
+            ("grain", "per-layer grain, see docs/compositing.md#not-yet"),
+            ("extra", "use `filters`"),
+        ],
+    )?;
+    let at = |k: &str| format!("{path}.{k}");
+    let mut consts = Map::new();
+    let mut tracks = Vec::new();
+    for k in LOOK_PARAMS {
+        if let Some(v) = m.get(k) {
+            match Track::<f64>::parse_in(v, scope, &at(k))? {
+                Track::Const(c) => {
+                    consts.insert(k.into(), c.into());
+                }
+                t => tracks.push((k, t)),
+            }
+        }
+    }
+    for k in ["look", "camera", "lut"] {
+        if let Some(v) = m.get(k) {
+            let s = v
+                .as_str()
+                .ok_or_else(|| err(at(k), format!("expected a string, got {v}")))?;
+            if k == "camera" {
+                ProfileChoice::from_str(s).map_err(|e| err(at(k), e.to_string()))?;
+            }
+            consts.insert(k.into(), s.into());
+        }
+    }
+    if let Some(v) = m.get("lut_strength") {
+        let x = match v.as_f64() {
+            Some(x) if (0.0..=1.0).contains(&x) => x,
+            Some(x) => return Err(err(at("lut_strength"), format!("{x}: expected 0 to 1"))),
+            None => {
+                return Err(err(
+                    at("lut_strength"),
+                    "expected a number 0 to 1 (an animated lut_strength is not supported yet, \
+                     see docs/compositing.md#not-yet)",
+                ));
+            }
+        };
+        consts.insert("lut_strength".into(), x.into());
+    }
+    if let Some(v) = m.get("sharpen") {
+        match v.as_f64() {
+            Some(x) if x.is_finite() && x >= 0.0 => {
+                consts.insert("sharpen".into(), x.into());
+            }
+            _ => {
+                return Err(err(
+                    at("sharpen"),
+                    format!("expected a number >= 0 (held per layer), got {v}"),
+                ));
+            }
+        }
+    }
+    if let Some(v) = m.get("rgb_gain") {
+        match v.as_array().map(Vec::as_slice) {
+            Some([r, g, b])
+                if [r, g, b]
+                    .iter()
+                    .all(|c| c.as_f64().is_some_and(|c| c.is_finite() && c >= 0.0)) =>
+            {
+                consts.insert("rgb_gain".into(), v.clone());
+            }
+            _ => {
+                return Err(err(
+                    at("rgb_gain"),
+                    format!("expected [r, g, b], numbers >= 0 (held per layer), got {v}"),
+                ));
+            }
+        }
+    }
+    let params: ClipGrade =
+        serde_json::from_value(Value::Object(consts)).map_err(|e| err(path, e.to_string()))?;
+
+    let list = |k: &str| -> Result<&[Value]> {
+        match m.get(k) {
+            None => Ok(&[]),
+            Some(Value::Array(a)) => Ok(a.as_slice()),
+            Some(v) => Err(err(at(k), format!("expected an array, got {v}"))),
+        }
+    };
+    let mut filters = Vec::new();
+    for (i, f) in list("filters")?.iter().enumerate() {
+        let fp = format!("{path}.filters[{i}]");
+        filters.push(match f {
+            Value::String(chain) => {
+                ffcine_render::extra::strict_hooks(std::slice::from_ref(chain))
+                    .map_err(|e| err(&fp, e))?;
+                FilterSpec::Chain(chain.clone())
+            }
+            Value::Object(o) if o.len() == 1 => {
+                let (name, opts) = o.iter().next().unwrap_or_else(|| unreachable!());
+                let op = format!("{fp}.{name}");
+                let mut out = Vec::new();
+                for (k, v) in object(opts, &op)? {
+                    out.push((
+                        k.clone(),
+                        match v {
+                            Value::String(s) => FilterOpt::Text(s.clone()),
+                            v => FilterOpt::Num(Track::parse_in(v, scope, &format!("{op}.{k}"))?),
+                        },
+                    ));
+                }
+                FilterSpec::Object {
+                    name: name.clone(),
+                    opts: out,
+                }
+            }
+            v => {
+                return Err(err(
+                    &fp,
+                    format!(
+                        "expected a filter chain string or {{\"filter\": {{option: value}}}}, got {v}"
+                    ),
+                ));
+            }
+        });
+    }
+    let mut shaders = Vec::new();
+    for (i, v) in list("shaders")?.iter().enumerate() {
+        let sp = format!("{path}.shaders[{i}]");
+        let o = object(v, &sp)?;
+        check_keys(o, &sp, &["shader", "params"], &[])?;
+        let shader = o
+            .get("shader")
+            .and_then(Value::as_str)
+            .ok_or_else(|| err(format!("{sp}.shader"), "expected a name or path"))?
+            .to_owned();
+        let mut params = Vec::new();
+        if let Some(p) = o.get("params") {
+            for (k, v) in object(p, &format!("{sp}.params"))? {
+                params.push((
+                    k.clone(),
+                    Track::parse_in(v, scope, &format!("{sp}.params.{k}"))?,
+                ));
+            }
+        }
+        shaders.push(ShaderSpec { shader, params });
+    }
+    Ok(LayerGrade {
+        params,
+        tracks,
+        filters,
+        shaders,
+    })
 }

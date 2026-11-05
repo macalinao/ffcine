@@ -109,6 +109,7 @@ fn render_to(
     let media = CompMedia {
         fp: &FsFingerprinter,
         dims: &dims,
+        profile: None,
     };
     let size = Size {
         width: w,
