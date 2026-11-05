@@ -10,7 +10,7 @@ jobs:
   # Opens or updates the release PR. PRs made with GITHUB_TOKEN don't trigger
   # CI; set a RELEASE_PLZ_TOKEN secret (GitHub App token or PAT) so they do.
   release-plz-pr:
-    if: github.repository_owner == 'macalinao' && !github.event.repository.private
+    if: github.repository_owner == 'talaagent' && !github.event.repository.private
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -58,7 +58,7 @@ jobs:
   # publishes when the commit comes from a merged release PR (a `release-plz-`
   # branch), which it looks up through the GitHub API.
   release-plz-release:
-    if: github.repository_owner == 'macalinao' && !github.event.repository.private
+    if: github.repository_owner == 'talaagent' && !github.event.repository.private
     runs-on: ubuntu-latest
     permissions:
       contents: write

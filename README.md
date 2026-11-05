@@ -26,8 +26,8 @@ Ingest and catalog need no GPU and build on macOS too
 ## Install
 
 ```sh
-nix build github:macalinao/ffcine      # ./result/bin/ffcine
-nix run github:macalinao/ffcine -- doctor
+nix build github:talaagent/ffcine      # ./result/bin/ffcine
+nix run github:talaagent/ffcine -- doctor
 ```
 
 Or with the system libraries above installed: `cargo install ffcine-cli`.
