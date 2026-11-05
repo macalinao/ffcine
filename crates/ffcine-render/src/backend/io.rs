@@ -33,6 +33,8 @@ pub(crate) struct Input {
     pub trim: i64,
     /// A HEIF tile grid: its displayed size and the assembled picture, until it's taken.
     grid: Option<((u32, u32), Option<Frame>)>,
+    /// A single-image HEIF item's clockwise `irot` (frames are decoded as coded).
+    rotation: u32,
 }
 
 // SAFETY: used by one thread at a time.
@@ -105,6 +107,7 @@ impl Input {
                 tb: Q::new(1, 1),
                 trim: i64::MIN,
                 grid: None,
+                rotation: 0,
             };
             check(
                 ff::avformat_find_stream_info(fmt, ptr::null_mut()),
@@ -126,6 +129,9 @@ impl Input {
                 ),
                 "no video stream",
             )?;
+            if this.grid.is_none() {
+                this.rotation = super::tiles::item_rotation(fmt, this.stream);
+            }
             let st = *(*fmt)
                 .streams
                 .add(usize::try_from(this.stream).unwrap_or(0));
@@ -182,6 +188,12 @@ impl Input {
     pub(crate) fn decoder(&self) -> &ff::AVCodecContext {
         // SAFETY: valid context.
         unsafe { &*self.dec.as_ptr() }
+    }
+
+    /// Clockwise turn a single-image HEIF item needs to be upright (0, 90, 180 or 270); its
+    /// frames and [`Self::size`] are as coded. Tile grids come out upright already.
+    pub(crate) fn rotation(&self) -> u32 {
+        self.rotation
     }
 
     /// Decoded picture size: the decoder's, or a tile grid's displayed size.

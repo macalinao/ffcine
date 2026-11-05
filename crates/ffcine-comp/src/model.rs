@@ -43,6 +43,15 @@ pub mod limits {
     pub const COORD: f64 = 1e9;
     /// Rotation, degrees either way.
     pub const ROTATION: f64 = 1e6;
+    /// Comps nested in comps (`{"comp": ...}` sources), levels below the top.
+    pub const DEPTH: usize = 4;
+    /// `content` zooms (`zoom`, a punch's, `push`), and how far in they and `crop` may go in
+    /// all: the source window is at least 1/ZOOM of the source a side.
+    pub const ZOOM: f64 = 1e4;
+    /// A still source, px a side.
+    pub const STILL_SIDE: u32 = ffcine_render::STILL_SIDE;
+    /// A still source, px in all.
+    pub const STILL_PIXELS: u64 = ffcine_render::STILL_PIXELS;
 }
 
 /// Whether `v` is a comp document (`schema` is `ffcine.comp/N`), as opposed to a timeline.
@@ -102,8 +111,54 @@ pub struct Canvas {
 pub enum Source {
     /// A video file (relative paths are resolved against the comp file's directory).
     Video(PathBuf),
+    /// A still picture (PNG, JPEG, WebP, HEIC, ...), decoded once through libav.
+    Still(PathBuf),
     /// A colour, `[r, g, b, a]` sRGB 0..1; the alpha multiplies the opacity.
     Solid(Track<[f64; 4]>),
+    /// `ffcine.text` parameters (`docs/text.md`); font files resolve against `dir`.
+    Text {
+        params: Map<String, Value>,
+        dir: PathBuf,
+    },
+    /// A nested comp, its canvas defaulted from the layer and its parent.
+    Comp(Box<Comp>),
+}
+
+/// `content`: the picture inside the box (`ffcine.geo.reframe/1` parameters, the box as the
+/// profile).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Content {
+    pub zoom: Track<f64>,
+    pub zoom_center: Track<[f64; 2]>,
+    /// Window position on sources wider (`crop_x`) or taller (`crop_y`) than the box: 0
+    /// left/top, 1 right/bottom.
+    pub crop_x: Track<f64>,
+    pub crop_y: Track<f64>,
+    pub punch: Vec<Punch>,
+    /// `[from, to]` zoom eased over the layer (half linear, half cosine, as reframe's).
+    pub push: Option<[f64; 2]>,
+    pub push_center: Option<[f64; 2]>,
+    pub pan: Option<[[f64; 2]; 2]>,
+}
+
+/// A punch-in: `zoom` times the base zoom from `at` to `to` (layer seconds).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Punch {
+    pub at: f64,
+    pub to: Option<f64>,
+    pub zoom: f64,
+    pub center: Option<[f64; 2]>,
+}
+
+/// `crop`: fractions of the source cut from each side, and the soft edge (a fraction of the
+/// source width), as `ffcine.geo.crop/1`.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct CropSpec {
+    pub left: Track<f64>,
+    pub right: Track<f64>,
+    pub top: Track<f64>,
+    pub bottom: Track<f64>,
+    pub feather: Track<f64>,
 }
 
 /// How the source fills the layer's box.
@@ -168,6 +223,8 @@ pub struct CompLayer {
     /// Box, px.
     pub size: [f64; 2],
     pub fit: Fit,
+    pub(crate) content: Option<Content>,
+    pub(crate) crop: Option<CropSpec>,
     pub(crate) transform: Transform,
     pub(crate) radius: Track<f64>,
     pub mask: Option<Mask>,
@@ -288,6 +345,152 @@ fn fps(v: &Value, path: &str) -> Result<f64> {
         .ok_or_else(|| err(path, format!("expected a frame rate {lo} to {hi}, got {v}")))
 }
 
+/// What a comp is parsed in: the top file's directory, its `comps`, and how deep it is.
+struct Ctx<'a> {
+    dir: &'a Path,
+    comps: &'a Map<String, Value>,
+    depth: usize,
+}
+
+/// A nested comp's defaults, from the layer that uses it.
+struct Parent<'a> {
+    vars: &'a Vars,
+    fps: f64,
+    duration: f64,
+    size: [f64; 2],
+}
+
+/// A `[x, y]` of numbers.
+fn xy(v: &Value, path: &str) -> Result<[f64; 2]> {
+    match v.as_array().map(Vec::as_slice) {
+        Some([a, b]) => match (a.as_f64(), b.as_f64()) {
+            (Some(a), Some(b)) if a.is_finite() && b.is_finite() => Ok([a, b]),
+            _ => Err(err(path, format!("expected [x, y], got {v}"))),
+        },
+        _ => Err(err(path, format!("expected [x, y], got {v}"))),
+    }
+}
+
+/// `content`: reframe parameters, the layer's box as the profile.
+fn content(v: &Value, scope: &Scope, path: &str) -> Result<Content> {
+    let m = object(v, path)?;
+    check_keys(
+        m,
+        path,
+        &[
+            "zoom",
+            "zoom_center",
+            "crop_x",
+            "crop_y",
+            "focus",
+            "punch",
+            "push",
+            "push_center",
+            "pan",
+        ],
+        &[],
+    )
+    .map_err(|e| match e {
+        Error::Track { path, msg } if msg.starts_with("unknown key") => Error::Track {
+            msg: format!("{msg}; the layer's `fit` places the picture, not content's"),
+            path,
+        },
+        e => e,
+    })?;
+    let at = |k: &str| format!("{path}.{k}");
+    let focus = m.get("focus").map(|v| xy(v, &at("focus"))).transpose()?;
+    let [fx, fy] = focus.unwrap_or([0.5, 0.5]);
+    let punch = match m.get("punch") {
+        None => Vec::new(),
+        Some(Value::Array(a)) => a
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let pp = format!("{path}.punch[{i}]");
+                let o = object(p, &pp)?;
+                check_keys(o, &pp, &["at", "to", "zoom", "center"], &[])?;
+                let num = |k: &str| o.get(k).and_then(Value::as_f64);
+                let punch = Punch {
+                    at: num("at").ok_or_else(|| err(format!("{pp}.at"), "expected seconds"))?,
+                    to: num("to"),
+                    zoom: num("zoom").unwrap_or(1.25),
+                    center: o
+                        .get("center")
+                        .map(|v| xy(v, &format!("{pp}.center")))
+                        .transpose()?,
+                };
+                if !(punch.zoom.is_finite() && punch.zoom > 0.0 && punch.zoom <= limits::ZOOM) {
+                    return Err(err(
+                        format!("{pp}.zoom"),
+                        format!("expected a number > 0, at most {}", limits::ZOOM),
+                    ));
+                }
+                Ok(punch)
+            })
+            .collect::<Result<_>>()?,
+        Some(v) => return Err(err(at("punch"), format!("expected an array, got {v}"))),
+    };
+    let pan = match m.get("pan") {
+        None => None,
+        Some(v) => match v.as_array().map(Vec::as_slice) {
+            Some([a, b]) => Some([xy(a, &at("pan"))?, xy(b, &at("pan"))?]),
+            _ => {
+                return Err(err(
+                    at("pan"),
+                    format!("expected [[x, y], [x, y]], got {v}"),
+                ));
+            }
+        },
+    };
+    let push = m.get("push").map(|v| xy(v, &at("push"))).transpose()?;
+    if push.is_some_and(|p| p.iter().any(|z| !(*z > 0.0 && *z <= limits::ZOOM))) {
+        return Err(err(
+            at("push"),
+            format!("zooms must be > 0, at most {}", limits::ZOOM),
+        ));
+    }
+    Ok(Content {
+        zoom: track(m, "zoom", scope, path, 1.0)?,
+        zoom_center: track(m, "zoom_center", scope, path, [fx, fy])?,
+        crop_x: track(m, "crop_x", scope, path, fx)?,
+        crop_y: track(m, "crop_y", scope, path, fy)?,
+        punch,
+        push,
+        push_center: m
+            .get("push_center")
+            .map(|v| xy(v, &at("push_center")))
+            .transpose()?,
+        pan,
+    })
+}
+
+/// `crop`: fractions of the source.
+fn crop(v: &Value, scope: &Scope, path: &str) -> Result<CropSpec> {
+    let m = object(v, path)?;
+    check_keys(m, path, &["left", "right", "top", "bottom", "feather"], &[])?;
+    Ok(CropSpec {
+        left: track(m, "left", scope, path, 0.0)?,
+        right: track(m, "right", scope, path, 0.0)?,
+        top: track(m, "top", scope, path, 0.0)?,
+        bottom: track(m, "bottom", scope, path, 0.0)?,
+        feather: track(m, "feather", scope, path, 0.0)?,
+    })
+}
+
+impl CompLayer {
+    /// Layers and video layers this one stands for (itself and a nested comp's).
+    fn count(&self) -> (usize, usize) {
+        match &self.source {
+            Source::Video(_) => (1, 1),
+            Source::Comp(c) => {
+                let (n, v) = c.count();
+                (n + 1, v)
+            }
+            _ => (1, 0),
+        }
+    }
+}
+
 impl Comp {
     /// Reads `NAME.comp.json` or `NAME.comp.yaml`; relative media paths resolve against its
     /// directory.
@@ -297,9 +500,32 @@ impl Comp {
     }
 
     /// Reads a comp document; `dir` resolves relative media paths.
-    #[allow(clippy::too_many_lines, clippy::many_single_char_names)]
     pub fn from_value(v: &Value, dir: &Path) -> Result<Self> {
         let m = object(v, "comp")?;
+        Self::schema(m, "schema", false)?;
+        check_keys(
+            m,
+            "comp",
+            &["schema", "canvas", "vars", "comps", "layers"],
+            &[
+                ("project", "compositing step 4, per-layer grade"),
+                ("template", "compositing step 7, templates"),
+            ],
+        )?;
+        let empty = Map::new();
+        let comps = match m.get("comps") {
+            Some(v) => object(v, "comps")?,
+            None => &empty,
+        };
+        let ctx = Ctx {
+            dir,
+            comps,
+            depth: 0,
+        };
+        Self::parse(m, "", &ctx, None)
+    }
+
+    fn schema(m: &Map<String, Value>, path: &str, optional: bool) -> Result<()> {
         match m.get("schema").and_then(Value::as_str) {
             Some(s) if s == format!("{SCHEMA}/{VERSION}") => {}
             Some(s) if s.starts_with("ffcine.comp/") => {
@@ -308,36 +534,54 @@ impl Comp {
                     format!("unsupported version {s:?} (this ffcine reads {SCHEMA}/{VERSION})"),
                 ));
             }
+            None if optional => {}
             other => {
                 return Err(err(
-                    "schema",
+                    path,
                     format!("expected \"{SCHEMA}/{VERSION}\", got {other:?}"),
                 ));
             }
         }
-        check_keys(
-            m,
-            "comp",
-            &["schema", "canvas", "vars", "layers"],
-            &[
-                ("project", "compositing step 4, per-layer grade"),
-                ("comps", "compositing step 3, nested comps"),
-                ("template", "compositing step 7, templates"),
-            ],
-        )?;
-        let mut vars = Vars::new();
+        Ok(())
+    }
+
+    /// A comp's canvas, vars and layers; `parent` is `None` at the top, else the using layer's
+    /// box, vars and its comp's rate and duration (`p` prefixes error paths).
+    #[allow(
+        clippy::too_many_lines,
+        clippy::many_single_char_names,
+        clippy::needless_pass_by_value
+    )]
+    fn parse(
+        m: &Map<String, Value>,
+        p: &str,
+        ctx: &Ctx<'_>,
+        parent: Option<Parent<'_>>,
+    ) -> Result<Self> {
+        let at = |k: &str| {
+            if p.is_empty() {
+                k.to_owned()
+            } else {
+                format!("{p}.{k}")
+            }
+        };
+        let mut vars = parent.as_ref().map_or_else(Vars::new, |p| p.vars.clone());
         if let Some(v) = m.get("vars") {
-            vars.push_level(object(v, "vars")?, Clock::Layer, "vars")?;
+            vars.push_level(object(v, &at("vars"))?, Clock::Layer, &at("vars"))?;
         }
         let scope = Scope::with_vars(Clock::Layer, &vars);
 
-        let c = object(
-            m.get("canvas").ok_or_else(|| err("canvas", "missing"))?,
-            "canvas",
-        )?;
+        let empty = Map::new();
+        let c = match (m.get("canvas"), &parent) {
+            (Some(v), _) => object(v, &at("canvas"))?,
+            (None, Some(_)) => &empty,
+            (None, None) => return Err(err("canvas", "missing")),
+        };
+        let cp = at("canvas");
+        let ca = |k: &str| format!("{cp}.{k}");
         check_keys(
             c,
-            "canvas",
+            &cp,
             &[
                 "size",
                 "fps",
@@ -351,14 +595,15 @@ impl Comp {
                 ("filter", "compositing step 6, libavfilter node"),
             ],
         )?;
-        let size = pair(
-            c.get("size").ok_or_else(|| err("canvas.size", "missing"))?,
-            "canvas.size",
-        )?;
+        let size = match (c.get("size"), &parent) {
+            (Some(v), _) => pair(v, &ca("size"))?,
+            (None, Some(p)) => p.size,
+            (None, None) => return Err(err("canvas.size", "missing")),
+        };
         let [w, h] = size.map(|v| v.round().max(1.0));
         if w.max(h) > limits::CANVAS_SIDE || w * h > limits::CANVAS_PIXELS {
             return Err(err(
-                "canvas.size",
+                ca("size"),
                 format!(
                     "{w}x{h}: at most {} px a side and {} px in all",
                     limits::CANVAS_SIDE,
@@ -368,7 +613,7 @@ impl Comp {
         }
         if w.max(h) / w.min(h) > limits::ASPECT {
             return Err(err(
-                "canvas.size",
+                ca("size"),
                 format!(
                     "{w}x{h}: the long side is at most {} times the short",
                     limits::ASPECT
@@ -377,32 +622,48 @@ impl Comp {
         }
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let size = size.map(|v| v.round().max(1.0) as u32);
-        let fps = fps(
-            c.get("fps").ok_or_else(|| err("canvas.fps", "missing"))?,
-            "canvas.fps",
-        )?;
-        let duration = c
-            .get("duration")
-            .and_then(Value::as_f64)
-            .filter(|d| d.is_finite() && *d > 0.0 && *d <= limits::DURATION)
-            .ok_or_else(|| {
-                err(
-                    "canvas.duration",
-                    format!("expected seconds > 0, at most {}", limits::DURATION),
-                )
-            })?;
+        let fps = match (c.get("fps"), &parent) {
+            (Some(v), Some(p)) => {
+                let f = fps(v, &ca("fps"))?;
+                if (f - p.fps).abs() > 1e-9 {
+                    return Err(err(
+                        ca("fps"),
+                        format!(
+                            "{f}: a nested comp runs at its parent's rate ({}); time remapping \
+                             of nested comps is not supported yet",
+                            p.fps
+                        ),
+                    ));
+                }
+                f
+            }
+            (Some(v), None) => fps(v, &ca("fps"))?,
+            (None, Some(p)) => p.fps,
+            (None, None) => return Err(err("canvas.fps", "missing")),
+        };
+        let duration = match (c.get("duration"), &parent) {
+            (None, Some(p)) => Some(p.duration),
+            (d, _) => d.and_then(Value::as_f64),
+        }
+        .filter(|d| d.is_finite() && *d > 0.0 && *d <= limits::DURATION)
+        .ok_or_else(|| {
+            err(
+                ca("duration"),
+                format!("expected seconds > 0, at most {}", limits::DURATION),
+            )
+        })?;
         let black = Track::Const([0.0, 0.0, 0.0, 1.0]);
         let canvas = Canvas {
             size,
             fps,
             duration,
             background: match c.get("background") {
-                Some(v) => colour(v, &scope, "canvas.background")?,
+                Some(v) => colour(v, &scope, &ca("background"))?,
                 None => black.clone(),
             },
-            fade: track(c, "fade", &scope, "canvas", 1.0)?,
+            fade: track(c, "fade", &scope, &cp, 1.0)?,
             fade_colour: match c.get("fade_colour") {
-                Some(v) => colour(v, &scope, "canvas.fade_colour")?,
+                Some(v) => colour(v, &scope, &ca("fade_colour"))?,
                 None => black.clone(),
             },
         };
@@ -414,19 +675,19 @@ impl Comp {
         };
         let layers = match m.get("layers") {
             Some(Value::Array(a)) => a.as_slice(),
-            Some(v) => return Err(err("layers", format!("expected an array, got {v}"))),
+            Some(v) => return Err(err(at("layers"), format!("expected an array, got {v}"))),
             None => &[],
         };
         if layers.len() > limits::LAYERS {
             return Err(err(
-                "layers",
+                at("layers"),
                 format!("{} layers: at most {}", layers.len(), limits::LAYERS),
             ));
         }
-        let mut videos = 0;
+        let (mut count, mut videos) = (0, 0);
         for (i, l) in layers.iter().enumerate() {
-            let path = format!("layers[{i}]");
-            let layer = comp.layer(l, &path, dir)?;
+            let path = at(&format!("layers[{i}]"));
+            let layer = comp.layer(l, &path, ctx)?;
             if let Some(id) = &layer.id
                 && let Some(j) = comp.layers.iter().position(|o| o.id.as_ref() == Some(id))
             {
@@ -435,26 +696,52 @@ impl Comp {
                     format!("{id:?} is already layers[{j}]'s id"),
                 ));
             }
-            if matches!(layer.source, Source::Video(_)) {
-                videos += 1;
-                if videos > limits::VIDEO_LAYERS {
-                    return Err(err(
-                        format!("{path}.source"),
-                        format!("at most {} video layers", limits::VIDEO_LAYERS),
-                    ));
-                }
+            let (n, v) = layer.count();
+            count += n;
+            videos += v;
+            if count > limits::LAYERS {
+                return Err(err(
+                    format!("{path}.source"),
+                    format!(
+                        "at most {} layers in all (nested comps' included)",
+                        limits::LAYERS
+                    ),
+                ));
+            }
+            if videos > limits::VIDEO_LAYERS {
+                return Err(err(
+                    format!("{path}.source"),
+                    format!(
+                        "at most {} video layers (nested comps' included)",
+                        limits::VIDEO_LAYERS
+                    ),
+                ));
             }
             comp.layers.push(layer);
         }
         Ok(comp)
     }
 
+    /// Layers and video layers, nested comps' included.
+    fn count(&self) -> (usize, usize) {
+        self.layers.iter().fold((0, 0), |(n, v), l| {
+            let (a, b) = l.count();
+            (n + a, v + b)
+        })
+    }
+
     #[allow(clippy::too_many_lines, clippy::many_single_char_names)]
-    fn layer(&self, v: &Value, path: &str, dir: &Path) -> Result<CompLayer> {
+    fn layer(&self, v: &Value, path: &str, ctx: &Ctx<'_>) -> Result<CompLayer> {
+        let dir = ctx.dir;
         let m = object(v, path)?;
-        check_keys(
-            m,
-            path,
+        let text = m
+            .get("source")
+            .and_then(Value::as_object)
+            .is_some_and(|s| s.contains_key("text"));
+        let known: &[&str] = if text {
+            // A text layer places itself: its parameters are the text clip's.
+            &["id", "source", "in", "out", "vars"]
+        } else {
             &[
                 "id",
                 "source",
@@ -463,6 +750,8 @@ impl Comp {
                 "source_in",
                 "size",
                 "fit",
+                "content",
+                "crop",
                 "transform",
                 "radius",
                 "mask",
@@ -470,10 +759,13 @@ impl Comp {
                 "fade",
                 "fade_colour",
                 "vars",
-            ],
+            ]
+        };
+        check_keys(
+            m,
+            path,
+            known,
             &[
-                ("content", "compositing step 3, media layers"),
-                ("crop", "compositing step 3, media layers"),
                 ("grade", "compositing step 4, per-layer grade"),
                 ("time", "compositing step 5, time remapping"),
                 ("filter", "compositing step 6, libavfilter node"),
@@ -531,30 +823,6 @@ impl Comp {
             }
         }
 
-        let sp = format!("{path}.source");
-        let s = object(m.get("source").ok_or_else(|| err(&sp, "missing"))?, &sp)?;
-        let source = match (s.len(), s.iter().next()) {
-            (1, Some((k, v))) => match k.as_str() {
-                "video" => Source::Video(dir.join(v.as_str().ok_or_else(|| {
-                    err(format!("{sp}.video"), format!("expected a path, got {v}"))
-                })?)),
-                "solid" => Source::Solid(colour(v, &scope, &format!("{sp}.solid"))?),
-                "still" | "text" | "comp" => {
-                    return Err(err(
-                        format!("{sp}.{k}"),
-                        "not supported yet (compositing step 3, media layers)",
-                    ));
-                }
-                _ => return Err(err(format!("{sp}.{k}"), "unknown source (video, solid)")),
-            },
-            _ => {
-                return Err(err(
-                    &sp,
-                    "expected one of {\"video\": PATH}, {\"solid\": COLOUR}",
-                ));
-            }
-        };
-
         let size = match m.get("size") {
             Some(v) => pair(v, &format!("{path}.size"))?,
             None => [cw, ch],
@@ -565,6 +833,87 @@ impl Comp {
                 format!("{size:?}: at most {} px a side", limits::BOX_SIDE),
             ));
         }
+
+        let sp = format!("{path}.source");
+        let s = object(m.get("source").ok_or_else(|| err(&sp, "missing"))?, &sp)?;
+        let file = |k: &str, v: &Value| -> Result<PathBuf> {
+            Ok(dir
+                .join(v.as_str().ok_or_else(|| {
+                    err(format!("{sp}.{k}"), format!("expected a path, got {v}"))
+                })?))
+        };
+        let source = match (s.len(), s.iter().next()) {
+            (1, Some((k, v))) => match k.as_str() {
+                "video" => Source::Video(file(k, v)?),
+                "still" => Source::Still(file(k, v)?),
+                "solid" => Source::Solid(colour(v, &scope, &format!("{sp}.solid"))?),
+                "text" => {
+                    let params = object(v, &format!("{sp}.text"))?;
+                    if !params.get("text").is_some_and(Value::is_string) {
+                        return Err(err(format!("{sp}.text.text"), "expected a string"));
+                    }
+                    Source::Text {
+                        params: params.clone(),
+                        dir: dir.to_owned(),
+                    }
+                }
+                "comp" => {
+                    let cp = format!("{sp}.comp");
+                    if ctx.depth >= limits::DEPTH {
+                        return Err(err(
+                            &cp,
+                            format!("comps nest at most {} levels deep", limits::DEPTH),
+                        ));
+                    }
+                    let (body, bp) = match v {
+                        Value::String(name) => (
+                            ctx.comps.get(name).ok_or_else(|| {
+                                err(&cp, format!("no comp {name:?} in the top-level `comps`"))
+                            })?,
+                            format!("comps.{name}"),
+                        ),
+                        v => (v, cp.clone()),
+                    };
+                    let b = object(body, &bp)?;
+                    Self::schema(b, &format!("{bp}.schema"), true)?;
+                    check_keys(
+                        b,
+                        &bp,
+                        &["schema", "canvas", "vars", "layers"],
+                        &[
+                            ("comps", "comps are named at the top level only"),
+                            ("project", "compositing step 4, per-layer grade"),
+                            ("template", "compositing step 7, templates"),
+                        ],
+                    )?;
+                    let sub = Ctx {
+                        dir,
+                        comps: ctx.comps,
+                        depth: ctx.depth + 1,
+                    };
+                    let parent = Parent {
+                        vars: &vars,
+                        fps: self.canvas.fps,
+                        duration: self.canvas.duration,
+                        size,
+                    };
+                    Source::Comp(Box::new(Self::parse(b, &bp, &sub, Some(parent))?))
+                }
+                _ => {
+                    return Err(err(
+                        format!("{sp}.{k}"),
+                        "unknown source (video, still, solid, text, comp)",
+                    ));
+                }
+            },
+            _ => {
+                return Err(err(
+                    &sp,
+                    "expected one of {\"video\": PATH}, {\"still\": PATH}, {\"solid\": \
+                     COLOUR}, {\"text\": {...}}, {\"comp\": NAME or {...}}",
+                ));
+            }
+        };
         let fit = match m.get("fit").map(|v| (v.as_str(), v)) {
             None | Some((Some("cover"), _)) => Fit::Cover,
             Some((Some("contain"), _)) => Fit::Contain,
@@ -577,6 +926,43 @@ impl Comp {
                 ));
             }
         };
+        let picture = matches!(
+            source,
+            Source::Video(_) | Source::Still(_) | Source::Comp(_)
+        );
+        for k in ["content", "crop"] {
+            if !picture && m.contains_key(k) {
+                return Err(err(
+                    format!("{path}.{k}"),
+                    "only video, still and comp layers have a picture to frame",
+                ));
+            }
+        }
+        let content = m
+            .get("content")
+            .map(|v| content(v, &scope, &format!("{path}.content")))
+            .transpose()?;
+        let crop = m
+            .get("crop")
+            .map(|v| crop(v, &scope, &format!("{path}.crop")))
+            .transpose()?;
+        if let Some(c) = &crop {
+            let animated = [&c.left, &c.right, &c.top, &c.bottom]
+                .iter()
+                .any(|t| !matches!(t, Track::Const(_)));
+            if animated && matches!(fit, Fit::Contain | Fit::None) {
+                return Err(err(
+                    format!("{path}.crop"),
+                    "an animated crop needs fit cover or fill (contain and none would resize the box's picture)",
+                ));
+            }
+            if m.contains_key("mask") && !matches!(c.feather, Track::Const(f) if f == 0.0) {
+                return Err(err(
+                    format!("{path}.crop.feather"),
+                    "a feathered crop and a mask share the layer's alpha: use one",
+                ));
+            }
+        }
 
         let tp = format!("{path}.transform");
         let empty = Map::new();
@@ -665,6 +1051,8 @@ impl Comp {
             source_in,
             size,
             fit,
+            content,
+            crop,
             transform,
             radius: track(m, "radius", &scope, path, 0.0)?,
             mask,

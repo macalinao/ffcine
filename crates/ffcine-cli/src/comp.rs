@@ -14,9 +14,10 @@ use ffcine::{Backend, backend};
 pub(crate) enum CompCmd {
     /// Read a comp, compile its expressions and sample every frame; report its pieces.
     ///
-    /// Probes each video layer's size, lowers every piece as `render` would and prints the
-    /// canvas, the layers and one line per piece (frames, layers drawn, whether the bottom
-    /// video is the pass input). Exits non-zero on the first error, with the parameter's path.
+    /// Probes each video and still layer's size, lowers every piece as `render` would and
+    /// prints the canvas, the layers and one line per piece (frames, layers drawn, whether the
+    /// bottom video is the pass input). Exits non-zero on the first error, with the parameter's
+    /// path.
     /// A layer entirely outside the canvas is never drawn, so its tracks aren't sampled (a
     /// warning says so).
     #[bpaf(command, footer(crate::help::COMP_CHECK))]
@@ -45,7 +46,7 @@ pub(crate) fn dims(ff: &dyn Backend) -> impl Fn(&Path) -> ffcine::Result<(u32, u
     move |p: &Path| {
         let info = ff.probe(p)?;
         let (_, v) = info.video().ok_or_else(|| ffcine::Error::Invalid {
-            what: "video layer source (no video stream)",
+            what: "layer source (no picture stream)",
             value: p.display().to_string(),
         })?;
         Ok((v.width, v.height))
@@ -131,7 +132,18 @@ pub(crate) fn run(cmd: CompCmd, ff: &backend::Ffmpeg) -> anyhow::Result<()> {
                         let (w, h) = probe(p).with_context(|| format!("layer {i}"))?;
                         format!("video {} ({w}x{h})", p.display())
                     }
+                    Source::Still(p) => {
+                        let (w, h) = probe(p).with_context(|| format!("layer {i}"))?;
+                        format!("still {} ({w}x{h})", p.display())
+                    }
                     Source::Solid(_) => "solid".to_owned(),
+                    Source::Text { .. } => "text".to_owned(),
+                    Source::Comp(n) => format!(
+                        "comp ({}x{}, {} layers)",
+                        n.canvas.size[0],
+                        n.canvas.size[1],
+                        n.layers.len()
+                    ),
                 };
                 println!(
                     "layer {i}{}: {src}, {:.3}-{:.3} s, {}x{} box",

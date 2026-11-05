@@ -22,6 +22,16 @@ pub struct Image {
     pub data: Vec<u8>,
 }
 
+/// The largest still a [`LayerSource::Still`] decodes, px a side.
+pub const STILL_SIDE: u32 = 16384;
+/// The largest still a [`LayerSource::Still`] decodes, px in all (256 MP).
+pub const STILL_PIXELS: u64 = 1 << 28;
+
+/// Whether a `w` x `h` still is within [`STILL_SIDE`] and [`STILL_PIXELS`].
+pub fn still_fits(w: u32, h: u32) -> bool {
+    w > 0 && h > 0 && w.max(h) <= STILL_SIDE && u64::from(w) * u64::from(h) <= STILL_PIXELS
+}
+
 /// Where a layer's pictures come from.
 #[derive(Debug, Clone, PartialEq)]
 pub enum LayerSource {
@@ -32,6 +42,25 @@ pub enum LayerSource {
     /// space (no conversion) for an SDR output, so a logo keeps its colours, and as sRGB with
     /// white at the HDR reference white (203 nits, BT.2408) for a PQ or HLG one.
     Image(Arc<Image>),
+    /// A still file (PNG, JPEG, WebP, HEIC with tile grids and `irot`), decoded through libav
+    /// once per layer of a rendered piece. A tagged file (primaries or transfer set: HEIC
+    /// `colr`, PNG `cICP` or `sRGB`) is converted from its tags; an untagged one is taken as an
+    /// [`Image`](Self::Image) is. JPEG EXIF orientation is not applied; at most
+    /// [`STILL_SIDE`] px a side and [`STILL_PIXELS`] in all.
+    Still(PathBuf),
+    /// A nested composition rendered in the same pass into its own texture.
+    Scene(Arc<Scene>),
+}
+
+/// A composition drawn into a layer's source texture: its `grade` (the background hook, `size`
+/// the scene's size) over a black frame, then `layers` bottom first and `overlays`, frame
+/// ranges relative to the using layer's `from`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Scene {
+    pub size: crate::Size,
+    pub grade: Grade,
+    pub layers: Vec<Layer>,
+    pub overlays: Vec<crate::Overlay>,
 }
 
 /// One layer over output frames `from..to`.

@@ -60,6 +60,8 @@ pub struct Overlay {
     pub fade_out: f64,
     /// Per-frame placements, replacing `parts` (the fades still apply).
     pub motion: Option<Arc<Motion>>,
+    /// Drawn under the pipeline's layer `n` (and every one above it); `None` is above them all.
+    pub under: Option<usize>,
 }
 
 /// An animated overlay's placements: output frame `first + i` draws `frames[i]`. Frames before
@@ -133,6 +135,7 @@ mod tests {
             fade_in: 2.0,
             fade_out: 4.0,
             motion: None,
+            under: None,
         };
         assert!(o.opacity(9).abs() < f32::EPSILON);
         assert!((o.opacity(10) - 0.25).abs() < 1e-6);

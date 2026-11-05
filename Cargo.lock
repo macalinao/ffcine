@@ -663,6 +663,7 @@ version = "0.3.0"
 dependencies = [
  "ffcine-core",
  "ffcine-render",
+ "ffcine-text",
  "serde_json",
  "sha2",
  "yaml_serde",
