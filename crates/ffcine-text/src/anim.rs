@@ -783,6 +783,7 @@ pub fn animate(
             fade_in: 0.0,
             fade_out: 0.0,
             motion: Some(Arc::new(Motion { first: lo, frames })),
+            under: None,
         })
         .collect()
 }

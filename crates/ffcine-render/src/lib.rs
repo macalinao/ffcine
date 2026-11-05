@@ -23,7 +23,7 @@ pub use grade::{
     Border, ColorMapTuning, ColorOverride, Crop, Deband, Dither, DitherMethod, GamutMapping, Grade,
     Hook, LutStage, ParamTrack, Scaler, Scaling, Size, ToneMapping, Warp,
 };
-pub use layer::{Image, Layer, LayerSource};
+pub use layer::{Image, Layer, LayerSource, Scene};
 pub use overlay::{Mask, Motion, Overlay, OverlayPart};
 pub use pipeline::{Backend, Decode, Device, FrameContext, Pipeline, RunStats, Stage};
 pub use profile::DeliveryProfile;

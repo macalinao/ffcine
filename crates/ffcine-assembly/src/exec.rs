@@ -413,7 +413,7 @@ impl Renderer<'_> {
         &self,
         plan: &Plan,
         seg: &Segment,
-        overlays: Vec<Overlay>,
+        mut overlays: Vec<Overlay>,
         out: &Path,
     ) -> Result<()> {
         let size = plan.profile.size;
@@ -615,6 +615,7 @@ impl Renderer<'_> {
             }
             Unit::Comp(p) => {
                 layers.extend(p.layers.iter().cloned());
+                overlays.extend(p.overlays.iter().cloned());
                 match &p.base {
                     Base::Black => (
                         self.black(plan, frames, key, &mut temps)?,
@@ -814,6 +815,7 @@ impl Renderer<'_> {
             .pipeline(&base, out, start, piece.frames, rate)
             .grade(grade)
             .layers(piece.layers.clone())
+            .overlays(piece.overlays.clone())
             .encoder(encoder);
         let r = self.run_dv_retry(&pipe, &key);
         for t in temps {

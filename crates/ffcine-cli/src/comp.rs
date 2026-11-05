@@ -45,7 +45,7 @@ pub(crate) fn dims(ff: &dyn Backend) -> impl Fn(&Path) -> ffcine::Result<(u32, u
     move |p: &Path| {
         let info = ff.probe(p)?;
         let (_, v) = info.video().ok_or_else(|| ffcine::Error::Invalid {
-            what: "video layer source (no video stream)",
+            what: "layer source (no picture stream)",
             value: p.display().to_string(),
         })?;
         Ok((v.width, v.height))
@@ -131,7 +131,18 @@ pub(crate) fn run(cmd: CompCmd, ff: &backend::Ffmpeg) -> anyhow::Result<()> {
                         let (w, h) = probe(p).with_context(|| format!("layer {i}"))?;
                         format!("video {} ({w}x{h})", p.display())
                     }
+                    Source::Still(p) => {
+                        let (w, h) = probe(p).with_context(|| format!("layer {i}"))?;
+                        format!("still {} ({w}x{h})", p.display())
+                    }
                     Source::Solid(_) => "solid".to_owned(),
+                    Source::Text { .. } => "text".to_owned(),
+                    Source::Comp(n) => format!(
+                        "comp ({}x{}, {} layers)",
+                        n.canvas.size[0],
+                        n.canvas.size[1],
+                        n.layers.len()
+                    ),
                 };
                 println!(
                     "layer {i}{}: {src}, {:.3}-{:.3} s, {}x{} box",

@@ -58,8 +58,8 @@ fn reads_and_rejects() {
             "layers[0].opactiy: unknown key",
         ),
         (
-            json!([{ "source": { "still": "b.heic" } }]),
-            "compositing step 3",
+            json!([{ "source": { "video": "a.mov" }, "filter": {} }]),
+            "compositing step 6",
         ),
         (
             json!([{ "source": { "video": "a.mov" }, "grade": {} }]),
@@ -517,13 +517,14 @@ fn limits_are_checked_before_rendering() {
         json!([solid(json!({ "in": -1 }))]),
         "layers[0].in",
     );
-    // Later steps' keys name the step.
-    for k in ["content", "crop"] {
-        bad(
-            canvas.clone(),
-            json!([solid(json!({ k: {} }))]),
-            "compositing step 3",
-        );
+    // Later steps' keys name the step; framing needs a picture.
+    for (k, want) in [
+        ("grade", "compositing step 4"),
+        ("time", "compositing step 5"),
+        ("content", "only video, still and comp"),
+        ("crop", "only video, still and comp"),
+    ] {
+        bad(canvas.clone(), json!([solid(json!({ k: {} }))]), want);
     }
     // At the limits: accepted.
     let ok = Comp::from_value(

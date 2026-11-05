@@ -32,6 +32,23 @@ pub enum LayerSource {
     /// space (no conversion) for an SDR output, so a logo keeps its colours, and as sRGB with
     /// white at the HDR reference white (203 nits, BT.2408) for a PQ or HLG one.
     Image(Arc<Image>),
+    /// A still file (PNG, JPEG, WebP, HEIC with tile grids and `irot`), decoded once through
+    /// libav. A tagged file is converted from its tags; an untagged one is taken as an
+    /// [`Image`](Self::Image) is.
+    Still(PathBuf),
+    /// A nested composition rendered in the same pass into its own texture.
+    Scene(Arc<Scene>),
+}
+
+/// A composition drawn into a layer's source texture: its `grade` (the background hook, `size`
+/// the scene's size) over a black frame, then `layers` bottom first and `overlays`, frame
+/// ranges relative to the using layer's `from`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Scene {
+    pub size: crate::Size,
+    pub grade: Grade,
+    pub layers: Vec<Layer>,
+    pub overlays: Vec<crate::Overlay>,
 }
 
 /// One layer over output frames `from..to`.

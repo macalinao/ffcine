@@ -153,6 +153,23 @@ impl TextLayer {
         })
     }
 
+    /// Text `clips` (times in seconds of whatever clock [`Self::overlays`] is given) laid out on
+    /// a frame of `frame_size` px (`None`: lengths relative to the output); font files resolve
+    /// against `base_dir`.
+    pub fn new(
+        clips: Vec<TextClip>,
+        frame_size: Option<[f32; 2]>,
+        base_dir: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            clips,
+            frame_size,
+            base_dir: base_dir.into(),
+            typesetter: None,
+            profile: None,
+        }
+    }
+
     /// Renders for output profile `name` (`reel`, `feed`, ...): a clip's `profiles.<name>`
     /// parameters override the rest. When the output's aspect differs from `frame_size`, lengths
     /// scale with the short side instead of the height and each text box is moved inside `safe`
@@ -299,6 +316,7 @@ impl TextLayer {
                     fade_in: s.fade_in * rate,
                     fade_out: s.fade_out * rate,
                     motion: None,
+                    under: None,
                 });
             }
         }
