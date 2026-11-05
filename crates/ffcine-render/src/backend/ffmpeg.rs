@@ -67,7 +67,8 @@ impl Backend for Ffmpeg {
             .collect::<Result<Vec<_>>>()?;
         // A tiled HEIF still: one video stream at the displayed size, not one per tile.
         // SAFETY: an opened context with stream info.
-        if let Some(g) = unsafe { super::tiles::TileGrid::find(ictx.as_ptr()) } {
+        let grid = unsafe { super::tiles::TileGrid::find(ictx.as_ptr()) };
+        if let Some(g) = grid {
             let first = g.tiles.first().and_then(|t| usize::try_from(t.0).ok());
             streams.retain(|s| {
                 let i = std::os::raw::c_int::try_from(s.index).unwrap_or(-1);
@@ -76,6 +77,18 @@ impl Backend for Ffmpeg {
             for s in streams.iter_mut().filter(|s| Some(s.index) == first) {
                 if let StreamKind::Video(v) = &mut s.kind {
                     (v.width, v.height) = g.size();
+                }
+            }
+        } else {
+            // A single-image HEIF item with `irot`: its displayed (turned) size.
+            for s in &mut streams {
+                let i = std::os::raw::c_int::try_from(s.index).unwrap_or(-1);
+                // SAFETY: as above.
+                let r = unsafe { super::tiles::item_rotation(ictx.as_ptr(), i) };
+                if let StreamKind::Video(v) = &mut s.kind
+                    && r % 180 == 90
+                {
+                    (v.width, v.height) = (v.height, v.width);
                 }
             }
         }

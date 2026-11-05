@@ -12,6 +12,7 @@
 )]
 
 use std::os::raw::c_int;
+use std::ptr;
 
 use ffmpeg_next::ffi as ff;
 
@@ -88,6 +89,45 @@ impl TileGrid {
     }
 }
 
+/// HEIF image brands (`ftyp` major brand): files whose primary item is a still.
+const HEIF_BRANDS: [&str; 6] = ["heic", "heix", "heim", "heis", "mif1", "avif"];
+
+/// The clockwise rotation (`irot`, as the stream's display matrix) of a single-image (untiled)
+/// HEIF item in `stream`; 0 for anything else, so videos keep ignoring their display matrices.
+///
+/// # Safety
+/// `fmt` must be an opened format context (after `avformat_find_stream_info`).
+pub(crate) unsafe fn item_rotation(fmt: *const ff::AVFormatContext, stream: c_int) -> u32 {
+    // SAFETY: libavformat keeps the metadata and streams valid for the context's life.
+    unsafe {
+        let brand = ff::av_dict_get((*fmt).metadata, c"major_brand".as_ptr(), ptr::null(), 0);
+        if brand.is_null() {
+            return 0;
+        }
+        let brand = std::ffi::CStr::from_ptr((*brand).value).to_string_lossy();
+        if !HEIF_BRANDS.contains(&brand.trim()) {
+            return 0;
+        }
+        let Ok(i) = usize::try_from(stream) else {
+            return 0;
+        };
+        if i >= (*fmt).nb_streams as usize {
+            return 0;
+        }
+        let par = (*(*(*fmt).streams.add(i))).codecpar;
+        let sd = ff::av_packet_side_data_get(
+            (*par).coded_side_data,
+            (*par).nb_coded_side_data,
+            ff::AVPacketSideDataType::AV_PKT_DATA_DISPLAYMATRIX,
+        );
+        if sd.is_null() || (*sd).size < 36 {
+            0
+        } else {
+            clockwise(ff::av_display_rotation_get((*sd).data.cast::<i32>()))
+        }
+    }
+}
+
 /// `av_display_rotation_get`'s counter-clockwise degrees as a clockwise quarter turn.
 fn clockwise(ccw: f64) -> u32 {
     if ccw.is_nan() {
@@ -98,7 +138,7 @@ fn clockwise(ccw: f64) -> u32 {
 }
 
 #[cfg(feature = "placebo")]
-pub(crate) use assemble::decode;
+pub(crate) use assemble::{decode, rotate};
 
 #[cfg(feature = "placebo")]
 mod assemble {
@@ -120,6 +160,21 @@ mod assemble {
     /// # Safety
     /// `fmt` must be an opened format context nothing has read packets from yet.
     pub(crate) unsafe fn decode(fmt: *mut ff::AVFormatContext, grid: &TileGrid) -> Result<Frame> {
+        if grid.tiles.is_empty() {
+            return Err(gpu_err("tile grid: no tiles"));
+        }
+        let (_, _, cw, ch) = grid.crop;
+        let fits = u32::try_from(cw)
+            .ok()
+            .zip(u32::try_from(ch).ok())
+            .is_some_and(|(w, h)| crate::layer::still_fits(w, h));
+        if !fits {
+            return Err(gpu_err(format!(
+                "tile grid: {cw}x{ch} px (at most {} px a side, {} in all)",
+                crate::layer::STILL_SIDE,
+                crate::layer::STILL_PIXELS
+            )));
+        }
         // SAFETY: standard decode sequence on valid contexts; frames and contexts are owned.
         unsafe {
             let mut decs = Vec::with_capacity(grid.tiles.len());
@@ -277,11 +332,36 @@ mod assemble {
     }
 
     /// Places `tiles` on the canvas, crops it to `grid.crop` and turns it upright.
-    fn compose(grid: &TileGrid, tiles: &[Frame]) -> Result<Frame> {
-        let first = tiles[0].get();
+    pub(super) fn compose(grid: &TileGrid, tiles: &[Frame]) -> Result<Frame> {
+        let first = tiles
+            .first()
+            .ok_or_else(|| gpu_err("tile grid: no tiles"))?
+            .get();
+        if tiles.len() != grid.tiles.len() {
+            return Err(gpu_err("tile grid: a tile is missing"));
+        }
         let (cx, cy, cw, ch) = grid.crop;
-        if cx < 0 || cy < 0 || cw <= 0 || ch <= 0 {
-            return Err(gpu_err("tile grid: bad crop"));
+        // The canvas the tiles cover: the crop must lie inside it.
+        let (mut ew, mut eh) = (0i64, 0i64);
+        for (t, &(_, tx, ty)) in tiles.iter().zip(&grid.tiles) {
+            let tf = t.get();
+            if tx < 0 || ty < 0 {
+                return Err(gpu_err("tile grid: a tile is off the canvas"));
+            }
+            ew = ew.max(i64::from(tx) + i64::from(tf.width));
+            eh = eh.max(i64::from(ty) + i64::from(tf.height));
+        }
+        let inside = cx >= 0
+            && cy >= 0
+            && cw > 0
+            && ch > 0
+            && i64::from(cx) + i64::from(cw) <= ew
+            && i64::from(cy) + i64::from(ch) <= eh;
+        let fits = crate::layer::still_fits(cw.unsigned_abs(), ch.unsigned_abs());
+        if !inside || !fits {
+            return Err(gpu_err(format!(
+                "tile grid: bad crop {cw}x{ch}+{cx}+{cy} for {ew}x{eh} px of tiles"
+            )));
         }
         let (cw, ch) = (cw as usize, ch as usize);
         let mut canvas = alloc(first.format, cw, ch)?;
@@ -298,8 +378,8 @@ mod assemble {
                 let src = planes(tf, tw, th)?;
                 for (s, d) in src.iter().zip(&dst) {
                     // Tile origin relative to the crop, in this plane's samples.
-                    let ox = i64::from(tx - cx) >> s.sx;
-                    let oy = i64::from(ty - cy) >> s.sy;
+                    let ox = (i64::from(tx) - i64::from(cx)) >> s.sx;
+                    let oy = (i64::from(ty) - i64::from(cy)) >> s.sy;
                     let x0 = ox.max(0);
                     let x1 = (ox + s.w as i64).min(d.w as i64);
                     let y0 = oy.max(0);
@@ -327,8 +407,8 @@ mod assemble {
         rotate(&canvas, grid.rotation)
     }
 
-    /// `f` turned `rotation` degrees clockwise (90, 180 or 270).
-    fn rotate(f: &Frame, rotation: u32) -> Result<Frame> {
+    /// `f` (a software frame) turned `rotation` degrees clockwise (90, 180 or 270).
+    pub(crate) fn rotate(f: &Frame, rotation: u32) -> Result<Frame> {
         let fr = f.get();
         let (w, h) = (
             usize::try_from(fr.width).unwrap_or(0),
@@ -506,6 +586,47 @@ mod tests {
             };
             assert_eq!(at(rc, 0, 0), at(fc, 0, 59));
             assert_eq!(at(rc, 59, 99), at(fc, 99, 0));
+        }
+    }
+
+    #[test]
+    fn single_items_turn_by_their_display_matrix() {
+        for (name, want) in [("whole.heic", 0), ("whole-rot.heic", 90)] {
+            let mut fmt = open(name);
+            // SAFETY: freshly opened context, closed here.
+            unsafe {
+                assert!(TileGrid::find(fmt).is_none());
+                assert_eq!(item_rotation(fmt, 0), want, "{name}");
+                assert_eq!(item_rotation(fmt, 7), 0, "{name}: no such stream");
+                ff::avformat_close_input(&raw mut fmt);
+            }
+        }
+        // Probed at the displayed size.
+        let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/heic/whole-rot.heic");
+        let ff = crate::backend::Ffmpeg::new().expect("backend");
+        let info = crate::Backend::probe(&ff, &p).expect("probe");
+        let (_, v) = info.video().expect("video");
+        assert_eq!((v.width, v.height), (120, 200));
+    }
+
+    #[test]
+    fn bad_grids_are_errors() {
+        // No tiles, a crop past the tiles, a crop over the still cap: errors, not panics.
+        let empty = TileGrid {
+            tiles: Vec::new(),
+            crop: (0, 0, 10, 10),
+            rotation: 0,
+        };
+        assert!(super::assemble::compose(&empty, &[]).is_err());
+        for crop in [(0, 0, 300, 120), (100, 0, 200, 120), (0, 0, 20000, 20000)] {
+            let mut fmt = open("grid.heic");
+            // SAFETY: freshly opened context, closed here.
+            unsafe {
+                let mut g = TileGrid::find(fmt).expect("a tile grid");
+                g.crop = crop;
+                assert!(decode(fmt, &g).is_err(), "{crop:?}");
+                ff::avformat_close_input(&raw mut fmt);
+            }
         }
     }
 }

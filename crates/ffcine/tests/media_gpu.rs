@@ -151,7 +151,7 @@ fn cpu_decode(d: &Path, src: &Path, vf: &str) -> Vec<u8> {
 }
 
 /// A tiled HEIC still is the picture ffmpeg's CPU decode assembles, and one with `irot` comes
-/// out upright: the unrotated decode turned 90 degrees clockwise. The fixtures are tagged sRGB,
+/// out upright (a grid or a single item): the unrotated decode turned 90 degrees clockwise. The fixtures are tagged sRGB,
 /// so the output is too: the pixels pass through unconverted.
 #[test]
 #[ignore = "needs a Vulkan GPU and ffmpeg"]
@@ -173,6 +173,20 @@ fn heic_stills_match_the_cpu_decode() {
     let db = psnr(&got, &want);
     eprintln!("heic irot: {db:.1} dB");
     assert!(db >= 45.0, "heic irot: {db:.1} dB");
+
+    // A single (untiled) item with `irot`: upright too, at its turned size.
+    let got = render_to(
+        &d,
+        [120, 200],
+        still("whole-rot.heic"),
+        0,
+        "whole-rot.png",
+        srgb,
+    );
+    let want = cpu_decode(&d, &heic("whole.heic"), ",transpose=clock");
+    let db = psnr(&got, &want);
+    eprintln!("heic item irot: {db:.1} dB");
+    assert!(db >= 45.0, "heic item irot: {db:.1} dB");
     let _ = std::fs::remove_dir_all(&d);
 }
 

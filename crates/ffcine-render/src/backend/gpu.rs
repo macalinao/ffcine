@@ -1031,9 +1031,16 @@ fn split(
     (below, steps, overlays_at(&run, at, color))
 }
 
-/// Decodes a still once and uploads it: software pictures go through swscale to RGBA64 first
-/// (the frame's matrix and range; BT.601 when untagged, as JPEG). Returns the frame, whether it
-/// carries colour tags (primaries or transfer; ICC profiles are dropped), and its size.
+/// Decodes a still (once per layer of a piece) and uploads it: software pictures go through
+/// swscale to RGBA64 first (the frame's matrix and range; BT.601 when untagged, as JPEG), and a
+/// HEIF item's `irot` turns it upright (tile grids come out upright). Returns the frame, whether
+/// it is tagged, and its displayed size.
+///
+/// Tagged means the decoder set primaries or a transfer (HEIC `colr`, a PNG's `cICP` or `sRGB`
+/// chunk, ...). A tagged still is converted from its tags; an untagged one (a plain
+/// PNG or JPEG) is taken as the output's colours. ICC profiles are dropped and JPEG EXIF
+/// orientation is not applied. Stills over [`crate::layer::STILL_SIDE`] or
+/// [`crate::layer::STILL_PIXELS`] are refused before any RGBA buffer is allocated.
 fn decode_still(
     path: &std::path::Path,
     device: &BufferRef,
@@ -1041,10 +1048,36 @@ fn decode_still(
     grade: &Grade,
 ) -> Result<(Frame, bool, (u32, u32))> {
     let mut inp = Input::open(path, Duration::ZERO, device)?;
-    let size = inp.size();
+    let (w, h) = inp.size();
+    if !crate::layer::still_fits(w, h) {
+        return Err(gpu_err(format!(
+            "{}: {w}x{h} px (a still is at most {} px a side, {} in all)",
+            path.display(),
+            crate::layer::STILL_SIDE,
+            crate::layer::STILL_PIXELS
+        )));
+    }
+    let rotation = inp.rotation();
+    let size = if rotation % 180 == 90 { (h, w) } else { (w, h) };
     let mut f = inp
         .next_frame()?
         .ok_or_else(|| gpu_err(format!("{}: no picture", path.display())))?;
+    // A turned HEIF item: turned in software, so a hardware frame comes down first.
+    if rotation != 0 && !f.get().hw_frames_ctx.is_null() {
+        let sw = Frame::new()?;
+        // SAFETY: valid frames; the destination gets the frames context's software format.
+        unsafe {
+            check(
+                ff::av_hwframe_transfer_data(sw.as_ptr(), f.as_ptr(), 0),
+                "download still",
+            )?;
+            check(
+                ff::av_frame_copy_props(sw.as_ptr(), f.as_ptr()),
+                "copy props",
+            )?;
+        }
+        f = sw;
+    }
     let s = f.get();
     let tagged = s.color_primaries != ff::AVColorPrimaries::AVCOL_PRI_UNSPECIFIED
         || s.color_trc != ff::AVColorTransferCharacteristic::AVCOL_TRC_UNSPECIFIED;
@@ -1057,6 +1090,9 @@ fn decode_still(
     }
     if f.get().hw_frames_ctx.is_null() {
         f = to_rgba64(&f)?;
+        if rotation != 0 {
+            f = super::tiles::rotate(&f, rotation)?;
+        }
     }
     Ok((upload(&f, &mut None, vulkan, grade)?, tagged, size))
 }
