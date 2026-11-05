@@ -14,7 +14,7 @@
 //! Text (`ffcine.text`, via `ffcine-text`) is drawn in the segments it overlaps: segments are cut
 //! at text in/out points and keyed by the text they show.
 //!
-//! [`docs/assembly.md`]: https://github.com/macalinao/ffcine/blob/master/docs/assembly.md
+//! [`docs/assembly.md`]: https://github.com/talaagent/ffcine/blob/master/docs/assembly.md
 
 pub mod comp;
 pub mod diff;
