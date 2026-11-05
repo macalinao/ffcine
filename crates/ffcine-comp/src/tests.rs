@@ -704,3 +704,36 @@ fn nested_comps_are_named_capped_and_counted() {
         assert!(e.contains(want), "{want:?} not in {e:?}");
     }
 }
+
+#[test]
+fn text_keys_cover_the_piece_and_fonts() {
+    // Fading text 0-6 s around a solid 2-4 s: the first and last pieces draw the same text
+    // params at different points of its fades, so their keys differ.
+    let c = comp(json!([
+        { "source": { "text": { "text": "hi", "size": 80, "fade_in": 1, "fade_out": 1 } } },
+        { "source": { "solid": "white" }, "size": [100, 100], "in": 2, "out": 4 },
+    ]));
+    assert_eq!(c.pieces(), [0..60, 60..120, 120..180]);
+    let k = keys(&c);
+    assert_ne!(k[0], k[2]);
+    // Font files: resolved against `fonts_dir` and the comp's directory, their identities in
+    // the key (blank text draws nothing, so no font is loaded here).
+    struct Fonts(std::cell::Cell<u32>);
+    impl Media for Fonts {
+        fn dims(&self, _: &Path) -> Result<(u32, u32)> {
+            Ok((1920, 1080))
+        }
+        fn identity(&self, path: &Path) -> Value {
+            assert_eq!(path, Path::new("/media/fonts/a.ttf"));
+            json!([path, self.0.get()])
+        }
+    }
+    let c = comp(json!([
+        { "source": { "text": { "text": " ", "font_file": "a.ttf", "fonts_dir": "fonts" } } },
+    ]));
+    let m = Fonts(std::cell::Cell::new(1));
+    let a = c.lower(0..180, OUT, &m).expect("lower").recipe;
+    assert_eq!(a, c.lower(0..180, OUT, &m).expect("lower").recipe);
+    m.0.set(2);
+    assert_ne!(a, c.lower(0..180, OUT, &m).expect("lower").recipe);
+}

@@ -502,6 +502,7 @@ impl Comp {
                 let mut text =
                     TextLayer::new(vec![clip], Some([cw as f32, ch as f32]), dir.clone());
                 let under = layers.len();
+                let first = overlays.len();
                 let o = text
                     .overlays(
                         p0 as f64 / self.canvas.fps,
@@ -514,7 +515,16 @@ impl Comp {
                     o.under = Some(under);
                     o
                 }));
-                recipes.push(json!({"text": params, "in": l.in_, "out": l.out, "under": under}));
+                // The drawn overlays themselves (masks, placements, fades: they depend on the
+                // piece's start and the font files' contents), and the font files' identities.
+                recipes.push(json!({
+                    "text": params,
+                    "in": l.in_,
+                    "out": l.out,
+                    "under": under,
+                    "overlays": overlay_digest(&overlays[first..]),
+                    "fonts": font_files(params, dir).iter().map(|f| media.identity(f)).collect::<Vec<_>>(),
+                }));
                 continue;
             }
             let (src_dims, source) = match &l.source {
@@ -944,6 +954,71 @@ impl Comp {
             recipe,
         })
     }
+}
+
+/// A digest of what `overlays` draw on every frame: masks, placements, frame ranges and fades.
+fn overlay_digest(overlays: &[Overlay]) -> Value {
+    let mut h = Sha256::new();
+    let f32s = |h: &mut Sha256, v: &[f32]| {
+        for x in v {
+            h.update(x.to_bits().to_le_bytes());
+        }
+    };
+    let parts = |h: &mut Sha256, parts: &[ffcine_render::OverlayPart]| {
+        h.update((parts.len() as u64).to_le_bytes());
+        for p in parts {
+            f32s(h, &p.pos);
+            f32s(h, &p.size.map_or([f32::NAN; 2], |s| s));
+            f32s(h, &p.src.map_or([f32::NAN; 4], |s| s));
+            f32s(h, &p.colour);
+        }
+    };
+    for o in overlays {
+        h.update(o.mask.width.to_le_bytes());
+        h.update(o.mask.height.to_le_bytes());
+        h.update(Sha256::digest(&o.mask.data));
+        parts(&mut h, &o.parts);
+        h.update(o.from.to_le_bytes());
+        h.update(o.to.to_le_bytes());
+        h.update(o.fade_in.to_bits().to_le_bytes());
+        h.update(o.fade_out.to_bits().to_le_bytes());
+        if let Some(m) = &o.motion {
+            h.update(m.first.to_le_bytes());
+            h.update((m.frames.len() as u64).to_le_bytes());
+            for f in &m.frames {
+                parts(&mut h, f);
+            }
+        }
+    }
+    let d = h.finalize();
+    Value::String(d[..16].iter().fold(String::new(), |mut s, b| {
+        let _ = write!(s, "{b:02x}");
+        s
+    }))
+}
+
+/// The font files a text layer's `params` name (`font_file`, also under `profiles`), resolved
+/// as `ffcine-text` does: against `fonts_dir`, then `dir`.
+fn font_files(params: &serde_json::Map<String, Value>, dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let top = Value::Object(params.clone());
+    let mut stack = vec![&top];
+    while let Some(v) = stack.pop() {
+        match v {
+            Value::Object(m) => {
+                if let Some(f) = m.get("font_file").and_then(Value::as_str) {
+                    let sub = m.get("fonts_dir").and_then(Value::as_str).unwrap_or("");
+                    out.push(dir.join(sub).join(f));
+                }
+                stack.extend(m.values());
+            }
+            Value::Array(a) => stack.extend(a),
+            _ => {}
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// An error at `what` unless every value is finite and within [`limits::COORD`] (position,
