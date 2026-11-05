@@ -618,6 +618,27 @@ fn content_moves_the_source_window() {
             video(json!({ "crop": { "feather": 4 }, "mask": { "shape": "ellipse" } })),
             "mask",
         ),
+        // Zooms are capped, alone and with crops.
+        (
+            video(json!({ "content": { "zoom": 20000 } })),
+            "at most 10000",
+        ),
+        (
+            video(json!({ "content": { "punch": [{ "at": 0, "zoom": 2e4 }] } })),
+            "at most 10000",
+        ),
+        (
+            video(json!({ "content": { "push": [1, 2e4] } })),
+            "at most 10000",
+        ),
+        (
+            video(json!({ "content": { "zoom": 5000, "push": [1, 5000] } })),
+            "go in over",
+        ),
+        (
+            video(json!({ "crop": { "left": 0.49999, "right": 0.5 } })),
+            "go in over",
+        ),
     ] {
         let e = rejected(json!({ "size": [1080, 1920], "fps": 30, "duration": 6 }), l);
         assert!(e.contains(want), "{want:?} not in {e:?}");
@@ -736,4 +757,23 @@ fn text_keys_cover_the_piece_and_fonts() {
     assert_eq!(a, c.lower(0..180, OUT, &m).expect("lower").recipe);
     m.0.set(2);
     assert_ne!(a, c.lower(0..180, OUT, &m).expect("lower").recipe);
+}
+
+#[test]
+fn huge_stills_are_refused() {
+    struct Big;
+    impl Media for Big {
+        fn dims(&self, _: &Path) -> Result<(u32, u32)> {
+            Ok((20000, 100))
+        }
+        fn identity(&self, path: &Path) -> Value {
+            json!(path)
+        }
+    }
+    let c = comp(json!([{ "source": { "still": "a.heic" } }]));
+    let e = c.lower(0..30, OUT, &Big).expect_err("too big").to_string();
+    assert!(
+        e.contains("layers[0].source.still") && e.contains("at most 16384"),
+        "{e}"
+    );
 }

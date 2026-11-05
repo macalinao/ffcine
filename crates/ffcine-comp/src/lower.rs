@@ -327,8 +327,14 @@ impl Comp {
             None => (&one, &centre, &half, &half),
         };
         let zoom = sample(zoom, &at("content.zoom"), vis.clone(), env)?;
-        if let Some(z) = zoom.iter().find(|z| !(z.is_finite() && **z > 0.0)) {
-            return Err(err(at("content.zoom"), format!("{z}: expected a zoom > 0")));
+        if let Some(z) = zoom
+            .iter()
+            .find(|z| !(z.is_finite() && **z > 0.0 && **z <= limits::ZOOM))
+        {
+            return Err(err(
+                at("content.zoom"),
+                format!("{z}: expected a zoom > 0, at most {}", limits::ZOOM),
+            ));
         }
         let zc = sample(zc, &at("content.zoom_center"), vis.clone(), env)?;
         let cx = sample(cx, &at("content.crop_x"), vis.clone(), env)?;
@@ -381,6 +387,21 @@ impl Comp {
                 }
             })
             .collect();
+        // Zooms and crops multiply: keep the window a usable size.
+        if windows
+            .iter()
+            .any(|w| !(w[2] >= sw / limits::ZOOM && w[3] >= sh / limits::ZOOM))
+        {
+            return Err(err(
+                at("content"),
+                format!(
+                    "zoom and crop together go in over {}x (the source window would be under \
+                     1/{} of the source a side)",
+                    limits::ZOOM,
+                    limits::ZOOM
+                ),
+            ));
+        }
         #[allow(clippy::cast_possible_truncation)]
         let to_crop = |w: &[f64; 4]| Crop {
             x: w[0] as f32,
@@ -528,8 +549,23 @@ impl Comp {
                 continue;
             }
             let (src_dims, source) = match &l.source {
-                Source::Video(p) | Source::Still(p) => {
+                Source::Video(p) => {
                     let (w, h) = media.dims(p)?;
+                    (Some([f64::from(w), f64::from(h)]), None)
+                }
+                Source::Still(p) => {
+                    let (w, h) = media.dims(p)?;
+                    if !ffcine_render::still_fits(w, h) {
+                        return Err(err(
+                            at("source.still"),
+                            format!(
+                                "{}: {w}x{h} px (a still is at most {} px a side, {} in all)",
+                                p.display(),
+                                limits::STILL_SIDE,
+                                limits::STILL_PIXELS
+                            ),
+                        ));
+                    }
                     (Some([f64::from(w), f64::from(h)]), None)
                 }
                 Source::Comp(c) => (Some(c.canvas.size.map(f64::from)), None),

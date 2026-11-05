@@ -45,6 +45,13 @@ pub mod limits {
     pub const ROTATION: f64 = 1e6;
     /// Comps nested in comps (`{"comp": ...}` sources), levels below the top.
     pub const DEPTH: usize = 4;
+    /// `content` zooms (`zoom`, a punch's, `push`), and how far in they and `crop` may go in
+    /// all: the source window is at least 1/ZOOM of the source a side.
+    pub const ZOOM: f64 = 1e4;
+    /// A still source, px a side.
+    pub const STILL_SIDE: u32 = ffcine_render::STILL_SIDE;
+    /// A still source, px in all.
+    pub const STILL_PIXELS: u64 = ffcine_render::STILL_PIXELS;
 }
 
 /// Whether `v` is a comp document (`schema` is `ffcine.comp/N`), as opposed to a timeline.
@@ -412,8 +419,11 @@ fn content(v: &Value, scope: &Scope, path: &str) -> Result<Content> {
                         .map(|v| xy(v, &format!("{pp}.center")))
                         .transpose()?,
                 };
-                if !(punch.zoom.is_finite() && punch.zoom > 0.0) {
-                    return Err(err(format!("{pp}.zoom"), "expected a number > 0"));
+                if !(punch.zoom.is_finite() && punch.zoom > 0.0 && punch.zoom <= limits::ZOOM) {
+                    return Err(err(
+                        format!("{pp}.zoom"),
+                        format!("expected a number > 0, at most {}", limits::ZOOM),
+                    ));
                 }
                 Ok(punch)
             })
@@ -433,8 +443,11 @@ fn content(v: &Value, scope: &Scope, path: &str) -> Result<Content> {
         },
     };
     let push = m.get("push").map(|v| xy(v, &at("push"))).transpose()?;
-    if push.is_some_and(|p| p.iter().any(|z| *z <= 0.0)) {
-        return Err(err(at("push"), "zooms must be > 0"));
+    if push.is_some_and(|p| p.iter().any(|z| !(*z > 0.0 && *z <= limits::ZOOM))) {
+        return Err(err(
+            at("push"),
+            format!("zooms must be > 0, at most {}", limits::ZOOM),
+        ));
     }
     Ok(Content {
         zoom: track(m, "zoom", scope, path, 1.0)?,
