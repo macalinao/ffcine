@@ -855,7 +855,7 @@ Each step is one PR, in dependency order. Each keeps the existing tests green an
    then drawn as a picture. Comp keys cover still fingerprints, text parameters, the drawn overlays
    and font files, and nested comps' lowered values; timelines plan and render as before
    (`RENDER_REVISION` stays 8). The GPU test is `crates/ffcine/tests/media_gpu.rs` (the HEIC grid
-   at 52 dB and the `irot` one at 51 dB against ffmpeg's CPU decode, the P3 still at 53 dB against
+   at 52 dB and the `irot` grid and single item at 51 and 52 dB against ffmpeg's CPU decode, the P3 still at 53 dB against
    ffmpeg's `libplacebo` filter, the nested comp within 1 code value of the flattened layers, and
    text under a layer hidden).
    *Tests*: a HEIC fixture (the synthetic grids in `crates/ffcine-render/testdata/heic`)

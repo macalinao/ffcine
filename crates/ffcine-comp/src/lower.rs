@@ -1004,8 +1004,8 @@ fn overlay_digest(overlays: &[Overlay]) -> Value {
         h.update((parts.len() as u64).to_le_bytes());
         for p in parts {
             f32s(h, &p.pos);
-            f32s(h, &p.size.map_or([f32::NAN; 2], |s| s));
-            f32s(h, &p.src.map_or([f32::NAN; 4], |s| s));
+            f32s(h, &p.size.unwrap_or([f32::NAN; 2]));
+            f32s(h, &p.src.unwrap_or([f32::NAN; 4]));
             f32s(h, &p.colour);
         }
     };

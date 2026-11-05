@@ -1081,12 +1081,16 @@ fn decode_still(
     let s = f.get();
     let tagged = s.color_primaries != ff::AVColorPrimaries::AVCOL_PRI_UNSPECIFIED
         || s.color_trc != ff::AVColorTransferCharacteristic::AVCOL_TRC_UNSPECIFIED;
+    // ICC profiles are dropped; a display matrix is applied here (HEIF `irot`) or ignored, not
+    // left for libplacebo to turn the picture again.
     // SAFETY: a frame we own.
     unsafe {
-        ff::av_frame_remove_side_data(
-            f.as_ptr(),
+        for t in [
             ff::AVFrameSideDataType::AV_FRAME_DATA_ICC_PROFILE,
-        );
+            ff::AVFrameSideDataType::AV_FRAME_DATA_DISPLAYMATRIX,
+        ] {
+            ff::av_frame_remove_side_data(f.as_ptr(), t);
+        }
     }
     if f.get().hw_frames_ctx.is_null() {
         f = to_rgba64(&f)?;

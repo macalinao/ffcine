@@ -728,6 +728,16 @@ fn nested_comps_are_named_capped_and_counted() {
 
 #[test]
 fn text_keys_cover_the_piece_and_fonts() {
+    struct Fonts(std::cell::Cell<u32>);
+    impl Media for Fonts {
+        fn dims(&self, _: &Path) -> Result<(u32, u32)> {
+            Ok((1920, 1080))
+        }
+        fn identity(&self, path: &Path) -> Value {
+            assert_eq!(path, Path::new("/media/fonts/a.ttf"));
+            json!([path, self.0.get()])
+        }
+    }
     // Fading text 0-6 s around a solid 2-4 s: the first and last pieces draw the same text
     // params at different points of its fades, so their keys differ.
     let c = comp(json!([
@@ -739,16 +749,6 @@ fn text_keys_cover_the_piece_and_fonts() {
     assert_ne!(k[0], k[2]);
     // Font files: resolved against `fonts_dir` and the comp's directory, their identities in
     // the key (blank text draws nothing, so no font is loaded here).
-    struct Fonts(std::cell::Cell<u32>);
-    impl Media for Fonts {
-        fn dims(&self, _: &Path) -> Result<(u32, u32)> {
-            Ok((1920, 1080))
-        }
-        fn identity(&self, path: &Path) -> Value {
-            assert_eq!(path, Path::new("/media/fonts/a.ttf"));
-            json!([path, self.0.get()])
-        }
-    }
     let c = comp(json!([
         { "source": { "text": { "text": " ", "font_file": "a.ttf", "fonts_dir": "fonts" } } },
     ]));
