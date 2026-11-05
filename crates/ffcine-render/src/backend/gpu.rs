@@ -186,6 +186,7 @@ impl Gpu {
                 tex: RgbaTex::target(&self.vk, tw, th)?,
                 src,
                 renderer: Renderer::new(&self.log, &self.vk)?,
+                rendered: None,
             });
         }
         // Layers that are turned or blended (all of them on an HDR output) go through the
@@ -244,7 +245,15 @@ impl Gpu {
                 for lr in &mut layers {
                     if let Some(rect) = lr.layer.rect_at(at, w, h) {
                         let local = usize::try_from(at - lr.layer.from).unwrap_or(0);
-                        t_render.time(|| gpu.render_layer(lr, local, colors))?;
+                        // A still whose pass inputs didn't change keeps last frame's texture.
+                        let reuse = matches!(lr.src, LayerSrc::Image(_))
+                            && lr
+                                .rendered
+                                .is_some_and(|prev| lr.layer.grade.same_frame(prev, local));
+                        if !reuse {
+                            t_render.time(|| gpu.render_layer(lr, local, colors))?;
+                            lr.rendered = Some(local);
+                        }
                         shown.push((&*lr, rect));
                     }
                 }
@@ -776,6 +785,8 @@ struct LayerRun<'a> {
     tex: RgbaTex,
     src: LayerSrc,
     renderer: Renderer,
+    /// The layer frame its texture holds.
+    rendered: Option<usize>,
 }
 
 enum LayerSrc {

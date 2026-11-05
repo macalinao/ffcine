@@ -50,7 +50,7 @@ pub(crate) struct RenderArgs {
     /// Output master (.mp4).
     #[bpaf(short('o'), long("output"), argument("FILE"))]
     output: PathBuf,
-    /// Timeline to render (.otio).
+    /// Timeline to render (.otio), or a comp (.comp.json, .comp.yaml).
     #[bpaf(positional("TIMELINE"))]
     timeline: PathBuf,
 }
@@ -206,30 +206,16 @@ impl RenderArgs {
     }
 
     pub(crate) fn run(self, ff: &backend::Ffmpeg) -> anyhow::Result<()> {
+        if super::comp::is_comp_file(&self.timeline) {
+            return self.run_comp(ff);
+        }
         let cache = cache_dir(&self.timeline, self.cache.as_deref());
         if !self.dry_run && assembly::Profile::by_name(&self.profile).is_some_and(|p| p.proxies) {
             self.make_proxies(&cache.join("proxy"))?;
         }
         let (plan, mut text) = self.plan(&cache)?;
-        let profile = &plan.profile;
         if self.dry_run {
-            let cached = |k: &assembly::Key| cache.join("seg").join(format!("{k}.mp4")).exists();
-            let empty = assembly::Plan {
-                segments: plan
-                    .segments
-                    .iter()
-                    .filter(|s| cached(&s.key))
-                    .cloned()
-                    .collect(),
-                audio: plan.audio.clone().filter(|a| {
-                    cache
-                        .join("audio")
-                        .join(format!("{}-aac{}.m4a", a.key, profile.audio_bitrate))
-                        .exists()
-                }),
-                ..plan.clone()
-            };
-            print!("{}", assembly::Diff::new(&empty, &plan).report(&plan, true));
+            dry_run(&plan, &cache);
             return Ok(());
         }
         // The full GPU grade (LUT strength, look hook, sharpen), as `ffcine grade --clip`.
@@ -283,23 +269,76 @@ impl RenderArgs {
         let rep = r.render(&plan, text.as_mut(), &self.output)?;
         self.tag(&t)?;
         if !self.json {
-            let s = |d: Option<std::time::Duration>| {
-                d.map_or_else(
-                    || "cached".to_owned(),
-                    |d| format!("{:.1} s", d.as_secs_f64()),
-                )
-            };
-            eprintln!(
-                "segments {:.1} s ({} of {}, {} frames), audio {}, join+mux {}, total {:.1} s",
-                rep.render.as_secs_f64(),
-                rep.rendered,
-                rep.segments,
-                rep.rendered_frames,
-                s(rep.audio),
-                s(rep.mux),
-                rep.total.as_secs_f64()
-            );
+            summary(&rep);
         }
         Ok(())
     }
+
+    /// `render` of a comp file: its pieces through the same segment cache, picture only.
+    fn run_comp(self, ff: &backend::Ffmpeg) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.render_profile.is_none(),
+            "--render-profile doesn't apply to a comp: its canvas sets the aspect"
+        );
+        let cache = cache_dir(&self.timeline, self.cache.as_deref());
+        let (_, plan) = super::comp::plan(&self.timeline, &self.profile, ff)?;
+        if self.dry_run {
+            dry_run(&plan, &cache);
+            return Ok(());
+        }
+        let r = super::comp::renderer(ff, cache, self.cuda, self.decode, self.json);
+        let rep = r.render(&plan, None, &self.output)?;
+        if let Some(c) = &self.cover {
+            let tags = ffcine::delivery::mp4::Tags {
+                chapters: Vec::new(),
+                cover: Some(super::deliver::cover(c, &self.output)?),
+            };
+            super::deliver::write_tags(&self.output, &tags)?;
+        }
+        if !self.json {
+            summary(&rep);
+        }
+        Ok(())
+    }
+}
+
+/// `--dry-run`: what would render, against the segment cache.
+fn dry_run(plan: &assembly::Plan, cache: &Path) {
+    let profile = &plan.profile;
+    let cached = |k: &assembly::Key| cache.join("seg").join(format!("{k}.mp4")).exists();
+    let empty = assembly::Plan {
+        segments: plan
+            .segments
+            .iter()
+            .filter(|s| cached(&s.key))
+            .cloned()
+            .collect(),
+        audio: plan.audio.clone().filter(|a| {
+            cache
+                .join("audio")
+                .join(format!("{}-aac{}.m4a", a.key, profile.audio_bitrate))
+                .exists()
+        }),
+        ..plan.clone()
+    };
+    print!("{}", assembly::Diff::new(&empty, plan).report(plan, true));
+}
+
+fn summary(rep: &assembly::Report) {
+    let s = |d: Option<std::time::Duration>| {
+        d.map_or_else(
+            || "cached".to_owned(),
+            |d| format!("{:.1} s", d.as_secs_f64()),
+        )
+    };
+    eprintln!(
+        "segments {:.1} s ({} of {}, {} frames), audio {}, join+mux {}, total {:.1} s",
+        rep.render.as_secs_f64(),
+        rep.rendered,
+        rep.segments,
+        rep.rendered_frames,
+        s(rep.audio),
+        s(rep.mux),
+        rep.total.as_secs_f64()
+    );
 }

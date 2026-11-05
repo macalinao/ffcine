@@ -1,0 +1,26 @@
+[package]
+name = "ffcine-comp"
+description = "Compositions (ffcine.comp/1): canvas and layers with animated parameters, lowered to GPU layers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ffcine-core.workspace = true
+# Layer, Grade, Hook, BlendMode and the generated shaders (no backend features).
+ffcine-render.workspace = true
+serde_json.workspace = true
+# Digests of sampled tracks in piece keys.
+sha2.workspace = true
+# `.comp.yaml` files.
+yaml_serde.workspace = true
+
+[lints]
+workspace = true

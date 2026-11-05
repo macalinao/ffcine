@@ -38,6 +38,7 @@ ffcine-import.workspace = true
 ffcine-stabilize.workspace = true
 ffcine-render.workspace = true
 ffcine-assembly.workspace = true
+ffcine-comp.workspace = true
 ffcine-audio.workspace = true
 ffcine-ingest.workspace = true
 ffcine-filters.workspace = true

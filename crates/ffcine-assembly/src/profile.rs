@@ -34,6 +34,9 @@ const MASTER_SHORT: u32 = 2160;
 const REVIEW_SHORT: u32 = 720;
 
 /// `aspect` sized to `short` px on its short side (even dimensions).
+/// The largest render side [`Profile::for_canvas`] plans, px.
+pub const MAX_SIDE: u32 = 16384;
+
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -182,6 +185,34 @@ impl Profile {
         Ok(p)
     }
 
+    /// The `name` profile for a comp whose canvas is `w`x`h` px: the canvas's aspect at the
+    /// profile's short side (a 1080x1920 comp previews at 1080x1920 and masters at 2160x3840).
+    /// Comps decode their sources (no proxies).
+    pub fn for_canvas(name: &str, w: u32, h: u32) -> Result<Self, String> {
+        let mut p = Self::by_name(name)
+            .ok_or_else(|| format!("unknown profile {name:?} (preview, master, review)"))?;
+        let mut a: Aspect = format!("{w}x{h}")
+            .parse()
+            .map_err(|e| format!("canvas size: {e}"))?;
+        let short = match p.name.as_str() {
+            "master" => MASTER_SHORT,
+            "review" => REVIEW_SHORT,
+            _ => PREVIEW_SHORT,
+        };
+        let size = sized(&a, short);
+        if size.width.max(size.height) > MAX_SIDE {
+            return Err(format!(
+                "canvas {w}x{h} renders at {}x{} for {name}: at most {MAX_SIDE} px a side",
+                size.width, size.height
+            ));
+        }
+        (a.width, a.height) = (size.width, size.height);
+        p.size = size;
+        p.aspect = a;
+        p.proxies = false;
+        Ok(p)
+    }
+
     /// What of the profile changes pixels (not its name).
     pub fn recipe(&self) -> Value {
         let mut v = json!({
@@ -201,6 +232,14 @@ impl Profile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canvas_render_size_is_capped() {
+        let p = Profile::for_canvas("master", 1080, 1920).unwrap();
+        assert_eq!((p.size.width, p.size.height), (2160, 3840));
+        let e = Profile::for_canvas("preview", 32768, 1).unwrap_err();
+        assert!(e.contains("at most 16384 px a side"), "{e}");
+    }
 
     #[test]
     fn aspects_and_sizes() {

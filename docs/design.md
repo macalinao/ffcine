@@ -124,18 +124,19 @@ uses it.
 | `ffcine-filters` | frame filters: motion-compensated temporal denoise, spatial NLM, film grain, as generated GLSL compute kernels ([Frame filters](#frame-filters), [denoise.md](denoise.md)); no GPU dependency | - |
 | `ffcine-reframe` | step 5: `ffcine.geo.reframe/1` keyframed crop windows, render profiles (9:16, 4:5, ...), safe-area overlay, composition with the stabilizer warp ([reframe.md](reframe.md)) | core, timeline, render, stabilize |
 | `ffcine-audio` | step 6: recorder sync, clean chain (libavfilter), R128 levelling, buses with ducking, master limiter, `render_audio` ([audio.md](audio.md)); feature `ffmpeg` | core, timeline |
-| `ffcine-assembly` | step 8: segment planner, content-keyed recipe cache, stream-copy assembly, text per segment, audio mix/remux, `diff` ([assembly.md](assembly.md)) | core, timeline, render, text |
+| `ffcine-assembly` | step 8: segment planner, content-keyed recipe cache, stream-copy assembly, text per segment, audio mix/remux, `diff`, comp pieces as segments ([assembly.md](assembly.md)) | core, timeline, render, text, comp |
+| `ffcine-comp` | `ffcine.comp/1` compositions: model, validation, pieces, lowering to a base grade plus `Layer`s with sampled tracks, piece keys ([compositing.md](compositing.md)); no GPU or libav | core, render |
 | `ffcine-text` | `ffcine.text` clips: style cascade, `cosmic-text` layout, per-segment GPU overlays, `.ass` import ([text.md](text.md)) | core, timeline, render |
 | `ffcine-delivery` | YouTube chapters from markers, music credits, the frame under a timeline time ([delivery.md](delivery.md)) | core, timeline |
 | `ffcine-hooks` | step 9: vendored adaptive-sharpen, `ffcine.fx.shader/1` with `//!PARAM`s, hook order ([hooks.md](hooks.md)) | core, timeline, render, reframe |
 | `ffcine-triage` | `ffcine triage`/`search`/`snap`: clip index from proxies (strips, scene cuts, speech map, batched GPU whisper, flags, Immich locations), clip page, word-boundary snapping ([triage.md](triage.md)); feature `ffmpeg` decodes | ingest |
 | `ffcine-breakdown` | `ffcine breakdown`: shot list of a reference video (cuts, keyframes, global camera motion, beat alignment, colour, speech, OCR), contact sheet, `shotlist.md` ([breakdown.md](breakdown.md)); feature `ffmpeg` decodes | triage, audio, text |
-| `ffcine` | facade: re-exports core, timeline, import, ingest, stabilize, render, reframe, hooks, text, delivery, filters, triage, breakdown, audio, assembly; features `ffmpeg`, `audio` (libav* only), `placebo`, `nvof` forward to them | all of the above but the skeletons |
+| `ffcine` | facade: re-exports core, timeline, import, ingest, stabilize, render, reframe, hooks, text, delivery, filters, triage, breakdown, audio, assembly, comp; features `ffmpeg`, `audio` (libav* only), `placebo`, `nvof` forward to them | all of the above but the skeletons |
 | `ffcine-cli` | the `ffcine` binary (bpaf); feature `gpu` (default) adds the GPU commands, without it only ingest/catalog/doctor/search/snap build; feature `audio` adds `sync` and `audio` (libav*, no GPU, so the Mac build can have them) | ffcine |
 | `libplacebo-sys` | bindgen FFI over libplacebo | - |
 
 ```
-ffcine-cli -> ffcine -> ffcine-assembly -> ffcine-text, ffcine-render, ffcine-timeline
+ffcine-cli -> ffcine -> ffcine-assembly -> ffcine-text, ffcine-comp, ffcine-render, ffcine-timeline
                      -> ffcine-import -> ffcine-timeline -> ffcine-core
                      -> ffcine-ingest --------------------> ffcine-core
                      -> ffcine-stabilize -----------------> ffcine-core

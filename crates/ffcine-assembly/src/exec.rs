@@ -17,10 +17,11 @@ use std::time::{Duration, Instant};
 
 use std::sync::Arc;
 
+use ffcine_comp::Base;
 use ffcine_filters::Grain;
 use ffcine_render::{
-    Backend, BlendMode, Codec, Crop, Decode, Device, Grade, Hook, Image, Layer, LayerSource, Lut,
-    LutStage, LutType, Overlay, ParamTrack, Pipeline, Rational, Size, shaders,
+    Backend, BlendMode, Codec, Crop, Decode, Device, EncoderSettings, Grade, Hook, Image, Layer,
+    LayerSource, Lut, LutStage, LutType, Overlay, ParamTrack, Pipeline, Rational, Size, shaders,
 };
 use serde_json::json;
 
@@ -612,6 +613,19 @@ impl Renderer<'_> {
                 )?);
                 (input, start, g)
             }
+            Unit::Comp(p) => {
+                layers.extend(p.layers.iter().cloned());
+                match &p.base {
+                    Base::Black => (
+                        self.black(plan, frames, key, &mut temps)?,
+                        0.0,
+                        p.grade.clone(),
+                    ),
+                    Base::Video { input, start } => {
+                        (input.clone(), start.as_secs_f64(), p.grade.clone())
+                    }
+                }
+            }
         };
         // Overlay clips (picture-in-picture, stickers), bottom first.
         for (k, l) in seg.layers.iter().enumerate() {
@@ -776,6 +790,38 @@ impl Renderer<'_> {
         if retry { Ok(()) } else { Err(e.into()) }
     }
 
+    /// Renders one lowered comp piece to `out` with `encoder` (`ffcine still` of a comp: one
+    /// frame, a PNG); `output` overrides the pass's output colour space.
+    pub fn render_piece(
+        &self,
+        piece: &ffcine_comp::Piece,
+        rate: f64,
+        out: &Path,
+        encoder: EncoderSettings,
+        output: Option<ffcine_core::ColorSpace>,
+    ) -> Result<()> {
+        let key = Key::of(&piece.recipe);
+        let mut temps = Vec::new();
+        let (base, start) = match &piece.base {
+            Base::Black => (self.black_at(rate, piece.frames, &key, &mut temps)?, 0.0),
+            Base::Video { input, start } => (input.clone(), start.as_secs_f64()),
+        };
+        let mut grade = piece.grade.clone();
+        if let Some(c) = output {
+            grade.output = c;
+        }
+        let pipe = self
+            .pipeline(&base, out, start, piece.frames, rate)
+            .grade(grade)
+            .layers(piece.layers.clone())
+            .encoder(encoder);
+        let r = self.run_dv_retry(&pipe, &key);
+        for t in temps {
+            let _ = std::fs::remove_file(t);
+        }
+        r
+    }
+
     /// Black, `frames` long, as a base for units without one (gaps, split-screens, whips).
     fn black(
         &self,
@@ -784,8 +830,19 @@ impl Renderer<'_> {
         key: &Key,
         temps: &mut Vec<PathBuf>,
     ) -> Result<PathBuf> {
+        self.black_at(plan.rate, frames, key, temps)
+    }
+
+    /// [`Renderer::black`] at `rate`.
+    fn black_at(
+        &self,
+        rate: f64,
+        frames: i64,
+        key: &Key,
+        temps: &mut Vec<PathBuf>,
+    ) -> Result<PathBuf> {
         let black = self.dir("tmp")?.join(format!("{key}.black.mkv"));
-        let r = rational(plan.rate);
+        let r = rational(rate);
         self.ffmpeg(
             "black",
             &args(&[

@@ -44,7 +44,8 @@ pub struct Key {
     /// Clip source time.
     pub t: RationalTime,
     pub v: f64,
-    #[serde(default)]
+    /// `ease` is accepted as an alias, as on every other keyframe.
+    #[serde(default, alias = "ease")]
     pub interp: Interp,
 }
 
@@ -584,6 +585,22 @@ mod tests {
             "keys": [{"t": 0, "v": 0, "interp": "ease"}, {"t": 1, "v": 1}], "expr": "value"
         }}))
         .expect("keys expr");
+        assert!((l.gain_db.at(0.25) - 0.156_25).abs() < 1e-12);
+    }
+
+    #[test]
+    fn key_ease_is_an_alias_of_interp() {
+        let l: Level = serde_json::from_value(serde_json::json!({
+            "gain_db": [
+                {"t": {"OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 0.0}, "v": 0.0, "ease": "ease"},
+                {"t": {"OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 24.0}, "v": 1.0}
+            ]
+        }))
+        .expect("ease alias");
+        let Param::Keys(k) = &l.gain_db else {
+            panic!("keys: {:?}", l.gain_db)
+        };
+        assert_eq!(k[0].interp, Interp::Ease);
         assert!((l.gain_db.at(0.25) - 0.156_25).abs() < 1e-12);
     }
 }

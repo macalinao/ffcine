@@ -9,7 +9,9 @@ use bpaf::Bpaf;
 use ffcine::delivery;
 use ffcine::text::TextLayer;
 use ffcine::timeline::Timeline;
-use ffcine::{Backend, Device, EncoderSettings, Grade, MediaInfo, Pipeline, RateControl, Size};
+use ffcine::{
+    Backend, Device, EncoderSettings, Grade, MediaInfo, Pipeline, RateControl, Size, backend,
+};
 
 use super::{GradeArgs, report};
 
@@ -284,7 +286,8 @@ pub fn grade(mut args: GradeArgs, ff: &dyn Backend) -> anyhow::Result<()> {
 
 #[derive(Debug, Clone, Bpaf)]
 pub struct StillArgs {
-    /// Timeline time: seconds, M:SS or H:MM:SS (required).
+    /// Timeline or comp time: seconds, M:SS or H:MM:SS (required; past a comp's end is an
+    /// error).
     #[bpaf(argument("TIME"))]
     at: String,
     /// Output size in px, e.g. 1280x720 (default: the timeline's `frame_size`, else the source's).
@@ -300,9 +303,65 @@ pub struct StillArgs {
     cuda: Option<u32>,
     /// Don't use an on-disk shader cache.
     pub no_cache: bool,
-    /// Timeline (.otio).
+    /// Timeline (.otio), or a comp (.comp.json, .comp.yaml).
     #[bpaf(positional("TIMELINE"))]
     timeline: PathBuf,
+}
+
+/// `still` of a comp: every layer at `--at`, at the canvas size (or `--size`).
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::needless_pass_by_value,
+    clippy::many_single_char_names
+)]
+fn comp_still(a: StillArgs, ff: &backend::Ffmpeg) -> anyhow::Result<()> {
+    let c = super::comp::load(&a.timeline)?;
+    let at = delivery::parse_time(&a.at)?;
+    // The frame showing at `at` (frames start at i / fps).
+    let n = (at * c.canvas.fps + 1e-6).floor() as i64;
+    if n >= c.frames() {
+        anyhow::bail!(
+            "--at {}: past the comp's end ({} s, {} frames)",
+            a.at,
+            c.canvas.duration,
+            c.frames()
+        );
+    }
+    let [w, h] = c.canvas.size;
+    let out = a.size.unwrap_or(Size {
+        width: w,
+        height: h,
+    });
+    let dims = super::comp::dims(ff);
+    let media = ffcine::assembly::CompMedia {
+        fp: &ffcine::assembly::FsFingerprinter,
+        dims: &dims,
+    };
+    let piece = c.lower(n..n + 1, out, &media)?;
+    let output = a
+        .output
+        .unwrap_or_else(|| PathBuf::from(format!("still-{}.png", a.at.replace(':', "."))));
+    let cache = std::env::temp_dir().join(format!("ffcine-still-{}", std::process::id()));
+    let r = super::comp::renderer(ff, cache.clone(), a.cuda, ffcine::Decode::default(), false);
+    let res = r.render_piece(
+        &piece,
+        c.canvas.fps,
+        &output,
+        EncoderSettings::png_still(),
+        Some(ffcine::ColorSpace::BT709_RGB),
+    );
+    let _ = std::fs::remove_dir_all(&cache);
+    res?;
+    eprintln!(
+        "{}: {}x{} at {:.3} s (frame {n}), {} layers",
+        output.display(),
+        out.width,
+        out.height,
+        n as f64 / c.canvas.fps,
+        piece.shown.len() + usize::from(matches!(piece.base, ffcine::comp::Base::Video { .. }))
+    );
+    Ok(())
 }
 
 /// The clip's resolved grade (LUT and look) for the GPU.
@@ -319,7 +378,10 @@ fn clip_grade(t: &Timeline, dir: &Path, clip: &ffcine::timeline::Clip) -> anyhow
 }
 
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-pub fn still(a: StillArgs, ff: &dyn Backend) -> anyhow::Result<()> {
+pub fn still(a: StillArgs, ff: &backend::Ffmpeg) -> anyhow::Result<()> {
+    if super::comp::is_comp_file(&a.timeline) {
+        return comp_still(a, ff);
+    }
     let t = load(&a.timeline)?;
     let dir = dir_of(&a.timeline);
     let at = delivery::parse_time(&a.at)?;

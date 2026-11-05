@@ -331,6 +331,23 @@ impl Grade {
         self.lut = None;
     }
 
+    /// Whether frames `a` and `b` of this pass over an unchanging input (a still) render the
+    /// same pixels: the same crop and hook values, and nothing that moves by itself from frame
+    /// to frame (a warp, temporal dither, grain, a hook reading the frame index, shader files).
+    /// The renderer then reuses the layer's texture instead of rendering it again.
+    pub fn same_frame(&self, a: usize, b: usize) -> bool {
+        self.crop_at(a) == self.crop_at(b)
+            && self.warp.is_none()
+            && self.grain.is_none()
+            && self.shaders.is_empty()
+            && self.dither.is_none_or(|d| !d.temporal)
+            && self.hooks.iter().all(|h| {
+                !h.source
+                    .contains(&format!("//!PARAM {}", ffcine_stabilize::hook::FRAME_PARAM))
+                    && h.tracks.iter().all(|t| t.at(a) == t.at(b))
+            })
+    }
+
     /// The source crop for output frame `i`: `crops[i]` (the last one past the end), else `crop`.
     pub fn crop_at(&self, i: usize) -> Option<Crop> {
         self.crops
@@ -435,6 +452,44 @@ impl Default for Grade {
             output: ColorSpace::BT709_TV,
             output_hdr: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod same_frame_tests {
+    use super::*;
+
+    #[test]
+    fn same_frame_follows_tracks_and_crops() {
+        let mut g = Grade {
+            dither: None,
+            hooks: vec![Hook {
+                name: "alpha".into(),
+                source: crate::shaders::layer_alpha().into(),
+                params: Vec::new(),
+                tracks: vec![ParamTrack {
+                    name: "opacity".into(),
+                    values: vec![0.0, 0.5, 1.0, 1.0],
+                }],
+            }],
+            ..Grade::default()
+        };
+        assert!(!g.same_frame(0, 1));
+        assert!(g.same_frame(2, 3) && g.same_frame(3, 9));
+        let c = |x| Crop {
+            x,
+            y: 0.0,
+            width: 10.0,
+            height: 10.0,
+        };
+        g.crops = vec![c(0.0), c(0.0), c(0.0), c(1.0)];
+        assert!(!g.same_frame(2, 3));
+        g.crops.clear();
+        g.dither = Some(Dither {
+            temporal: true,
+            ..Dither::default()
+        });
+        assert!(!g.same_frame(2, 3));
     }
 }
 

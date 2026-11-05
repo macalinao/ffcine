@@ -1,7 +1,7 @@
 # Compositing and keyframes (design)
 
-Status: design. Step 1 of the [phased plan](#phased-plan) (param tracks and expressions,
-`ffcine_core::anim`) is built; the rest is not. It turns what assembly already composites (split-screens,
+Status: design. Steps 1 and 2 of the [phased plan](#phased-plan) (param tracks and expressions,
+`ffcine_core::anim`; the compositor core, `ffcine-comp`) are built; the rest is not. It turns what assembly already composites (split-screens,
 picture-in-picture, transitions, stills, text) into one general model: a **composition** of
 ordered **layers** whose parameters are **tracks**. Anything one would write today as a
 hand-made ffmpeg filter graph should be expressible in ffcine itself, and layouts and
@@ -115,6 +115,12 @@ fade      = 1 = picture, 0 = fade_colour (the finish hook's fade), so "fade in f
             doesn't reveal what is under the layer
 ```
 
+`fit: contain` and `fit: none` draw the picture centred inside the box (smaller than it), and
+`radius` and `mask` then apply to that picture; with `none` a source pixel is a canvas pixel
+and the part outside the box is cropped. `scale` below 0 is taken as 0 (no flips yet). A mask's
+`rect` defaults to the whole box, and `feather` is the width in box pixels of its soft edge,
+centred on the shape's edge.
+
 `content` and `transform` are kept apart on purpose. A Ken Burns or a punch-in zooms the
 picture inside a fixed tile: that is `content.zoom`, one sub-pixel source window
 (`Grade::crops`, no wobble, [reframe.md](reframe.md#sub-pixel-no-wobble)). Scaling the tile
@@ -126,6 +132,25 @@ Masks are the cheap kind only: shapes in the layer's own alpha hook (`shaders::a
 does opacity and the rounded rectangle; ellipse, feather and invert are a few lines more), so a
 mask costs nothing extra. Track mattes, where one layer's alpha or luma cuts another, are
 [Not yet](#not-yet).
+
+### Limits
+
+`ffcine comp check` (and `render`, `still`) reject a comp past these before any GPU work,
+naming the parameter (`ffcine_comp::limits`):
+
+| what | limit |
+|------|-------|
+| canvas `size` | at most 16384 px a side and 8192x8192 px in all; the long side at most 4 times the short |
+| canvas `fps` | 1 to 240 |
+| canvas `duration`, layer `in`, `out`, `source_in` | 0 to 3600 s (`duration` > 0) |
+| `layers` | at most 64, of which at most 16 `video` (each is a decoder while it shows) |
+| layer `size` | at most 65536 px a side |
+| a layer's texture (its picture at its largest `scale`, in render px) | at most 16384 px a side, so a big `scale` fails at the render size that needs it |
+| `transform.position`, `anchor`, `radius`, `mask.rect`, `mask.feather` | finite, at most 1e9 either way |
+| `transform.rotation` | finite, at most 1e6 degrees either way |
+| layer `id` | a string, unique in the comp |
+
+The render size a profile plans for a canvas is at most 16384 px a side.
 
 ### Serialisation
 
@@ -184,7 +209,8 @@ ffcine comp lower story.comp.json      # templates expanded: the explicit layers
 ffcine comp new --template story --media a.mov b.heic c.mov d.heic e.mov f.heic -o story.comp.json
 ```
 
-`render` and `still` take a comp wherever they take a timeline (`still` composites every
+Built so far: `render`, `still` and `comp check` (step 2); `comp lower` and `comp new` come
+with templates (step 7). `render` and `still` take a comp wherever they take a timeline (`still` composites every
 layer, where today's still of a timeline draws the top-most clip and the text). It goes through the same
 planner, segment cache, profiles and manifest. A comp has no audio of its own yet
 ([Not yet](#not-yet)); as a clip in a timeline, it uses the timeline's audio tracks.
@@ -229,7 +255,7 @@ impl<T> Track<T> {
   from the layer's `in` (negative from its `out`). A comp layer's clock is not its source
   time, so a speed ramp doesn't warp its animation. The clock also says which
   [variables](#expressions) an expression sees: a comp layer's (`Clock::Layer`) sees all of
-  them. Until the planner passes the rest (step 2 onwards), a timeline effect's expression sees
+  them. Until the timeline planner lowers through comps (step 7), a timeline effect's expression sees
   only its own clock's time: `st` on source-time schemas (`Clock::Source`), `lt` and `dur` on
   text (`Clock::Clip`). Any other name is a compile error, so nothing changes meaning later.
 - Sampling is at the frame's start time, `i / fps`, as reframe and ffmpeg's expressions do.
@@ -359,7 +385,8 @@ compile every expression and sample every frame.
   (`layers[2].transform.position[0]: col 14: expected ")"`). An unknown variable or function, a
   wrong argument count, a var that shadows a built-in, a cycle, or an expression over 4 KiB or
   nested deeper than 64 levels is also an error. Each operator of a chain counts as a level
-  (`a + b + c` nests to the left), so a chain is at most 64 operators long.
+  (`a + b + c` nests to the left) and the whole expression takes one, so a chain is at most 63
+  operators (64 terms) long.
   An expression that is constant and not finite (`1/0`, `log(-1)`) is an error here.
 - Evaluate: a non-finite result (`log(-1)`, `1/0`) is an error with the parameter, layer, frame
   and time. Values outside a parameter's range are clamped as constants are today (opacity
@@ -557,7 +584,8 @@ hand-built layer lists.
    as a `pl_overlay` (normal, unrotated, SDR) or by the composite pass (rotated, blended, HDR),
    bottom first. A layer whose inputs are the same as on the previous frame (a still with no
    animated content, grade or alpha) reuses its texture instead of re-rendering, which makes
-   static stills and solids free after the first frame.
+   static stills and solids free after the first frame (`Grade::same_frame`: the same crop and
+   hook values, and nothing that moves by itself such as temporal dither, grain or a warp).
 4. **Nested comps** render in-pass: the sub-comp's background and layers go into the nested
    layer's texture through the same code (the composite pass's target becomes a parameter, not
    always the output), then that texture is a layer of the parent. No intermediate file and no
@@ -578,6 +606,20 @@ targets, not measurements):
   in a piece.
 - Composite pass: one canvas-sized dispatch per composited layer per frame, cheap at 1080x1920
   and worth measuring at 4K with many rotated layers.
+
+Measured (step 2, `cargo test -p ffcine --release --test comp_gpu -- --ignored --nocapture
+bench`: 120 frames of N rounded, fading, moving 1080p H.264 video tiles in a column, NVENC HEVC
+out, wall time including setup). The reference GPU was shared with other jobs at the time
+(about 13 of its 16 GB and much of its compute in use), so these are lower bounds, not the
+budget's verdict; re-run on an idle GPU:
+
+| Output | 2 layers | 4 layers | 8 layers |
+|---|---|---|---|
+| 1080x1920 | 3.7-6.4 fps, +0.85 GB | 3.0-30 fps, +0.83 GB | 3.7-25 fps, +1.3 GB |
+| 2160x3840 | 7.6-24 fps, +1.5 GB | 8.5-30 fps, +1.2-1.6 GB | out of VRAM (~2.8 GB free) |
+
+The ranges are two runs minutes apart under different load from the other jobs; the VRAM is the
+peak rise of the GPU's `memory.used` during the render.
 
 **Caching** (incremental renders):
 
@@ -772,12 +814,27 @@ Each step is one PR, in dependency order. Each keeps the existing tests green an
    Canvas with animated background and fade, `video` layers without remapping, `solid`, the
    transform/anchor/scale/rotation/opacity, `radius`, shape `mask`, `blend`, `fade`, base
    promotion, comp segment keys with sampled values, and the unchanged-input texture reuse.
+   **Built.** `ffcine_comp::Comp` reads and validates a comp (JSON or YAML, within the
+   [limits](#limits); keys of later steps,
+   `still`/`text`/`comp` sources, `content`, `crop`, `grade`, `time`, `filter`, `project`,
+   `comps`, `template`, are errors naming the step), `Comp::pieces` cuts it at layer in/out
+   points, and `Comp::lower` turns a piece into a base input and grade plus `Layer`s. Solids
+   are a 1x1 image with `shaders::solid`; a layer's fade is its `shaders::finish` hook, and the
+   canvas fade is one more layer on top of the others, a normal-blend solid of `fade_colour` at
+   opacity `1 - fade`, so it fades the composite whatever the layers' blend modes; opacity,
+   corners and the mask are `shaders::layer_alpha`. `ffcine_assembly::plan_comp` makes the pieces segments (`Unit::Comp`)
+   keyed by the lowered values (rects, rotation, every hook value as an `f32` digest, the source
+   fingerprint and start), so the segment cache, `--dry-run`, the manifest and `render_piece`
+   (stills) are shared with timelines. Existing timelines plan and render as before
+   (`RENDER_REVISION` stays 8). The GPU test is `crates/ffcine/tests/comp_gpu.rs` (78, 61 and 60 dB
+   against the CPU reference, the last a canvas fade over multiply and difference layers, and
+   an ellipse feather even on both axes); the bench is its `bench_layers`.
    *Tests*: lowering unit tests (rects and tracks from a comp, base promotion on/off); key tests
    (equivalent rewrites keep keys, an edit after a cut re-renders only later pieces, reorder
    changes keys); a GPU test (`--ignored`) compositing solids and a `testsrc2` clip against a
    CPU reference image at ≥ 50 dB; a bench recording fps and VRAM for 2, 4 and 8 layers at
    1080x1920 and 4K.
-3. **Media layers**: `still` through libav (HEIC tile grids, `irot`, colour tags -> libplacebo
+3. **Media layers**: `content` (the picture inside the box) and `crop`; `still` through libav (HEIC tile grids, `irot`, colour tags -> libplacebo
    conversion; untagged PNG/JPEG as today), decoded once and cached per piece; `text` layers in
    z-order (masks into a texture when covered); nested `comp` in-pass (parametric composite
    target, depth cap).

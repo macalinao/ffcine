@@ -26,6 +26,9 @@ pub mod recipe;
 
 pub use diff::Diff;
 pub use exec::{Detector, Grader, Progress, Renderer, Report};
-pub use plan::{AudioPlan, Filters, Plan, PlanError, Ramp, Segment, Shot, TextLayer, Unit, plan};
+pub use plan::{
+    AudioPlan, CompMedia, Filters, Plan, PlanError, Ramp, Segment, Shot, TextLayer, Unit, plan,
+    plan_comp,
+};
 pub use profile::Profile;
 pub use recipe::{AUDIO_REVISION, FsFingerprinter, Key, RENDER_REVISION};

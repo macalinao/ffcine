@@ -30,6 +30,7 @@ ffcine-filters = { path = "crates/ffcine-filters", version = "0.3.0" }
 ffcine-reframe = { path = "crates/ffcine-reframe", version = "0.3.0" }
 ffcine-audio = { path = "crates/ffcine-audio", version = "0.3.0", default-features = false }
 ffcine-assembly = { path = "crates/ffcine-assembly", version = "0.3.0" }
+ffcine-comp = { path = "crates/ffcine-comp", version = "0.3.0" }
 ffcine-hooks = { path = "crates/ffcine-hooks", version = "0.3.0" }
 ffcine-ingest = { path = "crates/ffcine-ingest", version = "0.3.0" }
 ffcine-text = { path = "crates/ffcine-text", version = "0.3.0" }
