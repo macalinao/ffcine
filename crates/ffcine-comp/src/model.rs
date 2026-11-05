@@ -534,7 +534,11 @@ impl Comp {
 
     /// A comp's canvas, vars and layers; `parent` is `None` at the top, else the using layer's
     /// box, vars and its comp's rate and duration (`p` prefixes error paths).
-    #[allow(clippy::too_many_lines, clippy::many_single_char_names)]
+    #[allow(
+        clippy::too_many_lines,
+        clippy::many_single_char_names,
+        clippy::needless_pass_by_value
+    )]
     fn parse(
         m: &Map<String, Value>,
         p: &str,

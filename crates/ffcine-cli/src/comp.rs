@@ -14,7 +14,7 @@ use ffcine::{Backend, backend};
 pub(crate) enum CompCmd {
     /// Read a comp, compile its expressions and sample every frame; report its pieces.
     ///
-    /// Probes each video layer's size, lowers every piece as `render` would and prints the
+    /// Probes each video and still layer's size, lowers every piece as `render` would and prints the
     /// canvas, the layers and one line per piece (frames, layers drawn, whether the bottom
     /// video is the pass input). Exits non-zero on the first error, with the parameter's path.
     /// A layer entirely outside the canvas is never drawn, so its tracks aren't sampled (a

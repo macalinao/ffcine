@@ -619,12 +619,13 @@ fn content_moves_the_source_window() {
             "mask",
         ),
     ] {
-        let e = rejected(json!({ "size": [1080, 1920], "fps": 30, "duration": 6 }), l).to_string();
+        let e = rejected(json!({ "size": [1080, 1920], "fps": 30, "duration": 6 }), l);
         assert!(e.contains(want), "{want:?} not in {e:?}");
     }
 }
 
 #[test]
+#[allow(clippy::many_single_char_names)]
 fn stills_text_and_nested_comps_lower() {
     // A still: its identity in the key.
     let still = |p: &str| json!([{ "source": { "still": p } , "size": [540, 540] }]);
@@ -636,7 +637,7 @@ fn stills_text_and_nested_comps_lower() {
     let solid = json!({ "source": { "solid": "white" }, "size": [100, 100] });
     let p = lowered(json!([text("hi"), solid]));
     assert_eq!(p.layers.len(), 1);
-    assert!(!p.overlays.is_empty());
+    assert_ne!(p.overlays.len(), 0);
     assert!(p.overlays.iter().all(|o| o.under == Some(0)));
     let q = lowered(json!([solid, text("hi")]));
     assert!(q.overlays.iter().all(|o| o.under == Some(1)));

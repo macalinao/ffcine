@@ -6,7 +6,8 @@
 #![allow(
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
-    clippy::cast_sign_loss
+    clippy::cast_sign_loss,
+    clippy::needless_pass_by_value
 )]
 
 use std::path::{Path, PathBuf};

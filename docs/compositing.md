@@ -1,7 +1,7 @@
 # Compositing and keyframes (design)
 
-Status: design. Steps 1 and 2 of the [phased plan](#phased-plan) (param tracks and expressions,
-`ffcine_core::anim`; the compositor core, `ffcine-comp`) are built; the rest is not. It turns what assembly already composites (split-screens,
+Status: design. Steps 1 to 3 of the [phased plan](#phased-plan) (param tracks and expressions,
+`ffcine_core::anim`; the compositor core, `ffcine-comp`; media layers) are built; the rest is not. It turns what assembly already composites (split-screens,
 picture-in-picture, transitions, stills, text) into one general model: a **composition** of
 ordered **layers** whose parameters are **tracks**. Anything one would write today as a
 hand-made ffmpeg filter graph should be expressible in ffcine itself, and layouts and
@@ -85,10 +85,10 @@ Layer  = { id, source, in, out, source_in, time?, size?, fit, content?, crop?,
 | `source` | What | Renders as |
 |---|---|---|
 | `{"video": PATH}` | any file libav decodes; NVDEC where possible | `LayerSource::Video` |
-| `{"still": PATH}` | PNG, JPEG, WebP, HEIC/HEIF (tile grids, `clap`, `irot`), decoded once | `LayerSource::Image`, colour-managed (below) |
+| `{"still": PATH}` | PNG, JPEG, WebP, HEIC/HEIF (tile grids, `clap`, `irot`), decoded once | `LayerSource::Still`, colour-managed (below) |
 | `{"solid": COLOUR}` | a colour track (`[r, g, b, a]` sRGB 0..1, `"black"`, `"white"`, `"#rrggbb"`) | a 1x1 image stretched to the box, tinted per frame in the alpha hook |
-| `{"text": {...}}` | `ffcine.text` parameters exactly as on a generator clip ([text.md](text.md)) | text masks (`Overlay`); a layer only if something is above it ([Rendering](#rendering)) |
-| `{"comp": NAME or {...}}` | a nested comp (from `comps` or inline), with its own canvas (`fps` and `duration` default to the parent's, `size` is the layer's default box) and its own clock (0 at the layer's `source_in`) | rendered in-pass into its own RGBA texture |
+| `{"text": {...}}` | `ffcine.text` parameters exactly as on a generator clip ([text.md](text.md)) | text masks (`Overlay`s with `under`, the next layer up); drawn into the composite texture when a layer covers them |
+| `{"comp": NAME or {...}}` | a nested comp (from `comps` or inline), with its own canvas (`fps` and `duration` default to the parent's, `size` is the layer's default box) and its own clock (0 at the layer's `source_in`) | `LayerSource::Scene`: rendered in-pass into its own RGBA texture (the composite pass with that texture as its target) |
 
 Paths are relative to the comp file (or to the timeline that embeds it). Stills decoded by libav
 carry their tags: an iPhone HEIC is Display P3 with an sRGB curve, and libplacebo converts it to
@@ -143,7 +143,8 @@ naming the parameter (`ffcine_comp::limits`):
 | canvas `size` | at most 16384 px a side and 8192x8192 px in all; the long side at most 4 times the short |
 | canvas `fps` | 1 to 240 |
 | canvas `duration`, layer `in`, `out`, `source_in` | 0 to 3600 s (`duration` > 0) |
-| `layers` | at most 64, of which at most 16 `video` (each is a decoder while it shows) |
+| `layers` | at most 64, of which at most 16 `video` (each is a decoder while it shows), nested comps' layers included |
+| nested `comp` | at most 4 levels deep; named ones only in the top-level `comps`; same `fps` as the parent |
 | layer `size` | at most 65536 px a side |
 | a layer's texture (its picture at its largest `scale`, in render px) | at most 16384 px a side, so a big `scale` fails at the render size that needs it |
 | `transform.position`, `anchor`, `radius`, `mask.rect`, `mask.feather` | finite, at most 1e9 either way |
@@ -209,7 +210,7 @@ ffcine comp lower story.comp.json      # templates expanded: the explicit layers
 ffcine comp new --template story --media a.mov b.heic c.mov d.heic e.mov f.heic -o story.comp.json
 ```
 
-Built so far: `render`, `still` and `comp check` (step 2); `comp lower` and `comp new` come
+Built so far: `render`, `still` and `comp check` (steps 2 and 3); `comp lower` and `comp new` come
 with templates (step 7). `render` and `still` take a comp wherever they take a timeline (`still` composites every
 layer, where today's still of a timeline draws the top-most clip and the text). It goes through the same
 planner, segment cache, profiles and manifest. A comp has no audio of its own yet
@@ -815,9 +816,7 @@ Each step is one PR, in dependency order. Each keeps the existing tests green an
    transform/anchor/scale/rotation/opacity, `radius`, shape `mask`, `blend`, `fade`, base
    promotion, comp segment keys with sampled values, and the unchanged-input texture reuse.
    **Built.** `ffcine_comp::Comp` reads and validates a comp (JSON or YAML, within the
-   [limits](#limits); keys of later steps,
-   `still`/`text`/`comp` sources, `content`, `crop`, `grade`, `time`, `filter`, `project`,
-   `comps`, `template`, are errors naming the step), `Comp::pieces` cuts it at layer in/out
+   [limits](#limits); keys of later steps are errors naming the step), `Comp::pieces` cuts it at layer in/out
    points, and `Comp::lower` turns a piece into a base input and grade plus `Layer`s. Solids
    are a 1x1 image with `shaders::solid`; a layer's fade is its `shaders::finish` hook, and the
    canvas fade is one more layer on top of the others, a normal-blend solid of `fade_colour` at
@@ -837,9 +836,25 @@ Each step is one PR, in dependency order. Each keeps the existing tests green an
 3. **Media layers**: `content` (the picture inside the box) and `crop`; `still` through libav (HEIC tile grids, `irot`, colour tags -> libplacebo
    conversion; untagged PNG/JPEG as today), decoded once and cached per piece; `text` layers in
    z-order (masks into a texture when covered); nested `comp` in-pass (parametric composite
-   target, depth cap).
-   *Tests*: a HEIC fixture (a small grid file made with ffmpeg's HEIF muxer, or a synthetic
-   grid) decodes to the same pixels as `ffmpeg -i x.heic` CPU-side; a rotated HEIC is upright; a
+   target, depth cap). **Built.** `content` lowers through the reframe window math to a crop
+   (constant) or per-frame `Grade::crops` (`punch`, `push`, `pan` or animated keys), inside
+   `crop`'s sides; a crop `feather` is a feathered rect mask on the picture. A still is
+   decoded once per piece through `backend/io.rs` (so `TileGrid` assembles HEICs and turns
+   them upright), converted by swscale to RGBA64 with its matrix and range, and uploaded;
+   with primaries or a transfer tagged, libplacebo converts it to the output (ICC profiles are
+   dropped), and untagged it is taken as the output's space, like a logo. A text layer is the
+   generator clip's masks as `Overlay`s with `under` set to the next layer up; when a layer
+   covers them they are drawn onto the composite texture between the layers' passes. A nested
+   comp is `LayerSource::Scene` (its size, layers, overlays and canvas grade), rendered each
+   frame into its own texture by the same composite code with that texture as the target,
+   then drawn as a picture. Comp keys cover still fingerprints, text parameters and nested
+   comps' lowered values; timelines plan and render as before (`RENDER_REVISION` stays 8).
+   The GPU test is `crates/ffcine/tests/media_gpu.rs` (the HEIC grid at 52 dB and the
+   `irot` one at 51 dB against ffmpeg's CPU decode, the P3 still at 53 dB against ffmpeg's
+   `libplacebo` filter, the nested comp within 1 code value of the flattened layers, and text
+   under a layer hidden).
+   *Tests*: a HEIC fixture (the synthetic grids in `crates/ffcine-render/testdata/heic`)
+   decodes to the same pixels as `ffmpeg -i x.heic` CPU-side; a rotated HEIC is upright; a
    P3-tagged still converts against libplacebo's reference; a nested comp renders the same as the
    flattened layers it is equivalent to (within 1 code value); text under a layer is hidden
    where expected.
@@ -879,7 +894,8 @@ Each step is one PR, in dependency order. Each keeps the existing tests green an
   parameters from an expression.
 - **Comp audio**: standalone comps render picture only; the plan is `audio: [{source, in,
   source_in, gain_db}]` through `ffcine-audio`. As a timeline clip, the timeline's audio is used.
-- **Time remapping of nested comps** and comp-level speed; frame blending or optical-flow
+- **Time remapping of nested comps** (a nested comp runs at its parent's fps) and comp-level
+  speed; frame blending or optical-flow
   (NVOF) interpolation for slow motion.
 - Motion blur for animated transforms (only the whip has it), 3D/perspective transforms,
   corner pinning.

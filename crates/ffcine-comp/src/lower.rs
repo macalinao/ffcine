@@ -250,7 +250,13 @@ impl Comp {
     }
 
     /// The source windows of a layer with `content` or `crop` over its visible frames `vis`.
-    #[allow(clippy::cast_precision_loss)]
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_wrap,
+        clippy::float_cmp,
+        clippy::many_single_char_names,
+        clippy::too_many_lines
+    )]
     fn framing(
         &self,
         l: &CompLayer,
@@ -529,12 +535,11 @@ impl Comp {
                 }
                 _ => None,
             };
-            let (crop, crops, pic, cropped) = match &framing {
-                Some(f) => (f.crop, f.crops.clone(), f.pic, f.cropped),
-                None => {
-                    let (c, p) = fit(l.fit, src_dims, l.size);
-                    (c, Vec::new(), p, src_dims.unwrap_or(l.size))
-                }
+            let (crop, crops, pic, cropped) = if let Some(f) = &framing {
+                (f.crop, f.crops.clone(), f.pic, f.cropped)
+            } else {
+                let (c, p) = fit(l.fit, src_dims, l.size);
+                (c, Vec::new(), p, src_dims.unwrap_or(l.size))
             };
             let env = self.env(l, cropped);
             let off = [(l.size[0] - pic[0]) / 2.0, (l.size[1] - pic[1]) / 2.0];

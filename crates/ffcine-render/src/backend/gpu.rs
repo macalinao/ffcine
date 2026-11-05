@@ -493,7 +493,7 @@ impl Gpu {
         &mut self,
         sc: &mut SceneRun<'_>,
         local: usize,
-        colors: (pl::pl_color_space, pl::pl_color_space),
+        colors: &(pl::pl_color_space, pl::pl_color_space),
     ) -> Result<()> {
         let at = i64::try_from(local).unwrap_or(i64::MAX);
         let (w, h) = (sc.out.width, sc.out.height);
@@ -502,7 +502,7 @@ impl Gpu {
             if let Some(rect) = lr.layer.rect_at(at, w, h) {
                 let l = usize::try_from(at - lr.layer.from).unwrap_or(0);
                 if !reusable(lr, l) {
-                    self.render_layer(lr, l, colors)?;
+                    self.render_layer(lr, l, *colors)?;
                     lr.rendered = Some(l);
                 }
                 rects.push((n, rect));
@@ -548,7 +548,7 @@ impl Gpu {
                     *last = Some(f);
                 }
             }
-            LayerSrc::Scene(sc) => self.render_scene(sc, local, (color, still))?,
+            LayerSrc::Scene(sc) => self.render_scene(sc, local, &(color, still))?,
             LayerSrc::Image(_) | LayerSrc::Still { .. } => {}
         }
         let grade = &lr.layer.grade;

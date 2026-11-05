@@ -5,10 +5,12 @@
 //! [`ffcine_render::Layer`]s with every track sampled per frame ([`Comp::lower`]). The piece's
 //! key hashes those sampled values, not the track definitions.
 //!
-//! Built (step 2 of the plan): `video` and `solid` layers, placement (`size`, `fit`,
-//! `transform`), `radius`, shape `mask`, `blend`, `fade`, the canvas background and fade, and
-//! base promotion. Stills, text, nested comps, per-layer grades, time remapping and filter graphs
-//! are rejected with the step that adds them.
+//! Built (steps 2 and 3 of the plan): `video`, `still`, `solid`, `text` and nested `comp`
+//! layers, placement (`size`, `fit`, `content`, `crop`, `transform`), `radius`, shape `mask`,
+//! `blend`, `fade`, the canvas background and fade, and base promotion. Text lowers to
+//! [`ffcine_render::Overlay`]s drawn under the next layer up; a nested comp to a
+//! [`ffcine_render::LayerSource::Scene`] composited in the same pass. Per-layer grades, time
+//! remapping and filter graphs are rejected with the step that adds them.
 
 mod lower;
 mod model;
