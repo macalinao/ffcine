@@ -150,6 +150,8 @@ naming the parameter (`ffcine_comp::limits`):
 | a layer's texture (its picture at its largest `scale`, in render px) | at most 16384 px a side, so a big `scale` fails at the render size that needs it |
 | `transform.position`, `anchor`, `radius`, `mask.rect`, `mask.feather` | finite, at most 1e9 either way |
 | `transform.rotation` | finite, at most 1e6 degrees either way |
+| `time.speed` (constants and keys when read, every sampled value when lowered) | finite, at most 100 either way |
+| `time.source`, `time.freeze` | 0 to 3600 s (`source` finite, at most 3600 either way when sampled) |
 | `content.zoom`, `punch.zoom`, `push`, and `zoom` with `crop` together | at most 1e4 |
 | a `still`'s decoded size | at most 16384 px a side and 2^28 (~268M) px in all |
 | layer `id` | a string, unique in the comp |
@@ -418,24 +420,29 @@ is rejected, so no existing file changes meaning. In a timeline effect, `t` is t
   `Ramp::segments`; numeric otherwise). `source` gives `s` directly, `freeze` is a constant `s`,
   and `reverse` is `speed: -1`. `s` is clamped to the source's range; holding the last frame
   past the end is today's behaviour for layers.
-- **Frame picking**: `s(i)` maps to the nearest source frame with the `fps` filter's default rounding
-  (`round=near`), so ramps pick the same frames as today's
-  `setpts` + `fps` prep. The result is a **frame map**, a source frame index per layer frame.
-  `LayerSource::Video` gains `map: Option<Arc<[i64]>>`.
+- **Frame picking**: as the `fps` filter's default rounding (`round=near`) picks, so ramps
+  pick the same frames as today's `setpts` + `fps` prep: moving forward, layer frame `i`
+  shows the last source frame strictly before `s(i + ½)` (a source frame exactly half way
+  rounds to the next layer frame, so speed 2 shows frames 0, 2, 4, …); holding or going back,
+  the source frame nearest `s(i)`. Picks are clamped to the source's frames (its probed
+  average rate and frame count). The result is a **frame map**, a source frame index per layer
+  frame: `LayerSource::Video` has `map: Option<Arc<[i64]>>`, counted from the first frame at
+  or after its `start` (half a frame before the lowest pick).
 - **Decoding** follows the map. The decode thread already pairs frames to output indices. A
   non-decreasing map (speed ≥ 0, freezes, ramps, timelapses) decodes forward and repeats or
   drops frames: NVDEC, no intermediate, frames stay in VRAM. A map that goes backwards
   (reverse, boomerang) reads an **all-intra lossless intermediate** of the source span it
-  covers (NVDEC -> `hevc_nvenc -tune lossless -g 1`, the retime prep's settings plus `-g 1`,
-  cached under `<cache>/prep/` by source fingerprint and span), where each backward step is
-  one seek to one frame.
+  covers (FFV1, every frame a keyframe, in the source's pixel format, so no conversion; cached
+  under `<cache>/prep/` by source fingerprint and span), where each backward step is one seek
+  to one frame. The decoder keeps a window of the last 4 uploaded frames, so short steps back
+  and repeats need no seek; a jump forward of more than 4 s seeks.
 - **Existing schemas are sugar**: `LinearTimeWarp` is `speed`, `FreezeFrame` is `freeze`, and
   `ffcine.time.ramp/1` `points [[u, speed]]` over `source_duration` is speed keys at
   `u·source_duration` mapped to layer time through the same integral. Timeline clips keep
   today's retime prep until a frame-pick parity test passes on the ramp fixtures
   (`exec::tests::ramp_pieces_match_the_whole_clip`). Then the prep is dropped for those clips,
   and if the pixels differ at all (the prep converts to `p010le` through a lossless encode),
-  `RENDER_REVISION` is bumped.
+  `RENDER_REVISION` is bumped. For now timelines stay on the prep ([Not yet](#not-yet)).
 - `ffcine.time.blend/1` (tmix) stays a prep step; it is a stateful filter, in the
   [escape hatch's](#libavfilter-escape-hatch) terms with pre-roll `frames − 1`. Optical-flow
   slow motion (NVOF) is [Not yet](#not-yet).
@@ -921,6 +928,22 @@ Each step is one PR, in dependency order. Each keeps the existing tests green an
    *Tests*: the frame map against ffmpeg's `setpts`+`fps` picks on the ramp fixtures (same
    indices); reverse equals ffmpeg's `reverse` on a short clip (`framemd5`); split pieces of a
    ramped layer equal the unsplit render; keys follow the map slice.
+   **Built**, for comps. `ffcine_comp` reads `time` (strict: one of `speed`, `source`, `freeze`,
+   or `reverse` alone or with `speed`; video layers only), integrates `speed` in closed form
+   for constants and linear or hold keys and with Simpson's rule (8 steps a frame) otherwise,
+   and lowers each piece to a frame map with `ffcine_comp::frame_pick`, the frame rate and
+   length probed through `Media::video_rate`. A remapped layer is never promoted to the base;
+   its key is the source's identity and the map slice it shows (first frame, length and a
+   digest), so a piece re-renders only when its frames change. The decoder follows the map
+   forward (NVDEC, repeats and drops) and reads backward maps from a cached FFV1 all-intra
+   prep (`Renderer::intra_preps`, for comp units in timelines and for `render`/`still` of a
+   comp). Layers without `time` and timelines keep their keys and pixels: `RENDER_REVISION`
+   stays 8, and timeline `LinearTimeWarp`/`FreezeFrame`/`ffcine.time.ramp/1` stay on the
+   retime prep ([Not yet](#not-yet)). Tests: `ffcine-comp`'s unit tests (picks for speeds,
+   reverse, freeze, `source`; keys and split invariance; keys vs expression integrals;
+   bounds) and `crates/ffcine/tests/time_remap.rs` (the maps against `setpts` + `fps` on a
+   source whose frames carry their index, 8 cases; reverse against ffmpeg's `reverse` by
+   `framemd5`; a ramp split in two pieces against one, by `framemd5`).
 6. **libavfilter node**: `filter` on layers and `canvas.filter` in the prep (CPU, CUDA,
    Vulkan), the PTS clock, the statefulness table and `FILTER_TABLE_REVISION`, pre-roll,
    post-roll, whole clip, and the `n` lint.
@@ -952,6 +975,11 @@ Each step is one PR, in dependency order. Each keeps the existing tests green an
 - **Time remapping of nested comps** (a nested comp runs at its parent's fps) and comp-level
   speed; frame blending or optical-flow
   (NVOF) interpolation for slow motion.
+- Timeline `LinearTimeWarp`, `FreezeFrame` and `ffcine.time.ramp/1` as [time
+  remap](#time-remapping) sugar: they keep the retime prep, so timeline keys and pixels are
+  unchanged; switching needs the parity test on the ramp fixtures and a `RENDER_REVISION`
+  bump if pixels move.
+- Time remaps of variable-frame-rate sources: picks assume the probed average rate.
 - Motion blur for animated transforms (only the whip has it), 3D/perspective transforms,
   corner pinning.
 - Layer styles (drop shadow, glow, stroke) and per-layer blur, except as user shaders.
