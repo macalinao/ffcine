@@ -1,0 +1,51 @@
+{
+  "schema": "ffcine.comp/1",
+  "canvas": {
+    "size": [1080, 1920], "fps": "30", "duration": 6.0,
+    "background": [ { "t": 0, "v": [0, 0, 0], "interp": "in_out" }, { "t": 1.0, "v": [1, 1, 1] } ],
+    "fade": "1 - clip((t - 5.6) / 0.4, 0, 1)", "fade_colour": "black"
+  },
+  "vars": { "enter": 0.25, "swap": 2.5, "swap_step": 0.12, "slide": 0.4, "exit": 5.2 },
+  "comps": {
+    "tile0": { "canvas": { "size": [1080, 632], "background": "black" }, "layers": [
+      { "id": "a", "source": { "video": "a.mov" }, "source_in": 12.0, "out": "swap + slide",
+        "grade": { "camera": "auto" },
+        "content": { "zoom": [ { "t": 1.6, "v": 1.0, "interp": "out" }, { "t": 1.75, "v": 1.12 } ] },
+        "transform": { "anchor": [0, 0], "position": ["-w * ease_out((t - swap) / slide)", 0] } },
+      { "id": "d", "source": { "still": "d.heic" }, "in": "swap",
+        "grade": { "camera": "auto" }, "content": { "zoom": "lerp(1, 1.06, lt / dur)" },
+        "transform": { "anchor": [0, 0], "position": ["w * (1 - ease_out(lt / slide))", 0] } } ] },
+    "tile1": { "canvas": { "size": [1080, 632], "background": "black" },
+      "vars": { "s": "swap + swap_step" }, "layers": [
+      { "id": "b", "source": { "still": "b.heic" }, "out": "s + slide",
+        "grade": { "camera": "auto" }, "content": { "zoom": "lerp(1, 1.06, lt / dur)" },
+        "transform": { "anchor": [0, 0], "position": ["-w * ease_out((t - s) / slide)", 0] } },
+      { "id": "e", "source": { "video": "e.mov" }, "source_in": 3.5, "in": "s",
+        "grade": { "camera": "auto" },
+        "transform": { "anchor": [0, 0], "position": ["w * (1 - ease_out(lt / slide))", 0] } } ] },
+    "tile2": { "canvas": { "size": [1080, 632], "background": "black" },
+      "vars": { "s": "swap + 2 * swap_step" }, "layers": [
+      { "id": "c", "source": { "video": "c.mov" }, "out": "s + slide",
+        "grade": { "camera": "auto" },
+        "time": { "speed": [ { "t": 0, "v": 1, "interp": "in_out" },
+                             { "t": 1.0, "v": 2, "interp": "in_out" }, { "t": 2.0, "v": 1 } ] },
+        "transform": { "anchor": [0, 0], "position": ["-w * ease_out((t - s) / slide)", 0] } },
+      { "id": "f", "source": { "still": "f.heic" }, "in": "s",
+        "grade": { "camera": "auto" }, "content": { "zoom": "lerp(1, 1.06, lt / dur)" },
+        "transform": { "anchor": [0, 0], "position": ["w * (1 - ease_out(lt / slide))", 0] } } ] }
+  },
+  "layers": [
+    { "id": "t0", "source": { "comp": "tile0" }, "size": [1080, 632], "radius": 24,
+      "vars": { "i": 0 }, "fade": "ease_out((t - i * enter) / 0.4)", "fade_colour": "black",
+      "transform": { "anchor": [0, 0],
+        "position": ["if(lt(t, exit + i * swap_step), 0, -W * ease_in((t - exit - i * swap_step) / slide))", 0] } },
+    { "id": "t1", "source": { "comp": "tile1" }, "size": [1080, 632], "radius": 24,
+      "vars": { "i": 1 }, "fade": "ease_out((t - i * enter) / 0.4)", "fade_colour": "black",
+      "transform": { "anchor": [0, 0],
+        "position": ["if(lt(t, exit + i * swap_step), 0, -W * ease_in((t - exit - i * swap_step) / slide))", 644] } },
+    { "id": "t2", "source": { "comp": "tile2" }, "size": [1080, 632], "radius": 24,
+      "vars": { "i": 2 }, "fade": "ease_out((t - i * enter) / 0.4)", "fade_colour": "black",
+      "transform": { "anchor": [0, 0],
+        "position": ["if(lt(t, exit + i * swap_step), 0, -W * ease_in((t - exit - i * swap_step) / slide))", 1288] } }
+  ]
+}

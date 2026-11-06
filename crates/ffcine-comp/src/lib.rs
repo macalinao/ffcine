@@ -11,14 +11,19 @@
 //! [`ffcine_render::Overlay`]s drawn under the next layer up; a nested comp to a
 //! [`ffcine_render::LayerSource::Scene`] composited in the same pass. Per-layer grades, time
 //! remapping and filter graphs are rejected with the step that adds them.
+//!
+//! [`templates`] (`layout`, `story`) write a comp out from a few parameters when a comp file
+//! names one (`"template": {...}`).
 
 mod lower;
 mod model;
+pub mod templates;
 mod time;
 
 pub use lower::{Base, Media, Piece};
 pub use model::{
     Canvas, Comp, CompLayer, Fit, MaskShape, SCHEMA, Source, is_comp, is_comp_file, limits,
+    read_document,
 };
 pub use time::pick as frame_pick;
 
