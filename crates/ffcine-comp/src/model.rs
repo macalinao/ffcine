@@ -8,6 +8,7 @@ use ffcine_core::anim::{Clock, Env, Scope, Track, Vars, is_keys};
 use ffcine_core::camera::ProfileChoice;
 use ffcine_core::{Error, Result};
 use ffcine_render::BlendMode;
+use ffcine_render::filter_node::{self as fnode, Hw, MAX_ROLL, Node, Reach};
 use ffcine_timeline::{ClipGrade, Project, Timeline};
 use serde_json::{Map, Value};
 
@@ -240,6 +241,8 @@ pub struct CompLayer {
     pub(crate) grade: Option<LayerGrade>,
     /// `time` (video layers).
     pub(crate) time: Option<crate::time::Remap>,
+    /// `filter`, the libavfilter escape hatch (video layers), and its resolved reach.
+    pub(crate) filter: Option<(Node, Reach)>,
     /// The comp's vars, then the layer's.
     pub(crate) vars: Vars,
 }
@@ -336,6 +339,89 @@ fn check_keys(
         });
     }
     Ok(())
+}
+
+/// Appended to a per-layer `filters` entry the GPU path can't run.
+pub(crate) const FILTER_HINT: &str =
+    "(other libavfilter graphs run through the layer's `filter`, the escape hatch)";
+
+/// A layer's `filter` (`docs/compositing.md#libavfilter-escape-hatch`) and its reach.
+fn filter_node(v: &Value, path: &str, dir: &Path) -> Result<(Node, Reach)> {
+    let m = object(v, path)?;
+    check_keys(
+        m,
+        path,
+        &[
+            "graph",
+            "hw",
+            "clock",
+            "preroll",
+            "postroll",
+            "whole_clip",
+            "timing",
+        ],
+        &[],
+    )?;
+    let at = |k: &str| format!("{path}.{k}");
+    let word = |k: &str| -> Result<Option<&str>> {
+        m.get(k)
+            .map(|v| {
+                v.as_str()
+                    .ok_or_else(|| err(at(k), format!("expected a string, got {v}")))
+            })
+            .transpose()
+    };
+    let graph = word("graph")?
+        .filter(|g| !g.trim().is_empty())
+        .ok_or_else(|| err(at("graph"), "missing (a libavfilter graph)"))?;
+    let hw = match word("hw")? {
+        None => Hw::Cpu,
+        Some(s) => {
+            Hw::parse(s).ok_or_else(|| err(at("hw"), format!("{s:?}: cpu, cuda or vulkan")))?
+        }
+    };
+    let clock = match word("clock")? {
+        None => fnode::Clock::Layer,
+        Some(s) => fnode::Clock::parse(s)
+            .ok_or_else(|| err(at("clock"), format!("{s:?}: layer or comp")))?,
+    };
+    let free_timing = match word("timing")? {
+        None | Some("keep") => false,
+        Some("free") => true,
+        Some(s) => return Err(err(at("timing"), format!("{s:?}: keep or free"))),
+    };
+    let roll = |k: &str| -> Result<Option<u32>> {
+        m.get(k)
+            .map(|v| {
+                v.as_u64()
+                    .and_then(|n| u32::try_from(n).ok())
+                    .filter(|n| *n <= MAX_ROLL)
+                    .ok_or_else(|| err(at(k), format!("{v}: frames, 0 to {MAX_ROLL}")))
+            })
+            .transpose()
+    };
+    let whole_clip = m
+        .get("whole_clip")
+        .map(|v| {
+            v.as_bool()
+                .ok_or_else(|| err(at("whole_clip"), format!("expected true or false, got {v}")))
+        })
+        .transpose()?;
+    let mut node = Node {
+        graph: graph.to_owned(),
+        hw,
+        clock,
+        preroll: roll("preroll")?,
+        postroll: roll("postroll")?,
+        whole_clip,
+        free_timing,
+        files: Vec::new(),
+        run: graph.to_owned(),
+        labelled: false,
+    };
+    let reach = node.resolve().map_err(|e| err(at("graph"), e))?;
+    node.locate(dir).map_err(|e| err(at("graph"), e))?;
+    Ok((node, reach))
 }
 
 fn object<'a>(v: &'a Value, path: &str) -> Result<&'a Map<String, Value>> {
@@ -673,7 +759,7 @@ impl Comp {
             ],
             &[
                 ("grain", "canvas grain, see docs/compositing.md#not-yet"),
-                ("filter", "compositing step 6, libavfilter node"),
+                ("filter", "canvas.filter, see docs/compositing.md#not-yet"),
             ],
         )?;
         let size = match (c.get("size"), &parent) {
@@ -842,15 +928,11 @@ impl Comp {
                 "fade_colour",
                 "grade",
                 "time",
+                "filter",
                 "vars",
             ]
         };
-        check_keys(
-            m,
-            path,
-            known,
-            &[("filter", "compositing step 6, libavfilter node")],
-        )?;
+        check_keys(m, path, known, &[])?;
         let mut vars = self.vars.clone();
         if let Some(v) = m.get("vars") {
             vars.push_level(
@@ -1146,6 +1228,17 @@ impl Comp {
             }
             Some(v) => Some(crate::time::parse(v, &scope, &format!("{path}.time"))?),
         };
+        let filter = match m.get("filter") {
+            None => None,
+            Some(_) if !matches!(source, Source::Video(_)) => {
+                return Err(err(
+                    format!("{path}.filter"),
+                    "only video layers take a filter graph for now (stills and nested comps: \
+                     see docs/compositing.md#not-yet)",
+                ));
+            }
+            Some(v) => Some(filter_node(v, &format!("{path}.filter"), dir)?),
+        };
         let blend = match m.get("blend") {
             None => BlendMode::Normal,
             Some(v) => v
@@ -1183,6 +1276,7 @@ impl Comp {
             },
             grade,
             time,
+            filter,
             vars,
         })
     }
@@ -1353,7 +1447,7 @@ fn layer_grade(v: &Value, scope: &Scope, path: &str) -> Result<LayerGrade> {
         filters.push(match f {
             Value::String(chain) => {
                 ffcine_render::extra::strict_hooks(std::slice::from_ref(chain))
-                    .map_err(|e| err(&fp, e))?;
+                    .map_err(|e| err(&fp, format!("{e} {FILTER_HINT}")))?;
                 FilterSpec::Chain(chain.clone())
             }
             Value::Object(o) if o.len() == 1 => {

@@ -24,7 +24,7 @@ pub struct Filter {
 
 impl Filter {
     /// The value of option `names[0]` (or an alias in `names`), or positional argument `pos`.
-    fn get(&self, names: &[&str], pos: Option<usize>) -> Option<&str> {
+    pub(crate) fn get(&self, names: &[&str], pos: Option<usize>) -> Option<&str> {
         self.args
             .iter()
             .find(|(k, _)| k.as_deref().is_some_and(|k| names.contains(&k)))
@@ -35,7 +35,7 @@ impl Filter {
 
 /// Splits `s` at top-level `sep`, honouring `'...'` quoting and `\` escapes (kept for the next
 /// level).
-fn split(s: &str, sep: char) -> Vec<String> {
+pub(crate) fn split(s: &str, sep: char) -> Vec<String> {
     let mut out = vec![String::new()];
     let (mut quoted, mut escaped) = (false, false);
     for c in s.chars() {

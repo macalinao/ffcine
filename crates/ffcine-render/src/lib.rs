@@ -7,6 +7,7 @@ pub mod bake;
 pub mod blend;
 pub mod encode;
 pub mod extra;
+pub mod filter_node;
 pub mod grade;
 pub mod layer;
 pub mod overlay;

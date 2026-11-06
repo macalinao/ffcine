@@ -702,6 +702,14 @@ impl ffcine_comp::Media for CompMedia<'_> {
     fn identity(&self, path: &Path) -> Value {
         serde_json::to_value(self.fp.fingerprint(path)).unwrap_or(Value::Null)
     }
+    fn ffmpeg_build(&self) -> String {
+        self.fp.ffmpeg_build()
+    }
+    fn content_hash(&self, path: &Path) -> Value {
+        self.fp
+            .content_hash(path)
+            .map_or_else(|| self.identity(path), Value::String)
+    }
     fn profile(&self, path: &Path) -> ffcine_core::Result<ffcine_core::camera::Profile> {
         self.profile
             .map_or(Ok(ffcine_core::camera::Profile::Rec709), |f| f(path))
@@ -1627,6 +1635,55 @@ mod tests {
         // The diff sees it like a timeline edit.
         let d = Diff::new(&a, &b);
         assert!(d.report(&b, false).contains("comp 2.00-4.00 s"));
+    }
+
+    /// [`Fake`] with an ffmpeg build string.
+    struct Build(&'static str);
+    impl Fingerprinter for Build {
+        fn fingerprint(&self, path: &Path) -> Fingerprint {
+            Fake.fingerprint(path)
+        }
+        fn content_hash(&self, path: &Path) -> Option<String> {
+            Fake.content_hash(path)
+        }
+        fn ffmpeg_build(&self) -> String {
+            self.0.into()
+        }
+    }
+
+    /// A new ffmpeg (the injected fingerprinter's build string) re-renders the segments with a
+    /// filter node, and only those.
+    #[test]
+    fn ffmpeg_build_keys_filter_nodes_only() {
+        let comp = ffcine_comp::Comp::from_value(
+            &json!({
+                "schema": "ffcine.comp/1",
+                "canvas": { "size": [1920, 1080], "fps": 30, "duration": 4.0 },
+                "layers": [
+                    { "source": { "video": "a.mov" }, "out": 2.0,
+                      "filter": { "graph": "hqdn3d" } },
+                    { "source": { "video": "b.mov" }, "in": 2.0 },
+                ],
+            }),
+            Path::new("/media"),
+        )
+        .expect("comp");
+        let dims = |_: &Path| Ok((1920, 1080));
+        let rate = |_: &Path| Ok((30.0, 300));
+        let plan = |fp: &dyn Fingerprinter| {
+            let media = CompMedia {
+                fp,
+                dims: &dims,
+                profile: None,
+                rate: Some(&rate),
+            };
+            let profile = Profile::for_canvas("master", 1920, 1080).expect("profile");
+            plan_comp(&comp, &profile, &media).expect("plan")
+        };
+        let (a, b) = (plan(&Build("ffmpeg 8")), plan(&Build("ffmpeg 9")));
+        assert_eq!(a.segments.len(), 2);
+        assert_ne!(a.segments[0].key, b.segments[0].key);
+        assert_eq!(a.segments[1].key, b.segments[1].key);
     }
 
     fn clip(name: &str, file: &str, start: f64, frames: f64, look: &str) -> Item {

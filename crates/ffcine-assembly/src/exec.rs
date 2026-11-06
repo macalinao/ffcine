@@ -619,6 +619,7 @@ impl Renderer<'_> {
             }
             Unit::Comp(p) => {
                 let mut ls = p.layers.clone();
+                self.filter_preps(&mut ls)?;
                 self.intra_preps(&mut ls)?;
                 layers.extend(ls);
                 overlays.extend(p.overlays.iter().cloned());
@@ -654,6 +655,114 @@ impl Renderer<'_> {
             let _ = std::fs::remove_file(t);
         }
         r
+    }
+
+    /// Runs filter nodes (`docs/compositing.md#libavfilter-escape-hatch`) into lossless
+    /// intermediates, cached by the node's key (a whole-clip node's is shared by every piece), and
+    /// points their layers at them. Nested comps' layers too.
+    fn filter_preps(&self, layers: &mut [Layer]) -> Result<()> {
+        for l in layers {
+            match &l.source {
+                LayerSource::Filtered(p) => {
+                    let p = Arc::clone(p);
+                    let out = self.dir("prep")?.join(format!(
+                        "{}.filter.mkv",
+                        Key::of(&json!({"prep": crate::filter_prep::FILTER_PREP, "node": p.key}))
+                    ));
+                    let what = format!("filter node `{}`", p.graph);
+                    Self::atomic(&out, |partial| {
+                        let info = self.backend.probe(&p.input)?;
+                        let (_, v) = info.video().ok_or_else(|| ExecError::Ffmpeg {
+                            what: what.clone(),
+                            log: format!("{}: no video stream", p.input.display()),
+                        })?;
+                        crate::filter_prep::run(
+                            &self.ffmpeg,
+                            &p,
+                            &v.pixel_format,
+                            v.color,
+                            partial,
+                        )
+                        .map_err(|log| ExecError::Ffmpeg {
+                            what: what.clone(),
+                            log,
+                        })?;
+                        let out = self.backend.probe(partial)?;
+                        let got = out.video().map(|(_, v)| (v.width, v.height));
+                        crate::filter_prep::check_dims(got, p.dims).map_err(|log| {
+                            ExecError::Ffmpeg {
+                                what: what.clone(),
+                                log,
+                            }
+                        })?;
+                        if !p.free_timing {
+                            self.check_frames(partial, p.store.len(), &what)?;
+                        }
+                        Ok(())
+                    })?;
+                    let rate = p.rate;
+                    l.source = if p.free_timing {
+                        LayerSource::Video {
+                            input: out,
+                            start: Duration::from_secs_f64(secs(
+                                i64::try_from(p.show.start).unwrap_or(0),
+                                rate,
+                            )),
+                            map: None,
+                        }
+                    } else {
+                        #[allow(clippy::cast_precision_loss)]
+                        let at = (p.show.start as f64 - 0.5) / rate;
+                        LayerSource::Video {
+                            input: out,
+                            start: Duration::from_secs_f64(at.max(0.0)),
+                            map: Some((0..i64::try_from(p.show.len()).unwrap_or(0)).collect()),
+                        }
+                    };
+                }
+                LayerSource::Scene(s) => {
+                    let mut inner = s.layers.clone();
+                    self.filter_preps(&mut inner)?;
+                    if inner != s.layers {
+                        l.source = LayerSource::Scene(Arc::new(ffcine_render::Scene {
+                            layers: inner,
+                            ..(**s).clone()
+                        }));
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Fails unless `path`'s video has `want` frames: a graph that drops or adds frames needs
+    /// `timing: free`.
+    fn check_frames(&self, path: &Path, want: usize, what: &str) -> Result<()> {
+        let out = Command::new(&self.ffmpeg)
+            .args(["-hide_banner", "-nostdin", "-i"])
+            .arg(path)
+            .args(["-map", "0:v:0", "-c", "copy", "-f", "null", "-"])
+            .output()
+            .map_err(io(format!("running {}", self.ffmpeg.to_string_lossy())))?;
+        let log = String::from_utf8_lossy(&out.stderr);
+        let got = log
+            .rsplit("frame=")
+            .next()
+            .and_then(|s| s.split_whitespace().next())
+            .and_then(|n| n.parse::<usize>().ok());
+        if got == Some(want) {
+            return Ok(());
+        }
+        Err(ExecError::Ffmpeg {
+            what: what.into(),
+            log: format!(
+                "the graph gave {} frames for {want}: a graph that changes the frame count or \
+                 timing needs \"timing\": \"free\" in the layer's filter (the layer then takes \
+                 whatever frames it outputs)",
+                got.map_or_else(|| "an unknown number of".into(), |n| n.to_string())
+            ),
+        })
     }
 
     /// Points remapped video layers whose frame map steps back (reverse, boomerang) at an
@@ -859,6 +968,7 @@ impl Renderer<'_> {
             Base::Video { input, start } => (input.clone(), start.as_secs_f64()),
         };
         let mut layers = piece.layers.clone();
+        self.filter_preps(&mut layers)?;
         self.intra_preps(&mut layers)?;
         let mut grade = piece.grade.clone();
         if let Some(c) = output {
