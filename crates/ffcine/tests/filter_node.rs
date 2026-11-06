@@ -70,9 +70,12 @@ fn try_render(
     d: &Path,
     tag: &str,
 ) -> Result<Vec<String>, String> {
-    let ff = backend::Ffmpeg::new().expect("backend");
+    // One backend (one GPU device) for the whole test binary: a device per render leaves
+    // later ones without a CUDA context.
+    static FF: std::sync::OnceLock<backend::Ffmpeg> = std::sync::OnceLock::new();
+    let ff = FF.get_or_init(|| backend::Ffmpeg::new().expect("backend"));
     let probe = |p: &Path| {
-        let info = ffcine::Backend::probe(&ff, p)?;
+        let info = ffcine::Backend::probe(ff, p)?;
         let (_, v) = info.video().expect("video");
         Ok((v.width, v.height))
     };
@@ -87,7 +90,7 @@ fn try_render(
         width: 320,
         height: 180,
     };
-    let r = renderer(d, &ff);
+    let r = renderer(d, ff);
     let mut md5 = Vec::new();
     for (i, range) in pieces.iter().enumerate() {
         let mut piece = c.lower(range.clone(), size, &media).expect("lower");
@@ -240,4 +243,16 @@ fn a_graph_that_resizes_is_an_error() {
     let e = try_render(&c, &[0..60], &d, "dims").expect_err("a resized intermediate");
     assert!(e.contains("keep the layer's size"), "{e}");
     let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+#[ignore = "needs a Vulkan GPU, NVENC and ffmpeg with drawtext and a font"]
+fn a_quoted_semicolon_is_text() {
+    let plain = whole_vs_split("text-null", &json!({ "graph": "null" }), &json!({}));
+    let text = whole_vs_split(
+        "text",
+        &json!({ "graph": "drawtext=text='a;b [in] [out]':fontsize=40:fontcolor=white" }),
+        &json!({}),
+    );
+    assert_ne!(text, plain, "drawtext drew nothing");
 }

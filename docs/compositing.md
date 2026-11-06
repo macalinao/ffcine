@@ -548,8 +548,9 @@ For anything ffcine has no native primitive for, a layer gets a raw libavfilter 
   (default) runs the graph on software frames; `hw: "cuda"` uploads them to CUDA for graphs of
   `*_cuda` filters and `hw: "vulkan"` to Vulkan for `*_vulkan` filters (`avgblur_vulkan`,
   `nlmeans_vulkan`), downloading after. ffcine doesn't guess the mode from the graph. A graph
-  of one chain is spliced in as is; one of several chains (`;`) names its input `[in]` and
-  its output `[out]`. The graph must output one video stream at the input rate with the same
+  of one chain without link labels is spliced in as is; one of several chains (`;`), or with
+  link labels, names its input `[in]` and its output `[out]`. Chains and labels are read as
+  libavfilter reads them: a quoted or escaped `;` or `[in]` (`drawtext=text='a;b'`) is text. The graph must output one video stream at the input rate with the same
   frame count and the source's size (both checked after the run: the layer's `fit`, `crop`
   and `transform` place the picture, so scale, crop and pad there, not in the graph), and the frames are tagged with the source's colour tags
   (`setparams` ahead of the graph), which the graph may change (its own `setparams`).
@@ -597,7 +598,7 @@ For anything ffcine has no native primitive for, a layer gets a raw libavfilter 
   `preroll`/`postroll`/`whole_clip`, `FILTER_TABLE_REVISION` (stateful nodes only), the canvas
   `fps` (the fed rate, which `t` and temporal filters see), the ffmpeg build (the first line of
   `ffmpeg -version` plus its libavfilter version), the contents of every file the graph reads
-  (below; for a `fontsdir`, every file in it), and its inputs: the source fingerprint and the
+  (below; for a `fontsdir`, every file under it, subdirectories too), and its inputs: the source fingerprint and the
   frame-map slice it reads, including pre-roll and post-roll. For a whole-clip node that is the
   whole layer's
   map; with `clock: "comp"` it also includes the layer's `in`. It goes into the layer's recipe,
@@ -625,8 +626,9 @@ For anything ffcine has no native primitive for, a layer gets a raw libavfilter 
     `program_opencl`, `ocr`, `nnedi`, `lensfun`, ...).
   - *Reads*, each resolved against the comp file's directory (not ffmpeg's working directory),
     passed to ffmpeg as an absolute path and keyed by its contents (a missing file is an
-    error): `lut3d`/`lut1d` `file`, `subtitles`/`ass` `filename` and `fontsdir` (every file in
-    the directory keyed), `drawtext` `fontfile` and `textfile`, `vidstabtransform` `input`
+    error): `lut3d`/`lut1d` `file`, `subtitles`/`ass` `filename` and `fontsdir` (every file
+    under the directory keyed, subdirectories too, as libass and fontconfig search them; past
+    4096 files or 1 GiB it's an error), `drawtext` `fontfile` and `textfile`, `vidstabtransform` `input`
     (required: its default name would be read from the working directory), `curves` and
     `selectivecolor` `psfile`, `removelogo` `filename`; named or at ffmpeg's positional index.
     `haldclut` takes its LUT as a second graph input, not a file. `curves` `plot` writes, so

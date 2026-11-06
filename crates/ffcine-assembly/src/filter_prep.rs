@@ -111,7 +111,7 @@ fn tags(c: ColorSpace) -> String {
 }
 
 /// The second process's filtergraph: tag, clock, (upload,) the user's graph, (download,) trim.
-/// A graph of several chains names its ends `[in]` and `[out]`.
+/// A graph of several chains, or with link labels, names its ends `[in]` and `[out]`.
 pub(crate) fn filtergraph(p: &Prep, color: ColorSpace, carrier: &str) -> String {
     let mut pre = Vec::new();
     let t = tags(color);
@@ -133,7 +133,7 @@ pub(crate) fn filtergraph(p: &Prep, color: ColorSpace, carrier: &str) -> String 
     }
     post.push("setpts=PTS-STARTPTS".into());
     let (pre, post) = (pre.join(","), post.join(","));
-    if p.graph.contains(';') {
+    if p.labelled {
         format!("[0:v]{pre}[in];{};[out]{post}[fo]", p.graph)
     } else {
         format!("[0:v]{pre},{},{post}[fo]", p.graph)
@@ -469,6 +469,7 @@ mod tests {
     fn prep(graph: &str) -> Prep {
         Prep {
             graph: graph.into(),
+            labelled: ffcine_render::filter_node::labelled(graph).unwrap(),
             hw: Hw::Cpu,
             free_timing: false,
             input: "a.mov".into(),
@@ -491,6 +492,17 @@ mod tests {
             "[0:v]setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709,\
              setpts=PTS+7,tmix=frames=3,trim=start_frame=2:end_frame=5,setpts=PTS-STARTPTS[fo]"
         );
+        // A quoted `;` or label is text: the single-chain wrapper.
+        for g in ["drawtext=text='a;b'", "drawtext=text='[in] [out]'"] {
+            assert_eq!(
+                filtergraph(&prep(g), c, "yuv420p"),
+                format!(
+                    "[0:v]setparams=range=tv:color_primaries=bt709:color_trc=bt709:\
+                     colorspace=bt709,setpts=PTS+7,{g},trim=start_frame=2:end_frame=5,\
+                     setpts=PTS-STARTPTS[fo]"
+                )
+            );
+        }
         let mut p = prep("[in]split[a][b];[a][b]blend=all_mode=average[out]");
         p.hw = Hw::Cuda;
         p.free_timing = true;

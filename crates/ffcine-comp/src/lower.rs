@@ -659,6 +659,7 @@ impl Comp {
         );
         let prep = Prep {
             graph: node.run.clone(),
+            labelled: node.labelled,
             dims: media.dims(p)?,
             hw: node.hw,
             free_timing: node.free_timing,

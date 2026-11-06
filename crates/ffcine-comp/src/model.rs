@@ -417,6 +417,7 @@ fn filter_node(v: &Value, path: &str, dir: &Path) -> Result<(Node, Reach)> {
         free_timing,
         files: Vec::new(),
         run: graph.to_owned(),
+        labelled: false,
     };
     let reach = node.resolve().map_err(|e| err(at("graph"), e))?;
     node.locate(dir).map_err(|e| err(at("graph"), e))?;

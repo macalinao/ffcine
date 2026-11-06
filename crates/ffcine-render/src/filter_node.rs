@@ -79,8 +79,8 @@ impl Clock {
 /// A raw libavfilter graph on a layer (`filter`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Node {
-    /// The graph text, verbatim. A graph of several chains (`;`) names its input `[in]` and
-    /// its output `[out]`.
+    /// The graph text, verbatim. A graph of several chains (`;`), or one with link labels,
+    /// names its input `[in]` and its output `[out]`.
     pub graph: String,
     pub hw: Hw,
     pub clock: Clock,
@@ -96,6 +96,9 @@ pub struct Node {
     pub files: Vec<PathBuf>,
     /// The graph as ffmpeg runs it: `graph` with each file it reads made absolute.
     pub run: String,
+    /// Whether `run` names its ends `[in]` and `[out]` (several chains, or link labels), as the
+    /// tokenizer reads it: set by [`locate`](Self::locate).
+    pub labelled: bool,
 }
 
 /// How far a graph reads around the frames it outputs.
@@ -229,19 +232,24 @@ struct Parsed {
     opts: Option<Range<usize>>,
     /// Its chain's index.
     chain: usize,
+    /// The link labels before it and after it.
+    labels_in: Vec<String>,
+    labels_out: Vec<String>,
 }
 
-/// Link labels (`[a][b]`), as libavfilter's `linklabels_parse` skips them.
-fn labels(b: &[u8], i: &mut usize) -> Result<(), String> {
+/// Link labels (`[a][b]`), as libavfilter's `linklabels_parse` reads them.
+fn labels(b: &[u8], i: &mut usize) -> Result<Vec<String>, String> {
+    let mut v = Vec::new();
     while b.get(*i) == Some(&b'[') {
         *i += 1;
         let l = token(b, i, b"]")?;
         if l.is_empty() || b.get(*i) != Some(&b']') {
             return Err("an empty or unclosed link label".into());
         }
+        v.push(l);
         *i = skip_ws(b, *i + 1);
     }
-    Ok(())
+    Ok(v)
 }
 
 /// A graph's filters, as libavfilter's `avfilter_graph_segment_parse` splits it: chains at `;`,
@@ -256,7 +264,7 @@ fn parse_graph(graph: &str) -> Result<Vec<Parsed>, String> {
     let (mut out, mut chain) = (Vec::new(), 0);
     while i < b.len() {
         loop {
-            labels(b, &mut i)?;
+            let labels_in = labels(b, &mut i)?;
             let name = token(b, &mut i, b"=,;[")?;
             let name = name.split_once('@').map_or(name.as_str(), |(n, _)| n);
             if !ident(name) {
@@ -270,7 +278,7 @@ fn parse_graph(graph: &str) -> Result<Vec<Parsed>, String> {
                 opts = Some(start..i);
                 args = options(&t).map_err(|e| format!("{name}: {e}"))?;
             }
-            labels(b, &mut i)?;
+            let labels_out = labels(b, &mut i)?;
             i = skip_ws(b, i);
             out.push(Parsed {
                 filter: Filter {
@@ -279,6 +287,8 @@ fn parse_graph(graph: &str) -> Result<Vec<Parsed>, String> {
                 },
                 opts,
                 chain,
+                labels_in,
+                labels_out,
             });
             match b.get(i) {
                 None => break,
@@ -302,6 +312,24 @@ fn parse_graph(graph: &str) -> Result<Vec<Parsed>, String> {
         return Err("an empty graph".into());
     }
     Ok(out)
+}
+
+/// Whether a graph, read as libavfilter reads it, has several chains or link labels: then it
+/// names its ends `[in]` and `[out]` and runs in the multi-chain wrapper.
+fn is_labelled(parsed: &[Parsed]) -> bool {
+    parsed.last().is_some_and(|p| p.chain > 0)
+        || parsed
+            .iter()
+            .any(|p| !p.labels_in.is_empty() || !p.labels_out.is_empty())
+}
+
+/// Whether `graph` names its ends `[in]` and `[out]`: it has several chains or link labels, as
+/// libavfilter reads it (a quoted or escaped `;` or `[` is text, not structure).
+///
+/// # Errors
+/// Text that isn't a filter graph.
+pub fn labelled(graph: &str) -> Result<bool, String> {
+    Ok(is_labelled(&parse_graph(graph)?))
 }
 
 /// The filters of a graph, link labels dropped, read as libavfilter reads them.
@@ -340,7 +368,7 @@ pub fn changes_timing(name: &str) -> bool {
 pub enum Use {
     /// Reads it: resolved against the comp's directory, its contents keyed.
     Read,
-    /// Reads the files in that directory (`fontsdir`): each one's contents keyed.
+    /// Reads the files under that directory, recursively (`fontsdir`): each one's contents keyed.
     ReadDir,
     /// Writes it: refused.
     Write,
@@ -741,11 +769,19 @@ impl Node {
     /// frame counter (`n`) outside a whole-clip node.
     pub fn resolve(&self) -> Result<Reach, String> {
         let parsed = parse_graph(&self.graph)?;
-        let chains = parsed.last().map_or(0, |p| p.chain + 1);
-        let filters: Vec<Filter> = parsed.into_iter().map(|p| p.filter).collect();
-        if chains > 1 && !(self.graph.contains("[in]") && self.graph.contains("[out]")) {
-            return Err("a graph of several chains names its input [in] and output [out]".into());
+        if is_labelled(&parsed)
+            && !(parsed.iter().any(|p| p.labels_in.iter().any(|l| l == "in"))
+                && parsed
+                    .iter()
+                    .any(|p| p.labels_out.iter().any(|l| l == "out")))
+        {
+            return Err(
+                "a graph of several chains, or with link labels, names its input [in] and \
+                 output [out]"
+                    .into(),
+            );
         }
+        let filters: Vec<Filter> = parsed.into_iter().map(|p| p.filter).collect();
         let mut r = Reach::default();
         for f in &filters {
             policy(f)?;
@@ -805,13 +841,7 @@ impl Node {
             match u {
                 Use::Read if p.is_file() => files.push(p.clone()),
                 Use::ReadDir if p.is_dir() => {
-                    let mut d = std::fs::read_dir(&p)
-                        .map_err(|e| format!("{}: {e}", p.display()))?
-                        .filter_map(|e| e.ok().map(|e| e.path()))
-                        .filter(|e| e.is_file())
-                        .collect::<Vec<_>>();
-                    d.sort();
-                    files.extend(d);
+                    files.extend(tree(&p).map_err(|e| format!("{}: {e}", f.name))?);
                 }
                 Use::Read => return Err(format!("{}: {}: no such file", f.name, p.display())),
                 Use::ReadDir => {
@@ -823,10 +853,56 @@ impl Node {
                 .map(str::to_owned)
                 .ok_or_else(|| format!("{}: {}: not UTF-8", f.name, p.display()))
         })?;
+        self.labelled = is_labelled(&parse_graph(&run)?);
         self.files = files;
         self.run = run;
         Ok(())
     }
+}
+
+/// Files under a directory a filter reads (`fontsdir`), at most.
+const MAX_TREE_FILES: usize = 4096;
+/// Their total size, at most (bytes).
+const MAX_TREE_BYTES: u64 = 1 << 30;
+
+/// The files under `dir`, recursively (libass and fontconfig search subdirectories), sorted,
+/// files only (links followed).
+///
+/// # Errors
+/// An unreadable directory, or more than [`MAX_TREE_FILES`] files or [`MAX_TREE_BYTES`] bytes.
+fn tree(dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let (mut out, mut todo, mut bytes, mut dirs) = (Vec::new(), vec![dir.to_owned()], 0u64, 0);
+    while let Some(d) = todo.pop() {
+        // Counts directories too: a link loop ends here.
+        dirs += 1;
+        if dirs > MAX_TREE_FILES {
+            return Err(format!(
+                "{}: more than {MAX_TREE_FILES} directories",
+                dir.display()
+            ));
+        }
+        let rd = std::fs::read_dir(&d).map_err(|e| format!("{}: {e}", d.display()))?;
+        for e in rd {
+            let p = e.map_err(|e| format!("{}: {e}", d.display()))?.path();
+            let m = std::fs::metadata(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+            if m.is_dir() {
+                todo.push(p);
+            } else if m.is_file() {
+                bytes += m.len();
+                out.push(p);
+                if out.len() > MAX_TREE_FILES || bytes > MAX_TREE_BYTES {
+                    return Err(format!(
+                        "{}: more than {MAX_TREE_FILES} files or {} MiB: point it at a \
+                         smaller directory",
+                        dir.display(),
+                        MAX_TREE_BYTES >> 20
+                    ));
+                }
+            }
+        }
+    }
+    out.sort();
+    Ok(out)
 }
 
 /// A filter node's run for one piece of a layer, for the renderer to make before the GPU pass:
@@ -835,6 +911,8 @@ impl Node {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Prep {
     pub graph: String,
+    /// The graph names its ends `[in]` and `[out]` ([`Node::labelled`]).
+    pub labelled: bool,
     pub hw: Hw,
     pub free_timing: bool,
     /// The source video.
@@ -873,6 +951,7 @@ mod tests {
             free_timing: false,
             files: Vec::new(),
             run: g.into(),
+            labelled: labelled(g).unwrap_or_default(),
         }
     }
 
@@ -936,6 +1015,32 @@ mod tests {
                 .is_ok()
         );
         assert!(node("").resolve().is_err());
+    }
+
+    #[test]
+    fn chains_and_labels_come_from_the_tokenizer() {
+        for g in [
+            "drawtext=text='a;b'",
+            "drawtext=text='[in] [out]'",
+            "drawtext=text=a\\;b",
+            "eq=gamma=1.1,drawtext=text='x;[y]'",
+        ] {
+            assert!(!labelled(g).unwrap(), "{g}");
+            node(g).resolve().unwrap_or_else(|e| panic!("{g}: {e}"));
+        }
+        for g in [
+            "[in]split[a][b];[a][b]blend=all_mode=average[out]",
+            "[in]eq[out]",
+        ] {
+            assert!(labelled(g).unwrap(), "{g}");
+            node(g).resolve().unwrap_or_else(|e| panic!("{g}: {e}"));
+        }
+        // Quoted labels aren't labels.
+        let e = node("split[a][b];[a][b]blend,drawtext=text='[in] [out]'")
+            .resolve()
+            .unwrap_err();
+        assert!(e.contains("[in]"), "{e}");
+        assert!(node("[x]eq[out]").resolve().is_err());
     }
 
     #[test]
@@ -1106,6 +1211,7 @@ mod tests {
             "[in]lut3d='my luts/a,b.cube':interp=tetrahedral[x];[x]drawtext=textfile=t.txt:x=1[out]",
         );
         n.locate(&dir).unwrap();
+        assert!(n.labelled);
         assert_eq!(n.files, [dir.join("my luts/a,b.cube"), dir.join("t.txt")]);
         let d = escape(&escape(&dir.to_string_lossy(), "':="), "'[],;");
         assert_eq!(
@@ -1119,6 +1225,22 @@ mod tests {
         let mut n = node("eq=gamma=1.1, hue=s=0");
         n.locate(&dir).unwrap();
         assert_eq!(n.run, "eq=gamma=1.1, hue=s=0");
+        assert!(!n.labelled);
+        // fontsdir: every file under it, subdirectories too, sorted.
+        std::fs::create_dir_all(dir.join("fonts/sub")).unwrap();
+        std::fs::write(dir.join("fonts/a.ttf"), "a").unwrap();
+        std::fs::write(dir.join("fonts/sub/b.otf"), "b").unwrap();
+        std::fs::write(dir.join("s.srt"), "").unwrap();
+        let mut n = node("subtitles=s.srt:fontsdir=fonts");
+        n.locate(&dir).unwrap();
+        assert_eq!(
+            n.files,
+            [
+                dir.join("s.srt"),
+                dir.join("fonts/a.ttf"),
+                dir.join("fonts/sub/b.otf")
+            ]
+        );
         let e = node("lut3d=missing.cube").locate(&dir).unwrap_err();
         assert!(e.contains("no such file"), "{e}");
         let e = node("vidstabtransform=smoothing=10")

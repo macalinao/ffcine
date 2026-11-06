@@ -262,7 +262,7 @@ pub const COMP_CHECK: &str = concat!(
         "          postroll, whole_clip, timing: free}, a raw libavfilter graph run in the prep",
         "          (lossless intermediate); t is the layer's (or comp's) time in every piece;",
         "          stateful filters get rolls or the whole clip from a known table; n is an",
-        "          error unless whole_clip; several chains name their ends [in] and [out];",
+        "          error unless whole_clip; several chains or labels name ends [in] and [out];",
         "          the graph keeps the layer's size and frame count; only allowlisted",
         "          filters run (docs/compositing.md): pixel filters, plus readers (lut3d, lut1d,",
         "          subtitles, ass, drawtext, ...) whose files resolve against the comp's dir",
