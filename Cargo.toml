@@ -7,7 +7,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/talaagent/ffcine"
@@ -20,25 +20,25 @@ rust-version = "1.85"
 
 [workspace.dependencies]
 # Internal crates
-ffcine = { path = "crates/ffcine", version = "0.3.0", default-features = false }
-ffcine-core = { path = "crates/ffcine-core", version = "0.3.0" }
-ffcine-timeline = { path = "crates/ffcine-timeline", version = "0.3.0" }
-ffcine-import = { path = "crates/ffcine-import", version = "0.3.0" }
-ffcine-stabilize = { path = "crates/ffcine-stabilize", version = "0.3.0", default-features = false }
-ffcine-render = { path = "crates/ffcine-render", version = "0.3.0", default-features = false }
-ffcine-filters = { path = "crates/ffcine-filters", version = "0.3.0" }
-ffcine-reframe = { path = "crates/ffcine-reframe", version = "0.3.0" }
-ffcine-audio = { path = "crates/ffcine-audio", version = "0.3.0", default-features = false }
-ffcine-assembly = { path = "crates/ffcine-assembly", version = "0.3.0" }
-ffcine-comp = { path = "crates/ffcine-comp", version = "0.3.0" }
-ffcine-hooks = { path = "crates/ffcine-hooks", version = "0.3.0" }
-ffcine-ingest = { path = "crates/ffcine-ingest", version = "0.3.0" }
-ffcine-text = { path = "crates/ffcine-text", version = "0.3.0" }
-ffcine-delivery = { path = "crates/ffcine-delivery", version = "0.3.0" }
-ffcine-triage = { path = "crates/ffcine-triage", version = "0.3.0", default-features = false }
-ffcine-breakdown = { path = "crates/ffcine-breakdown", version = "0.3.0", default-features = false }
+ffcine = { path = "crates/ffcine", version = "0.4.0", default-features = false }
+ffcine-core = { path = "crates/ffcine-core", version = "0.4.0" }
+ffcine-timeline = { path = "crates/ffcine-timeline", version = "0.4.0" }
+ffcine-import = { path = "crates/ffcine-import", version = "0.4.0" }
+ffcine-stabilize = { path = "crates/ffcine-stabilize", version = "0.4.0", default-features = false }
+ffcine-render = { path = "crates/ffcine-render", version = "0.4.0", default-features = false }
+ffcine-filters = { path = "crates/ffcine-filters", version = "0.4.0" }
+ffcine-reframe = { path = "crates/ffcine-reframe", version = "0.4.0" }
+ffcine-audio = { path = "crates/ffcine-audio", version = "0.4.0", default-features = false }
+ffcine-assembly = { path = "crates/ffcine-assembly", version = "0.4.0" }
+ffcine-comp = { path = "crates/ffcine-comp", version = "0.4.0" }
+ffcine-hooks = { path = "crates/ffcine-hooks", version = "0.4.0" }
+ffcine-ingest = { path = "crates/ffcine-ingest", version = "0.4.0" }
+ffcine-text = { path = "crates/ffcine-text", version = "0.4.0" }
+ffcine-delivery = { path = "crates/ffcine-delivery", version = "0.4.0" }
+ffcine-triage = { path = "crates/ffcine-triage", version = "0.4.0", default-features = false }
+ffcine-breakdown = { path = "crates/ffcine-breakdown", version = "0.4.0", default-features = false }
 # Published as ffcine-libplacebo-sys (libplacebo-sys on crates.io is an unrelated 2019 crate).
-libplacebo-sys = { package = "ffcine-libplacebo-sys", path = "crates/libplacebo-sys", version = "0.3.0" }
+libplacebo-sys = { package = "ffcine-libplacebo-sys", path = "crates/libplacebo-sys", version = "0.4.0" }
 
 # External
 anyhow = "1"
