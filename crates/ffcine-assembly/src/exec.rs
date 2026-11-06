@@ -1059,6 +1059,7 @@ impl Renderer<'_> {
             source: LayerSource::Video {
                 input,
                 start: Duration::from_secs_f64(start.max(0.0)),
+                map: None,
             },
             grade,
             from,
@@ -1120,6 +1121,7 @@ impl Renderer<'_> {
                     LayerSource::Video {
                         input,
                         start: Duration::from_secs_f64(start.max(0.0)),
+                        map: None,
                     },
                     iw,
                     ih,

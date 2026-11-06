@@ -35,6 +35,8 @@ pub(crate) struct Input {
     grid: Option<((u32, u32), Option<Frame>)>,
     /// A single-image HEIF item's clockwise `irot` (frames are decoded as coded).
     rotation: u32,
+    /// Where it was opened (before any lead).
+    start: Duration,
 }
 
 // SAFETY: used by one thread at a time.
@@ -108,6 +110,7 @@ impl Input {
                 trim: i64::MIN,
                 grid: None,
                 rotation: 0,
+                start,
             };
             check(
                 ff::avformat_find_stream_info(fmt, ptr::null_mut()),
@@ -183,6 +186,55 @@ impl Input {
             }
             Ok(this)
         }
+    }
+
+    /// Where [`Input::open`] started it.
+    pub(crate) fn start(&self) -> Duration {
+        self.start
+    }
+
+    /// The stream's average frame rate (the decoder's guess when the container has none).
+    pub(crate) fn avg_rate(&self) -> f64 {
+        // SAFETY: valid contexts; the stream index came from av_find_best_stream.
+        let r = unsafe {
+            (**(*self.fmt)
+                .streams
+                .add(usize::try_from(self.stream).unwrap_or(0)))
+            .avg_frame_rate
+        };
+        let d = self.decoder().framerate;
+        let q = if r.num > 0 && r.den > 0 { r } else { d };
+        if q.num > 0 && q.den > 0 {
+            f64::from(q.num) / f64::from(q.den)
+        } else {
+            25.0
+        }
+    }
+
+    /// Seeks again, to `at` (source time from the container's start, like `-ss`): the
+    /// keyframe at or before it, the decoder flushed, frames before `at` to be dropped by the
+    /// caller through [`Input::trim`].
+    pub(crate) fn seek(&mut self, at: Duration) -> Result<()> {
+        if self.grid.is_some() {
+            return Ok(());
+        }
+        // SAFETY: valid contexts.
+        unsafe {
+            let base = if (*self.fmt).start_time == ff::AV_NOPTS_VALUE {
+                0
+            } else {
+                (*self.fmt).start_time
+            };
+            let ts = base + i64::try_from(at.as_micros()).unwrap_or(i64::MAX);
+            check(
+                ff::avformat_seek_file(self.fmt, -1, i64::MIN, ts, ts, 0),
+                "seek",
+            )?;
+            ff::avcodec_flush_buffers(self.dec.as_ptr());
+            self.eof = false;
+            self.trim = super::retime::rescale_near(ts, Q::new(1, 1_000_000), self.tb);
+        }
+        Ok(())
     }
 
     pub(crate) fn decoder(&self) -> &ff::AVCodecContext {

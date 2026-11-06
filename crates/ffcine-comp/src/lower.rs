@@ -27,6 +27,7 @@ use crate::model::{
     Comp, CompLayer, CropSpec, FilterOpt, FilterSpec, Fit, LayerGrade, MaskShape, Scale, Source,
     err, limits,
 };
+use crate::time;
 
 /// What lowering needs to know about media files.
 pub trait Media {
@@ -37,6 +38,13 @@ pub trait Media {
     /// A video's or still's camera profile for `camera: auto` ([`Profile::detect_file`]).
     fn profile(&self, _path: &Path) -> Result<Profile> {
         Ok(Profile::Rec709)
+    }
+    /// A video's average frame rate and frame count, for time remapping.
+    fn video_rate(&self, path: &Path) -> Result<(f64, u64)> {
+        Err(err(
+            path.display().to_string(),
+            "the frame rate is unknown (needed for a time remap)",
+        ))
     }
     /// `profile`'s camera LUT (`None` for display-referred profiles).
     fn camera_lut(&self, profile: Profile) -> Result<Option<CameraLut>> {
@@ -75,6 +83,23 @@ pub struct Piece {
 #[allow(clippy::cast_possible_truncation)]
 fn frame_at(t: f64, fps: f64) -> i64 {
     (t * fps - 1e-6).ceil() as i64
+}
+
+/// A frame map in a key: its first frame and a digest of all of them.
+fn map_digest(picks: &[i64]) -> Value {
+    let mut h = Sha256::new();
+    for k in picks {
+        h.update(k.to_le_bytes());
+    }
+    let d = h.finalize();
+    json!({
+        "first": picks.first(),
+        "frames": picks.len(),
+        "digest": d[..16].iter().fold(String::new(), |mut s, b| {
+            let _ = write!(s, "{b:02x}");
+            s
+        }),
+    })
 }
 
 /// `values` in a key: the value if they're all equal, else a digest of their bits.
@@ -1082,12 +1107,39 @@ impl Comp {
 
             let (mut crop, mut crops) = (crop, crops);
             let mut scene = None;
+            let mut remap = None;
             let src = match (&l.source, &solid) {
+                (Source::Video(p), _) if let Some(t) = &l.time => {
+                    let (rate, n) = media.video_rate(p)?;
+                    if !(rate.is_finite() && rate > 0.0 && n > 0) {
+                        return Err(err(
+                            at("time"),
+                            format!("{}: no frames or frame rate to remap", p.display()),
+                        ));
+                    }
+                    let picks: Vec<i64> = time::source_times(t, &env, vis.clone(), &at("time"))?
+                        .into_iter()
+                        .map(|(s, mid)| time::pick(s, mid, rate, n))
+                        .collect();
+                    let lo = picks.iter().copied().min().unwrap_or(0);
+                    // Which source frames the piece shows: its key.
+                    remap = Some(json!({
+                        "video": media.identity(p),
+                        "map": map_digest(&picks),
+                    }));
+                    LayerSource::Video {
+                        input: p.clone(),
+                        // Half a frame early: the decoder keeps the first frame at or after it.
+                        start: Duration::from_secs_f64(((lo as f64 - 0.5) / rate).max(0.0)),
+                        map: Some(picks.iter().map(|k| k - lo).collect()),
+                    }
+                }
                 (Source::Video(p), _) => {
                     let st = l.source_in + vis.start as f64 / self.canvas.fps - l.in_;
                     LayerSource::Video {
                         input: p.clone(),
                         start: Duration::from_secs_f64(st.max(0.0)),
+                        map: None,
                     }
                 }
                 (Source::Still(p), _) => LayerSource::Still(p.clone()),
@@ -1152,6 +1204,7 @@ impl Comp {
             let promote = top
                 && i == 0
                 && matches!(l.source, Source::Video(_))
+                && l.time.is_none()
                 && l.blend == BlendMode::Normal
                 && vis == range
                 && !has_mask
@@ -1160,7 +1213,7 @@ impl Comp {
                 && s.rotation.iter().all(|r| r % 360.0 == 0.0)
                 && s.rects.iter().all(covers);
             if promote {
-                let LayerSource::Video { input, start } = src else {
+                let LayerSource::Video { input, start, .. } = src else {
                     unreachable!()
                 };
                 let mut r = json!({
@@ -1210,7 +1263,7 @@ impl Comp {
             };
             let mut r = json!({
                 "source": match &layer.source {
-                    LayerSource::Video { input, start } => json!({"video": media.identity(input), "start": start.as_secs_f64()}),
+                    LayerSource::Video { input, start, .. } => remap.take().unwrap_or_else(|| json!({"video": media.identity(input), "start": start.as_secs_f64()})),
                     LayerSource::Image(_) => json!("solid"),
                     LayerSource::Still(p) => json!({"still": media.identity(p)}),
                     LayerSource::Scene(_) => scene.take().unwrap_or_default(),

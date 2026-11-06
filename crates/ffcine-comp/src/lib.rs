@@ -14,11 +14,13 @@
 
 mod lower;
 mod model;
+mod time;
 
 pub use lower::{Base, Media, Piece};
 pub use model::{
     Canvas, Comp, CompLayer, Fit, MaskShape, SCHEMA, Source, is_comp, is_comp_file, limits,
 };
+pub use time::pick as frame_pick;
 
 #[cfg(test)]
 mod tests;

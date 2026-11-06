@@ -197,9 +197,12 @@ impl Gpu {
             let grade = &grade;
             let layer_dec: Vec<_> = layer_inputs
                 .into_iter()
-                .map(|(inp, n, tx, g)| {
+                .map(|(inp, n, tx, g, map)| {
                     let vk = vulkan.clone();
-                    sc.spawn(move || decode_loop(inp, rate, n, &vk, g, &tx))
+                    sc.spawn(move || match map {
+                        Some(m) => decode_map(inp, m, &vk, g, &tx),
+                        None => decode_loop(inp, rate, n, &vk, g, &tx),
+                    })
                 })
                 .collect();
             let dec = sc.spawn(move || {
@@ -425,12 +428,12 @@ impl Gpu {
         let mut runs = Vec::new();
         for l in layers {
             let (src, lw, lh) = match &l.source {
-                LayerSource::Video { input, start } => {
+                LayerSource::Video { input, start, map } => {
                     let inp = Input::open(input, *start, dec_device)?;
                     let (lw, lh) = inp.size();
                     let (tx, rx) = sync_channel::<Frame>(DEPTH);
                     let want = u64::try_from(l.to - l.from).unwrap_or(0);
-                    inputs.push((inp, want, tx, &l.grade));
+                    inputs.push((inp, want, tx, &l.grade, map.as_deref()));
                     (LayerSrc::Video { rx, last: None }, lw, lh)
                 }
                 LayerSource::Image(img) => (
@@ -964,8 +967,8 @@ struct SceneRun<'a> {
     out: RgbaTex,
 }
 
-/// A layer video's decoder: input, frames wanted, where they go, its grade.
-type LayerInput<'a> = (Input, u64, SyncSender<Frame>, &'a Grade);
+/// A layer video's decoder: input, frames wanted, where they go, its grade, its frame map.
+type LayerInput<'a> = (Input, u64, SyncSender<Frame>, &'a Grade, Option<&'a [i64]>);
 
 /// A layer or a text overlay, in drawing order.
 #[derive(Clone, Copy)]
@@ -1324,6 +1327,111 @@ fn decode_lead(
     tx: &SyncSender<(Frame, bool)>,
 ) -> Result<()> {
     decode_frames(input, rate, lead, want, vulkan, grade, tx, |f, l| (f, l))
+}
+
+/// Frames a map-following decoder keeps around, newest last, for repeats and short steps back.
+const MAP_WINDOW: usize = 4;
+
+/// A step forward past this many source seconds seeks instead of decoding through.
+const MAP_JUMP: f64 = 4.0;
+
+/// Sends source frame `map[i]` for each layer frame `i` (frames counted on the source's rate
+/// from the first one `input` keeps, 0). Forward steps decode on, repeating or dropping frames;
+/// a step back (or a long jump) seeks and keeps the [`MAP_WINDOW`] frames up to the one needed,
+/// so a reverse run seeks once per window (once per frame's worth of work on an all-intra
+/// file). Past the source's end the last frame holds.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss
+)]
+fn decode_map(
+    mut input: Input,
+    map: &[i64],
+    vulkan: &BufferRef,
+    grade: &Grade,
+    tx: &SyncSender<Frame>,
+) -> Result<()> {
+    let fr = input.avg_rate();
+    let start = input.start();
+    let mut vk_in: Option<BufferRef> = None;
+    // Index 0's pts, and the frame index of a pts on the source's rate.
+    let mut p0: Option<i64> = None;
+    let tb = input.tb;
+    let index = |pts: i64, p0: i64| -> i64 {
+        ((pts - p0) as f64 * tb.num as f64 / tb.den as f64 * fr).round() as i64
+    };
+    let mut window: std::collections::VecDeque<(i64, Frame)> = std::collections::VecDeque::new();
+    let mut last: Option<i64> = None;
+    let mut eof = false;
+    let (mut t_dec, mut t_up) = (Busy::new("decode"), Busy::new("upload"));
+    let seek = |input: &mut Input, to: i64| -> Result<()> {
+        // Half a frame early: the trim keeps the frame at `to` whatever the pts rounding.
+        let at = start + Duration::from_secs_f64(((to as f64 - 0.5) / fr).max(0.0));
+        input.seek(at)
+    };
+    for &m in map {
+        let m = m.max(0);
+        loop {
+            // The newest frame at or before `m`, once nothing later than it can come before `m`.
+            if (eof || last.is_some_and(|l| l >= m))
+                && let Some((_, f)) = window
+                    .iter()
+                    .rev()
+                    .find(|(i, _)| *i <= m)
+                    .or_else(|| window.back().filter(|_| eof))
+            {
+                if tx.send(f.clone()).is_err() {
+                    return Ok(());
+                }
+                break;
+            }
+            let behind = window.front().is_some_and(|(i, _)| m < *i)
+                || (window.is_empty() && last.is_some_and(|l| m <= l));
+            let far = last.is_some_and(|l| (m - l) as f64 > MAP_JUMP * fr);
+            if p0.is_some() && (behind || far || (eof && window.is_empty())) {
+                if eof && window.is_empty() && !behind {
+                    return Err(gpu_err("time remap: no source frame to show"));
+                }
+                let to = if behind {
+                    (m - (MAP_WINDOW - 1) as i64).max(0)
+                } else {
+                    m
+                };
+                seek(&mut input, to)?;
+                window.clear();
+                last = None;
+                eof = false;
+                continue;
+            }
+            let Some(f) = t_dec.time(|| input.next_frame())? else {
+                eof = true;
+                if window.is_empty() && p0.is_none() {
+                    return Err(gpu_err(
+                        "time remap: the source has no frames after its start",
+                    ));
+                }
+                continue;
+            };
+            let pts = f.get().pts;
+            if pts < input.trim {
+                continue;
+            }
+            let i = index(pts, *p0.get_or_insert(pts));
+            last = Some(i);
+            if window.back().is_some_and(|(j, _)| *j >= i) {
+                continue;
+            }
+            let up = t_up.time(|| upload(&f, &mut vk_in, vulkan, grade))?;
+            window.push_back((i, up));
+            if window.len() > MAP_WINDOW {
+                window.pop_front();
+            }
+        }
+    }
+    t_dec.report();
+    t_up.report();
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]

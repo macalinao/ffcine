@@ -144,6 +144,7 @@ fn video_and_image_layers_with_alpha() {
                 source: LayerSource::Video {
                     input: red,
                     start: Duration::ZERO,
+                    map: None,
                 },
                 // Opaque on frame 0, half from frame 1; corners rounded by 20 px.
                 grade: layer_grade(vec![alpha(vec![1.0, 0.5], 20.0)]),

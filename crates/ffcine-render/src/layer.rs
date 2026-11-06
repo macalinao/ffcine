@@ -37,7 +37,16 @@ pub fn still_fits(w: u32, h: u32) -> bool {
 pub enum LayerSource {
     /// A video file, decoded from `start` and conformed to the pipeline's frame rate. Past its
     /// end the last frame holds.
-    Video { input: PathBuf, start: Duration },
+    ///
+    /// With a `map` (a time remap, `docs/compositing.md#time-remapping`), layer frame `i` shows
+    /// source frame `map[i]`, counted from the first frame at or after `start` (0) on the
+    /// source's own rate, and nothing is conformed. A non-decreasing map decodes forward,
+    /// repeating and dropping frames; a step back seeks (cheap on an all-intra file).
+    Video {
+        input: PathBuf,
+        start: Duration,
+        map: Option<Arc<[i64]>>,
+    },
     /// A still picture, drawn on every frame. Its values are taken as the output's colour
     /// space (no conversion) for an SDR output, so a logo keeps its colours, and as sRGB with
     /// white at the HDR reference white (203 nits, BT.2408) for a PQ or HLG one.
