@@ -30,6 +30,20 @@ use crate::model::{
 };
 use crate::time;
 
+/// [`FILTER_TABLE_REVISION`], which tests can bump.
+fn table_revision() -> u32 {
+    #[cfg(test)]
+    return TABLE.get();
+    #[cfg(not(test))]
+    FILTER_TABLE_REVISION
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static TABLE: std::cell::Cell<u32> =
+        const { std::cell::Cell::new(FILTER_TABLE_REVISION) };
+}
+
 /// What lowering needs to know about media files.
 pub trait Media {
     /// A video's or still's display size, px (rotation and HEIF grids applied).
@@ -623,7 +637,7 @@ impl Comp {
             "pts": pts,
         });
         if reach.stateful() {
-            rec["table"] = json!(FILTER_TABLE_REVISION);
+            rec["table"] = json!(table_revision());
         }
         if node.clock == FClock::Comp {
             rec["in"] = json!(l.in_);

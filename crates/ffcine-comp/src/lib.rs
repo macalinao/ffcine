@@ -23,4 +23,6 @@ pub use model::{
 pub use time::pick as frame_pick;
 
 #[cfg(test)]
+mod filter_tests;
+#[cfg(test)]
 mod tests;
