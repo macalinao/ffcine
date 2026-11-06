@@ -2,10 +2,10 @@
 
 Status: design. Steps 1 to 4 of the [phased plan](#phased-plan) (param tracks and expressions,
 `ffcine_core::anim`; the compositor core, `ffcine-comp`; media layers; per-layer grade) are
-built, step 4 in part; the rest is not. It turns what assembly already composites (split-screens, picture-in-picture,
-transitions, stills, text) into one general model: a **composition** of ordered **layers**
-whose parameters are **tracks**. Anything one would write today as a
-hand-made ffmpeg filter graph should be expressible in ffcine itself, and layouts and
+built, step 4 in part; the rest is not. It turns what assembly already composites
+(split-screens, picture-in-picture, transitions, stills, text) into one general model: a
+**composition** of ordered **layers** whose parameters are **tracks**. Anything one would write
+today as a hand-made ffmpeg filter graph should be expressible in ffcine itself, and layouts and
 templates are sugar that lowers to it.
 
 The yardstick is a 9:16 story: a 1080x1920 canvas, three 1080x632 tiles with 12 px gutters, mixed
@@ -448,7 +448,7 @@ Each media layer has a `grade`: any `GradeParams` field (`look`, `camera`, `lut`
 `lut_strength`, `rgb_gain`, `warmth` ... `saturation`, `exposure`, `sharpen`, `denoise`), plus
 `cdl` (`ffcine.color.cdl/1`), `filters`, `shaders` (`ffcine.fx.shader/1` entries), `grain`,
 `stabilize`. It is resolved with the timeline's layering (project grade <- look <- source-kind
-rule <- layer). The grade is built by the same `looks::grade_for` path as a shot
+rule <- layer). The grade is built by the same `ffcine_hooks::grade::grade_for` path as a shot
 (`Renderer::grader`). So:
 
 - **Camera transforms are automatic per source**: `camera: auto` (the default) probes each layer's
@@ -499,7 +499,9 @@ with a shot's grade gets the shot's LUT, `rgb_gain`, look hook, `extra` hooks an
   `layers[i].grade.filters[j]` (never a warning). In the object form, numbers may be tracks;
   each frame's options are built into the filter's hook, which must keep the same shader so
   only its `//!PARAM`s move. `colorlevels` (`rimin`, `rimax`, `romin`, `romax` and the `g`, `b`
-  ones, as ffmpeg's) is one more `extra` filter, so timelines get it too.
+  ones, as ffmpeg's) is layer-only for now: a timeline clip's `extra` still skips it with a
+  warning, as before, since timeline keys hash the `extra` strings and applying it there would
+  change pixels under unchanged keys.
 - **Shaders** load as `ffcine.fx.shader/1` does (project alias, vendored, external, path); each
   param must be a `//!PARAM` of the shader, in its bounds.
 - **Keys**: a graded layer's recipe adds `layer_grade`: the profile, the camera and grade LUTs
@@ -940,6 +942,8 @@ Each step is one PR, in dependency order. Each keeps the existing tests green an
   constant one is baked as today), `cdl`, per-layer `denoise`, `grain` (and `canvas.grain`) and
   `stabilize` on a layer; filters `extra` can't parse wait for the
   [escape hatch](#libavfilter-escape-hatch) (step 6) and are an error until then.
+- `colorlevels` in a timeline clip's `extra` (layers only for now; it needs a `RENDER_REVISION`
+  bump, since timeline keys hash the `extra` strings).
 
 - **Track mattes** (alpha or luma of another layer), and referencing another layer's
   parameters from an expression.

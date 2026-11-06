@@ -10,7 +10,8 @@
 //! `eq`, `hue` and `unsharp` work on BT.601 limited-range YUV code values, as ffmpeg's
 //! auto-inserted conversion from RGB gives them; `vignette` and `colorlevels` work on RGB.
 //! [`hooks`] reports anything else and doesn't apply it; [`strict_hooks`] and [`filter_hook`]
-//! (comp layers' `filters`) refuse it.
+//! (comp layers' `filters`) refuse it. `colorlevels` is layer-only for now: [`hooks`] (timeline
+//! `extra`, whose cache keys predate it) still skips it.
 
 use crate::Hook;
 
@@ -208,6 +209,11 @@ pub fn eval(s: &str) -> Option<f64> {
     (p.i == p.s.len() && v.is_finite()).then_some(v)
 }
 
+/// Filters only [`strict_hooks`] and [`filter_hook`] apply: [`hooks`] skips them as before they
+/// were supported, since timeline cache keys hash the `extra` strings and applying them there
+/// would change pixels under unchanged keys (that needs a `RENDER_REVISION` bump).
+const LAYER_ONLY: &[&str] = &["colorlevels"];
+
 /// The hooks for a grade's `extra` filter strings, in order, and what isn't applied.
 pub fn hooks(extra: &[String]) -> (Vec<Hook>, Vec<String>) {
     let mut hooks = Vec::new();
@@ -216,6 +222,10 @@ pub fn hooks(extra: &[String]) -> (Vec<Hook>, Vec<String>) {
         match parse(chain) {
             Ok(fs) => {
                 for f in fs {
+                    if LAYER_ONLY.contains(&f.name.as_str()) {
+                        skipped.push(format!("extra filter {} not supported", f.name));
+                        continue;
+                    }
                     match hook(&f) {
                         Ok((h, warn)) => {
                             hooks.extend(h);
@@ -1124,6 +1134,20 @@ mod tests {
         ] {
             assert!(strict_hooks(&[bad.into()]).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn timeline_extra_skips_colorlevels() {
+        let (h, warn) = hooks(&["eq=contrast=1.1,colorlevels=rimin=0.1".into()]);
+        assert_eq!(h.len(), 1);
+        assert_eq!(h[0].name, "extra eq");
+        assert_eq!(warn, ["extra filter colorlevels not supported"]);
+        assert_eq!(
+            strict_hooks(&["colorlevels=rimin=0.1".into()])
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]

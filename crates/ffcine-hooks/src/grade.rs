@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use ffcine_core::{Lut, LutType, Result};
+use ffcine_core::{Error, Lut, LutType, Result};
 use ffcine_render::shaders::{self, LookParams};
 use ffcine_render::{Grade, Hook, LutStage};
 use ffcine_timeline::{GradeParams, Project};
@@ -24,7 +24,9 @@ impl Luts {
             return Ok(l.clone());
         }
         #[allow(clippy::cast_possible_truncation)]
-        let lut = Lut::from_cube_file(path)?.mixed(strength.clamp(0.0, 1.0) as f32);
+        let lut = Lut::from_cube_file(path)
+            .map_err(|e| Error::Pipeline(format!("LUT {}: {e}", path.display())))?
+            .mixed(strength.clamp(0.0, 1.0) as f32);
         self.0.insert(key, lut.clone());
         Ok(lut)
     }

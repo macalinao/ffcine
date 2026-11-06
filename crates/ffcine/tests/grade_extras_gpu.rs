@@ -179,8 +179,9 @@ fn rgb_gain_and_extra_match_ffmpeg() {
         "eq=saturation=0.5,hue=h=90",
         "colorlevels=rimin=0.05:gimax=0.9:bomin=0.1:romax=0.95",
     ] {
-        let (hooks, warn) = ffcine::extra::hooks(&[f.to_owned()]);
-        assert!(warn.is_empty(), "{f}: {warn:?}");
+        // Strict: what comp layers' `filters` apply (timeline `extra` skips `colorlevels`).
+        let hooks =
+            ffcine::extra::strict_hooks(&[f.to_owned()]).unwrap_or_else(|e| panic!("{f}: {e}"));
         let g = graded(
             &ff,
             &src,
