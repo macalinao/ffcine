@@ -17,6 +17,9 @@ impl Media for Fake {
     fn identity(&self, path: &Path) -> Value {
         json!(path)
     }
+    fn video_rate(&self, _: &Path) -> Result<(f64, u64)> {
+        Ok((30.0, 300))
+    }
 }
 
 const OUT: Size = Size {
@@ -67,8 +70,36 @@ fn reads_and_rejects() {
             "layers[0].grade.denoise: not supported yet (per-layer denoise",
         ),
         (
-            json!([{ "source": { "video": "a.mov" }, "time": { "speed": 2 } }]),
-            "compositing step 5",
+            json!([{ "source": { "video": "a.mov" }, "time": { "speed": 1000 } }]),
+            "layers[0].time.speed: 1000: at most 100",
+        ),
+        (
+            json!([{ "source": { "video": "a.mov" }, "time": { "speed": 2, "freeze": 1 } }]),
+            "speed and freeze given: use one",
+        ),
+        (
+            json!([{ "source": { "video": "a.mov" }, "time": { "freeze": 1, "reverse": true } }]),
+            "reverse goes with speed",
+        ),
+        (
+            json!([{ "source": { "video": "a.mov" }, "time": { "freeze": -1 } }]),
+            "layers[0].time.freeze: expected source seconds",
+        ),
+        (
+            json!([{ "source": { "video": "a.mov" }, "time": { "reverse": 1 } }]),
+            "layers[0].time.reverse: expected true or false",
+        ),
+        (
+            json!([{ "source": { "video": "a.mov" }, "time": { "sped": 2 } }]),
+            "layers[0].time.sped: unknown key",
+        ),
+        (
+            json!([{ "source": { "video": "a.mov" }, "time": {} }]),
+            "expected one of speed",
+        ),
+        (
+            json!([{ "source": { "solid": "white" }, "time": { "speed": 2 } }]),
+            "only video layers have a source time",
         ),
         (
             json!([{ "source": { "video": "a.mov" }, "in": 2, "out": 1 }]),
@@ -521,7 +552,7 @@ fn limits_are_checked_before_rendering() {
     // Later steps' keys name the step; framing needs a picture.
     for (k, want) in [
         ("grade", "only video, still and comp"),
-        ("time", "compositing step 5"),
+        ("time", "only video layers"),
         ("content", "only video, still and comp"),
         ("crop", "only video, still and comp"),
     ] {
@@ -1001,4 +1032,115 @@ fn projects_and_luts_resolve_and_key() {
         .to_string();
     assert!(e.starts_with("project") || e.contains("project"), "{e}");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// One video layer with `time`, lowered over `range`: its start (s) and absolute frame map.
+fn remapped(time: &Value, range: std::ops::Range<i64>) -> (f64, Vec<i64>, Value) {
+    let c = comp(json!([{ "source": { "video": "a.mov" }, "time": time }]));
+    let p = c.lower(range, OUT, &Fake).expect("lower");
+    let LayerSource::Video { start, map, .. } = &p.layers[0].source else {
+        panic!("video");
+    };
+    let map = map.as_ref().expect("map");
+    // Back to absolute source frames: start is half a frame before the lowest pick.
+    #[allow(clippy::cast_possible_truncation)]
+    let lo = if start.is_zero() {
+        0
+    } else {
+        (start.as_secs_f64() * 30.0 + 0.5).round() as i64
+    };
+    (
+        start.as_secs_f64(),
+        map.iter().map(|k| k + lo).collect(),
+        p.recipe,
+    )
+}
+
+#[test]
+fn time_remaps_pick_source_frames() {
+    // Speed 2: every other frame, ties to the earlier one (as `setpts=PTS/2,fps`).
+    let (_, m, _) = remapped(&json!({ "speed": 2 }), 0..10);
+    assert_eq!(m, [0, 2, 4, 6, 8, 10, 12, 14, 16, 18]);
+    // Half speed: each frame twice.
+    let (_, m, _) = remapped(&json!({ "speed": 0.5 }), 0..6);
+    assert_eq!(m, [0, 0, 1, 1, 2, 2]);
+    // Reverse from source_in: back from frame 0 clamps at it.
+    let (_, m, _) = remapped(&json!({ "reverse": true }), 0..3);
+    assert_eq!(m, [0, 0, 0]);
+    let c = comp(json!([{ "source": { "video": "a.mov" }, "source_in": 5,
+        "time": { "reverse": true } }]));
+    let p = c.lower(0..30, OUT, &Fake).expect("lower");
+    let LayerSource::Video { start, map, .. } = &p.layers[0].source else {
+        panic!("video");
+    };
+    let map = map.as_ref().expect("map");
+    // Frames 150 down to 121: the lowest is 121, the start half a frame before it.
+    assert!((start.as_secs_f64() - 120.5 / 30.0).abs() < 1e-9);
+    let abs: Vec<i64> = map.iter().map(|k| k + 121).collect();
+    assert_eq!(abs, (121..=150).rev().collect::<Vec<_>>());
+    // Freeze: one frame.
+    let (_, m, _) = remapped(&json!({ "freeze": 2 }), 0..4);
+    assert_eq!(m, [60; 4]);
+    // An explicit source time (3x: as `setpts=PTS/3,fps`, the last frame before mid-frame),
+    // clamped to the 300 frames there are.
+    let (_, m, _) = remapped(&json!({ "source": "t * 3" }), 0..4);
+    assert_eq!(m, [1, 4, 7, 10]);
+    let (_, m, _) = remapped(&json!({ "freeze": 100 }), 0..2);
+    assert_eq!(m, [299, 299]);
+}
+
+#[test]
+fn time_remap_keys_follow_the_map_and_split_cleanly() {
+    let ramp = json!({ "speed": [{ "t": 0, "v": 1 }, { "t": 2, "v": 3 }] });
+    let (_, whole, _) = remapped(&ramp, 0..120);
+    let (_, a, ka) = remapped(&ramp, 0..50);
+    let (_, b, kb) = remapped(&ramp, 50..120);
+    assert_eq!(
+        [a, b].concat(),
+        whole,
+        "split pieces show the frames the whole does"
+    );
+    assert_ne!(ka, kb);
+    // The same slice, the same key; another speed, another key.
+    assert_eq!(remapped(&ramp, 0..50).2, ka);
+    assert_ne!(remapped(&json!({ "speed": 2 }), 0..50).2, ka);
+    // A layer without `time` keeps its old key shape (no map).
+    let plain = keys(&comp(json!([{ "source": { "video": "a.mov" } }])));
+    assert!(!plain[0].to_string().contains("digest"));
+    assert!(ka.to_string().contains("digest"));
+}
+
+#[test]
+fn time_remap_numeric_matches_the_closed_form() {
+    // A linear ramp as keys (closed form) and as an expression (Simpson): the same frames.
+    let (_, keys, _) = remapped(
+        &json!({ "speed": [{ "t": 0, "v": 1 }, { "t": 2, "v": 3 }, { "t": 6, "v": 3 }] }),
+        0..120,
+    );
+    let (_, expr, _) = remapped(&json!({ "speed": "1 + min(t, 2)" }), 0..120);
+    assert_eq!(keys, expr);
+    // Integrated: s(t) = t + t²/2 up to 2 s, then 4 + 3 (t - 2).
+    // Frame 30 shows the last source frame before s(1 + 1/60) = 1.533 s, frame 90 the last
+    // before s(3 + 1/60) = 7.05 s.
+    assert_eq!((keys[30], keys[90]), (46, 211));
+}
+
+#[test]
+fn time_remap_speeds_are_bounded_while_evaluated() {
+    let e = try_comp(json!([{ "source": { "video": "a.mov" }, "time": { "speed": "t * 1000" } }]))
+        .and_then(|c| c.lower(0..30, OUT, &Fake).map(|_| ()))
+        .expect_err("too fast")
+        .to_string();
+    assert!(e.contains("at most 100"), "{e}");
+    let e = try_comp(json!([{ "source": { "video": "a.mov" }, "time": { "source": "-t * 1e9" } }]))
+        .and_then(|c| c.lower(0..30, OUT, &Fake).map(|_| ()))
+        .expect_err("too far")
+        .to_string();
+    assert!(e.contains("a source time is"), "{e}");
+    // Negative source times are rejected too, as the message says.
+    let e = try_comp(json!([{ "source": { "video": "a.mov" }, "time": { "source": "t - 0.5" } }]))
+        .and_then(|c| c.lower(0..30, OUT, &Fake).map(|_| ()))
+        .expect_err("negative")
+        .to_string();
+    assert!(e.contains("a source time is 0 to 3600 s"), "{e}");
 }

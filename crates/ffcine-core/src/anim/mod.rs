@@ -397,16 +397,30 @@ impl Env<'_> {
     /// The built-ins on frame `n`.
     #[allow(clippy::cast_precision_loss)]
     pub fn builtins(&self, n: i64) -> [f64; Builtin::COUNT] {
-        let fps = if self.fps > 0.0 { self.fps } else { 24.0 };
-        let t = n as f64 / fps;
+        let fps = self.rate();
+        self.fill(n as f64 / fps, n as f64)
+    }
+
+    /// The built-ins at `t` comp seconds, between frames too (`n` is then fractional): for
+    /// integrating a track over time.
+    pub fn builtins_at(&self, t: f64) -> [f64; Builtin::COUNT] {
+        self.fill(t, t * self.rate())
+    }
+
+    fn rate(&self) -> f64 {
+        if self.fps > 0.0 { self.fps } else { 24.0 }
+    }
+
+    fn fill(&self, t: f64, n: f64) -> [f64; Builtin::COUNT] {
+        let fps = self.rate();
         let lt = t - self.in_;
         let mut b = [0.0; Builtin::COUNT];
         for (k, v) in [
             (Builtin::T, t),
             (Builtin::Lt, lt),
             (Builtin::St, self.source_in + lt),
-            (Builtin::N, n as f64),
-            (Builtin::Ln, n as f64 - (self.in_ * fps).round()),
+            (Builtin::N, n),
+            (Builtin::Ln, n - (self.in_ * fps).round()),
             (Builtin::Fps, fps),
             (Builtin::CanvasW, self.canvas[0]),
             (Builtin::CanvasH, self.canvas[1]),

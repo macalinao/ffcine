@@ -110,6 +110,7 @@ fn render_to(
         fp: &FsFingerprinter,
         dims: &dims,
         profile: None,
+        rate: None,
     };
     let size = Size {
         width: w,

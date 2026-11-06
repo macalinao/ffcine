@@ -682,12 +682,17 @@ pub fn plan(
 /// A source's camera profile, probed ([`ffcine_core::camera::Profile::detect_file`]).
 pub type ProbeProfile<'a> = &'a dyn Fn(&Path) -> ffcine_core::Result<ffcine_core::camera::Profile>;
 
+/// A video's probed average frame rate and frame count.
+pub type ProbeRate<'a> = &'a dyn Fn(&Path) -> ffcine_core::Result<(f64, u64)>;
+
 /// What a comp's lowering reads of its media: probed sizes (`dims`), camera profiles for
-/// `camera: auto` (`profile`; `None`: every source is display-referred) and fingerprints.
+/// `camera: auto` (`profile`; `None`: every source is display-referred), frame rates for time
+/// remaps (`rate`; `None`: a remap is an error) and fingerprints.
 pub struct CompMedia<'a> {
     pub fp: &'a dyn Fingerprinter,
     pub dims: &'a dyn Fn(&Path) -> ffcine_core::Result<(u32, u32)>,
     pub profile: Option<ProbeProfile<'a>>,
+    pub rate: Option<ProbeRate<'a>>,
 }
 
 impl ffcine_comp::Media for CompMedia<'_> {
@@ -700,6 +705,15 @@ impl ffcine_comp::Media for CompMedia<'_> {
     fn profile(&self, path: &Path) -> ffcine_core::Result<ffcine_core::camera::Profile> {
         self.profile
             .map_or(Ok(ffcine_core::camera::Profile::Rec709), |f| f(path))
+    }
+    fn video_rate(&self, path: &Path) -> ffcine_core::Result<(f64, u64)> {
+        match self.rate {
+            Some(f) => f(path),
+            None => Err(ffcine_core::Error::Invalid {
+                what: "time remap (no frame rate probe)",
+                value: path.display().to_string(),
+            }),
+        }
     }
 }
 
@@ -1593,6 +1607,7 @@ mod tests {
             fp: &Fake,
             dims: &dims,
             profile: None,
+            rate: None,
         };
         let profile = Profile::for_canvas("master", 1080, 1920).expect("profile");
         assert_eq!(

@@ -53,6 +53,35 @@ pub(crate) fn dims(ff: &dyn Backend) -> impl Fn(&Path) -> ffcine::Result<(u32, u
     }
 }
 
+/// A video's average frame rate and frame count (its stream's count, else its duration's),
+/// for time remaps.
+pub(crate) fn rate(ff: &dyn Backend) -> impl Fn(&Path) -> ffcine::Result<(f64, u64)> + '_ {
+    move |p: &Path| {
+        let info = ff.probe(p)?;
+        let bad = || ffcine::Error::Invalid {
+            what: "time remap source (no frame rate or length)",
+            value: p.display().to_string(),
+        };
+        let (_, v) = info.video().ok_or_else(bad)?;
+        let fps = v
+            .frame_rate
+            .map(ffcine::Rational::as_f64)
+            .filter(|r| r.is_finite() && *r > 0.0)
+            .ok_or_else(bad)?;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let frames = v
+            .frames
+            .filter(|n| *n > 0)
+            .or_else(|| {
+                info.duration
+                    .map(|d| (d.as_secs_f64() * fps).round() as u64)
+                    .filter(|n| *n > 0)
+            })
+            .ok_or_else(bad)?;
+        Ok((fps, frames))
+    }
+}
+
 /// A layer source's camera profile, for `camera: auto` in a layer's grade.
 pub(crate) fn camera(
     ff: &dyn Backend,
@@ -76,10 +105,12 @@ pub(crate) fn plan(
     let p = profile(&c, name)?;
     let dims = dims(ff);
     let camera = camera(ff);
+    let rate = rate(ff);
     let media = assembly::CompMedia {
         fp: &assembly::FsFingerprinter,
         dims: &dims,
         profile: Some(&camera),
+        rate: Some(&rate),
     };
     let plan = assembly::plan_comp(&c, &p, &media)
         .with_context(|| format!("planning {}", path.display()))?;

@@ -335,10 +335,12 @@ fn comp_still(a: StillArgs, ff: &backend::Ffmpeg) -> anyhow::Result<()> {
     });
     let dims = super::comp::dims(ff);
     let camera = super::comp::camera(ff);
+    let rate = super::comp::rate(ff);
     let media = ffcine::assembly::CompMedia {
         fp: &ffcine::assembly::FsFingerprinter,
         dims: &dims,
         profile: Some(&camera),
+        rate: Some(&rate),
     };
     let piece = c.lower(n..n + 1, out, &media)?;
     let output = a

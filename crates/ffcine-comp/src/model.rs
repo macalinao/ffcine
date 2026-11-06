@@ -46,6 +46,8 @@ pub mod limits {
     pub const COORD: f64 = 1e9;
     /// Rotation, degrees either way.
     pub const ROTATION: f64 = 1e6;
+    /// A time remap's `speed`, either way (source s per layer s).
+    pub const SPEED: f64 = 100.0;
     /// Comps nested in comps (`{"comp": ...}` sources), levels below the top.
     pub const DEPTH: usize = 4;
     /// `content` zooms (`zoom`, a punch's, `push`), and how far in they and `crop` may go in
@@ -236,6 +238,8 @@ pub struct CompLayer {
     pub(crate) fade_colour: Track<[f64; 4]>,
     /// `grade` (video, still and comp layers).
     pub(crate) grade: Option<LayerGrade>,
+    /// `time` (video layers).
+    pub(crate) time: Option<crate::time::Remap>,
     /// The comp's vars, then the layer's.
     pub(crate) vars: Vars,
 }
@@ -837,6 +841,7 @@ impl Comp {
                 "fade",
                 "fade_colour",
                 "grade",
+                "time",
                 "vars",
             ]
         };
@@ -844,10 +849,7 @@ impl Comp {
             m,
             path,
             known,
-            &[
-                ("time", "compositing step 5, time remapping"),
-                ("filter", "compositing step 6, libavfilter node"),
-            ],
+            &[("filter", "compositing step 6, libavfilter node")],
         )?;
         let mut vars = self.vars.clone();
         if let Some(v) = m.get("vars") {
@@ -1130,6 +1132,20 @@ impl Comp {
                 Some(g)
             }
         };
+        let time = match m.get("time") {
+            None => None,
+            Some(_) if !matches!(source, Source::Video(_)) => {
+                return Err(err(
+                    format!("{path}.time"),
+                    if matches!(source, Source::Comp(_)) {
+                        "time remapping of nested comps is not supported yet"
+                    } else {
+                        "only video layers have a source time to remap"
+                    },
+                ));
+            }
+            Some(v) => Some(crate::time::parse(v, &scope, &format!("{path}.time"))?),
+        };
         let blend = match m.get("blend") {
             None => BlendMode::Normal,
             Some(v) => v
@@ -1166,6 +1182,7 @@ impl Comp {
                 None => Track::Const([0.0, 0.0, 0.0, 1.0]),
             },
             grade,
+            time,
             vars,
         })
     }
