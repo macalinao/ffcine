@@ -597,28 +597,43 @@ For anything ffcine has no native primitive for, a layer gets a raw libavfilter 
   `preroll`/`postroll`/`whole_clip`, `FILTER_TABLE_REVISION` (stateful nodes only), the canvas
   `fps` (the fed rate, which `t` and temporal filters see), the ffmpeg build (the first line of
   `ffmpeg -version` plus its libavfilter version), the contents of every file the graph reads
-  (below), and its inputs: the source fingerprint and the frame-map slice it reads, including pre-roll and post-roll. For a whole-clip node that is the whole layer's
+  (below; for a `fontsdir`, every file in it), and its inputs: the source fingerprint and the
+  frame-map slice it reads, including pre-roll and post-roll. For a whole-clip node that is the
+  whole layer's
   map; with `clock: "comp"` it also includes the layer's `in`. It goes into the layer's recipe,
   so the segment key changes when any of these do. `RENDER_REVISION` is bumped when ffcine
   changes how nodes run (the PTS rule, re-tagging); a change to the table bumps only
   `FILTER_TABLE_REVISION`, which re-renders only stateful nodes.
 - **Files and safety**: a graph runs ffmpeg's filters with the renderer's rights, so what it
-  may touch is limited. File reads go only through these options, each resolved against the
-  comp file's directory (not ffmpeg's working directory), passed to ffmpeg as an absolute path,
-  and keyed by its contents; a missing file is an error at `comp check`: `lut3d`/`lut1d`
-  `file`, `subtitles`/`ass` `filename`, `drawtext` `fontfile` and `textfile`,
-  `vidstabtransform` `input` (required: its default name would be read from the working
-  directory), `curves` `psfile`, `removelogo` `filename`, `find_rect` `object`, `cover_rect`
-  `cover`, the `dnn_*`, `sr` and `derain` `model` (and `labels`), and `libplacebo`
-  `custom_shader_path`. Refused at `comp check`: sources and command feeds that open arbitrary
-  inputs (`movie`, `amovie`, `sendcmd`, `asendcmd`, `zmq`, `azmq`), plugin loaders (`frei0r`),
-  writers (`vidstabdetect`, `metadata`/`ametadata` `file`, `psnr`/`ssim`/`xpsnr` `stats_file`,
-  `vmafmotion` `stats_file`, `libvmaf` `log_path`, `signature` `filename`, `curves` `plot`),
-  directories that can't be keyed (`subtitles`/`ass` `fontsdir`), and any option value naming a
-  URL (`scheme://`, except `drawtext`'s `text`, which is only drawn). Both `ffmpeg` processes
-  run with `-protocol_whitelist` (`file` for the decoder, `pipe` for the graph's input). A
-  file named by any other option is read relative to the renderer's working directory and not
-  keyed: don't.
+  may touch is limited, checked at `comp check`:
+  - *Parsing* mirrors libavfilter's two passes: the graph parser splits chains and filters and
+    unescapes/unquotes once (`av_get_token`), then the option parser splits `key=value` pairs
+    at `:` and unescapes/unquotes again. The policy sees names, keys and values after both
+    passes, so `mode=print\:file=x` or `fi\le=x` are read as ffmpeg reads them. It fails
+    closed: an option key must be a plain name (`[A-Za-z0-9_]+`, so ffmpeg's `/key` file
+    loading is out), a key is set once, a positional value holds no `=`, and an unterminated
+    quote, a trailing backslash or a leading `sws_flags=` is an error.
+  - *Allowlist*: only the filters in `ffcine_render::filter_node::ALLOWED` run: pixel filters
+    with no file, URL, device or plugin options (`eq`, `curves`, `colorbalance`, `hue`,
+    `unsharp`, the blurs and denoisers, `tmix`, `deflicker`, `lenscorrection`, `vignette`,
+    `noise`, the deinterlacers, flips, `transpose`, `rotate`, `scale`/`crop`/`pad` (the output
+    size is checked), `format`, `setparams`, `split`/`overlay` inside the graph, the `*_cuda`
+    and `*_vulkan` ones, ...), plus the readers below. Everything else is refused with an error
+    naming the filter: sources and command feeds (`movie`, `sendcmd`, `zmq`), writers
+    (`vidstabdetect`, `deshake`, `metadata`, `psnr`, `ssim`, `ssim360`, `paletteuse`, ...), and
+    plugin or code loaders (`frei0r`, `ladspa`, `lv2`, `dnn_*`, `libvmaf`, `libplacebo`,
+    `program_opencl`, `ocr`, `nnedi`, `lensfun`, ...).
+  - *Reads*, each resolved against the comp file's directory (not ffmpeg's working directory),
+    passed to ffmpeg as an absolute path and keyed by its contents (a missing file is an
+    error): `lut3d`/`lut1d` `file`, `subtitles`/`ass` `filename` and `fontsdir` (every file in
+    the directory keyed), `drawtext` `fontfile` and `textfile`, `vidstabtransform` `input`
+    (required: its default name would be read from the working directory), `curves` and
+    `selectivecolor` `psfile`, `removelogo` `filename`; named or at ffmpeg's positional index.
+    `haldclut` takes its LUT as a second graph input, not a file. `curves` `plot` writes, so
+    it is refused.
+  - Any value naming a URL (`scheme://`, except `drawtext`'s `text`, which is only drawn) is
+    refused, and both `ffmpeg` processes run with `-protocol_whitelist` (`file` for the
+    decoder, `pipe` for the graph's input).
 - **Caveats**: CPU graphs are slow at 4K (a download, the filter, an upload, a lossless encode)
   and run on the prep thread pool, not the GPU pipeline. GPL filters exist only if the ffmpeg
   in use was built with them, and their licence is then the user's concern. Audio is ignored.
@@ -653,7 +668,9 @@ never promoted to the base. Layers without `filter` and timelines keep their key
 (`RENDER_REVISION` stays 8). The cache tests are `ffcine-comp`'s `filter_tests` and
 `ffcine-assembly`'s `ffmpeg_build_keys_filter_nodes_only`; the split tests (plus `hw: cuda`
 and `hw: vulkan` graphs, a relative LUT read from the comp's directory, and a resizing graph
-refused) are `crates/ffcine/tests/filter_node.rs`. `canvas.filter`, filters on
+refused) are `crates/ffcine/tests/filter_node.rs`. The graph policy (the two-pass parser and
+the `ALLOWED` table) is tested in `filter_node`'s unit tests, with the libavfilter quoting
+bypasses as cases. `canvas.filter`, filters on
 stills and nested comps, and the rest are [Not yet](#not-yet).
 
 ## Rendering

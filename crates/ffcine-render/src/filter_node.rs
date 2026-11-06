@@ -91,7 +91,7 @@ pub struct Node {
     /// `timing: free`: the graph may change frame timing or count; the layer takes what comes
     /// (run over the whole clip, no guarantee across pieces).
     pub free_timing: bool,
-    /// The files the graph reads ([`READS`]), absolute, in graph order: set by
+    /// The files the graph reads ([`ALLOWED`]), absolute, in graph order: set by
     /// [`locate`](Self::locate).
     pub files: Vec<PathBuf>,
     /// The graph as ffmpeg runs it: `graph` with each file it reads made absolute.
@@ -116,14 +116,187 @@ impl Reach {
     }
 }
 
-/// The filters of a graph, link labels dropped.
-///
-/// # Errors
-/// Text that isn't a filter graph.
-pub fn parse(graph: &str) -> Result<Vec<Filter>, String> {
-    let mut out = Vec::new();
-    for chain in extra::split(graph, ';') {
-        out.extend(extra::parse(&chain)?);
+/// ffmpeg's whitespace (`WHITESPACES`).
+const WS: &[u8] = b" \n\t\r";
+
+fn skip_ws(b: &[u8], mut i: usize) -> usize {
+    while b.get(i).is_some_and(|c| WS.contains(c)) {
+        i += 1;
+    }
+    i
+}
+
+/// libavutil's `av_get_token`, from `text[*at..]`: skips leading whitespace and reads up to an
+/// unquoted, unescaped byte of `term`, removing one level of `'...'` quoting and `\` escapes and
+/// trimming trailing whitespace that isn't escaped or quoted. Stricter than ffmpeg, which takes
+/// both literally: an unterminated quote or a trailing backslash is an error.
+fn token(text: &[u8], at: &mut usize, term: &[u8]) -> Result<String, String> {
+    let mut pos = skip_ws(text, *at);
+    let (mut out, mut end) = (Vec::new(), 0);
+    while pos < text.len() && !term.contains(&text[pos]) {
+        let ch = text[pos];
+        pos += 1;
+        if ch == b'\\' {
+            let Some(&next) = text.get(pos) else {
+                return Err("a trailing backslash".into());
+            };
+            out.push(next);
+            pos += 1;
+            end = out.len();
+        } else if ch == b'\'' {
+            while pos < text.len() && text[pos] != b'\'' {
+                out.push(text[pos]);
+                pos += 1;
+            }
+            if pos == text.len() {
+                return Err("an unterminated quote".into());
+            }
+            pos += 1;
+            end = out.len();
+        } else {
+            out.push(ch);
+        }
+    }
+    while out.len() > end && out.last().is_some_and(|ch| WS.contains(ch)) {
+        out.pop();
+    }
+    *at = pos;
+    String::from_utf8(out).map_err(|_| "not UTF-8".into())
+}
+
+/// A plain option or filter name: `[A-Za-z0-9_]+`.
+fn ident(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
+}
+
+/// The second pass, libavfilter's `ff_filter_opt_parse` over a filter's options (already
+/// through [`token`] once): `key=value` pairs split at `:`, each value unescaped and unquoted
+/// again, positional values first. Stricter than ffmpeg (fails closed): a key must be a plain
+/// name ([`ident`]; ffmpeg also takes `-`, `.` and `/`, and its CLI reads a `/key`'s value from a
+/// file), a key may be set once, and a positional value may not hold `=`.
+fn options(opts: &str) -> Result<Vec<(Option<String>, String)>, String> {
+    let bytes = opts.as_bytes();
+    let (mut at, mut out) = (0, Vec::<(Option<String>, String)>::new());
+    while at < bytes.len() {
+        // libavutil's `get_key`: key characters, whitespace, `=`.
+        let ks = skip_ws(bytes, at);
+        let mut pos = ks;
+        while bytes
+            .get(pos)
+            .is_some_and(|&ch| ch.is_ascii_alphanumeric() || b"-_/.".contains(&ch))
+        {
+            pos += 1;
+        }
+        let ke = pos;
+        let pos = skip_ws(bytes, pos);
+        let key = (bytes.get(pos) == Some(&b'=')).then(|| {
+            at = pos + 1;
+            &opts[ks..ke]
+        });
+        let start = at;
+        let val = token(bytes, &mut at, b":").map_err(|err| format!("{opts:?}: {err}"))?;
+        if let Some(name) = key {
+            if !ident(name) {
+                return Err(format!("{name:?}: not a plain option name"));
+            }
+            if out.iter().any(|(other, _)| other.as_deref() == Some(name)) {
+                return Err(format!("{name}: set twice"));
+            }
+        } else {
+            if out.iter().any(|(name, _)| name.is_some()) {
+                return Err(format!("{val:?}: a positional value after a named one"));
+            }
+            if bytes[start..at].contains(&b'=') {
+                return Err(format!(
+                    "{:?}: an `=` in a positional value (name the option with a plain name)",
+                    &opts[start..at]
+                ));
+            }
+        }
+        out.push((key.map(str::to_owned), val));
+        // The `:`.
+        at += 1;
+    }
+    Ok(out)
+}
+
+/// One filter of a graph as libavfilter reads it.
+#[derive(Debug, Clone, PartialEq)]
+struct Parsed {
+    /// Its name (`@instance` dropped) and options, both passes applied.
+    filter: Filter,
+    /// Where its options are in the graph text (after the `=`).
+    opts: Option<Range<usize>>,
+    /// Its chain's index.
+    chain: usize,
+}
+
+/// Link labels (`[a][b]`), as libavfilter's `linklabels_parse` skips them.
+fn labels(b: &[u8], i: &mut usize) -> Result<(), String> {
+    while b.get(*i) == Some(&b'[') {
+        *i += 1;
+        let l = token(b, i, b"]")?;
+        if l.is_empty() || b.get(*i) != Some(&b']') {
+            return Err("an empty or unclosed link label".into());
+        }
+        *i = skip_ws(b, *i + 1);
+    }
+    Ok(())
+}
+
+/// A graph's filters, as libavfilter's `avfilter_graph_segment_parse` splits it: chains at `;`,
+/// filters at `,`, the name and the options token through [`token`], then the options through
+/// [`options`].
+fn parse_graph(graph: &str) -> Result<Vec<Parsed>, String> {
+    let b = graph.as_bytes();
+    let mut i = skip_ws(b, 0);
+    if b[i..].starts_with(b"sws_flags=") {
+        return Err("sws_flags: not allowed in a filter node".into());
+    }
+    let (mut out, mut chain) = (Vec::new(), 0);
+    while i < b.len() {
+        loop {
+            labels(b, &mut i)?;
+            let name = token(b, &mut i, b"=,;[")?;
+            let name = name.split_once('@').map_or(name.as_str(), |(n, _)| n);
+            if !ident(name) {
+                return Err(format!("{name:?}: not a filter"));
+            }
+            let (mut opts, mut args) = (None, Vec::new());
+            if b.get(i) == Some(&b'=') {
+                i += 1;
+                let start = i;
+                let t = token(b, &mut i, b"[],;").map_err(|e| format!("{name}: {e}"))?;
+                opts = Some(start..i);
+                args = options(&t).map_err(|e| format!("{name}: {e}"))?;
+            }
+            labels(b, &mut i)?;
+            i = skip_ws(b, i);
+            out.push(Parsed {
+                filter: Filter {
+                    name: name.to_owned(),
+                    args,
+                },
+                opts,
+                chain,
+            });
+            match b.get(i) {
+                None => break,
+                Some(b',') => i = skip_ws(b, i + 1),
+                Some(b';') => {
+                    i = skip_ws(b, i + 1);
+                    break;
+                }
+                Some(_) => {
+                    return Err(format!("{:?}: trailing text after a filter", &graph[i..]));
+                }
+            }
+            if i == b.len() {
+                break;
+            }
+        }
+        i = skip_ws(b, i);
+        chain += 1;
     }
     if out.is_empty() {
         return Err("an empty graph".into());
@@ -131,6 +304,13 @@ pub fn parse(graph: &str) -> Result<Vec<Filter>, String> {
     Ok(out)
 }
 
+/// The filters of a graph, link labels dropped, read as libavfilter reads them.
+///
+/// # Errors
+/// Text that isn't a filter graph.
+pub fn parse(graph: &str) -> Result<Vec<Filter>, String> {
+    Ok(parse_graph(graph)?.into_iter().map(|p| p.filter).collect())
+}
 /// A number option of `f` (a constant expression), or `max` if it isn't one (generous: extra
 /// frames never change the output), or `default` if absent.
 fn opt(f: &Filter, names: &[&str], pos: Option<usize>, default: u32, max: u32) -> u32 {
@@ -155,99 +335,257 @@ pub fn changes_timing(name: &str) -> bool {
     )
 }
 
-/// An option naming a file: the filter, the option's names, its positional index.
-type FileOpt = (&'static str, &'static [&'static str], Option<usize>);
-
-/// The options through which a graph may read files: each is resolved against the comp's
-/// directory and its file's contents keyed. Other file reads are refused ([`WRITES`] and
-/// [`REFUSED`]) or not known to the table (a graph naming a file elsewhere reads it relative to
-/// the renderer's working directory, unkeyed: don't).
-pub const READS: &[FileOpt] = &[
-    ("lut3d", &["file"], Some(0)),
-    ("lut1d", &["file"], Some(0)),
-    ("subtitles", &["filename", "f"], Some(0)),
-    ("ass", &["filename", "f"], Some(0)),
-    ("drawtext", &["fontfile"], Some(0)),
-    ("drawtext", &["textfile"], None),
-    ("vidstabtransform", &["input"], Some(0)),
-    ("curves", &["psfile"], None),
-    ("removelogo", &["filename", "f"], Some(0)),
-    ("find_rect", &["object"], Some(0)),
-    ("cover_rect", &["cover"], Some(0)),
-    ("dnn_processing", &["model"], None),
-    ("dnn_detect", &["model", "labels"], None),
-    ("dnn_classify", &["model", "labels"], None),
-    ("sr", &["model"], None),
-    ("derain", &["model"], None),
-    ("libplacebo", &["custom_shader_path"], None),
-];
-
-/// Options that write files (or read a directory, which can't be keyed): refused.
-pub const WRITES: &[FileOpt] = &[
-    ("metadata", &["file"], None),
-    ("ametadata", &["file"], None),
-    ("psnr", &["stats_file", "f"], Some(0)),
-    ("ssim", &["stats_file", "f"], Some(0)),
-    ("xpsnr", &["stats_file", "f"], Some(0)),
-    ("vmafmotion", &["stats_file"], None),
-    ("libvmaf", &["log_path"], None),
-    ("signature", &["filename"], None),
-    ("curves", &["plot"], None),
-    ("subtitles", &["fontsdir"], None),
-    ("ass", &["fontsdir"], None),
-];
-
-/// Filters refused outright: sources that open arbitrary inputs (`movie`), command feeds
-/// (`sendcmd`, `zmq`), writers (`vidstabdetect` writes its transforms file even unasked) and
-/// plugin loaders (`frei0r`).
-pub const REFUSED: &[&str] = &[
-    "movie",
-    "amovie",
-    "sendcmd",
-    "asendcmd",
-    "zmq",
-    "azmq",
-    "vidstabdetect",
-    "frei0r",
-    "frei0r_src",
-];
-
-/// The indices into `f.args` of the options `table` lists for it.
-fn file_args(f: &Filter, table: &[FileOpt]) -> Vec<usize> {
-    let mut out = Vec::new();
-    for (name, keys, pos) in table {
-        if *name != f.name {
-            continue;
-        }
-        let named = f
-            .args
-            .iter()
-            .position(|(k, _)| k.as_deref().is_some_and(|k| keys.contains(&k)));
-        let positional = || {
-            pos.and_then(|p| {
-                f.args
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, (k, _))| k.is_none())
-                    .nth(p)
-                    .map(|(i, _)| i)
-            })
-        };
-        if let Some(i) = named.or_else(positional)
-            && !out.contains(&i)
-        {
-            out.push(i);
-        }
-    }
-    out.sort_unstable();
-    out
+/// What a filter does with the file an option names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Use {
+    /// Reads it: resolved against the comp's directory, its contents keyed.
+    Read,
+    /// Reads the files in that directory (`fontsdir`): each one's contents keyed.
+    ReadDir,
+    /// Writes it: refused.
+    Write,
 }
 
-/// Escapes `chars` (and `\`) in `s` with backslashes, one level of ffmpeg's quoting.
+/// An option naming a file: its names (aliases), its positional index (counting an option and
+/// its aliases once, as libavfilter does), what the filter does with it.
+pub type FileOpt = (&'static [&'static str], Option<usize>, Use);
+
+/// The filters a filter node may run, with the options of each that name files: everything
+/// else is refused at comp check. Listed are pixel filters with no file, URL, device or plugin
+/// options (`ffmpeg -h filter=NAME`), plus the readers whose files are keyed. Sources (`movie`),
+/// command feeds (`sendcmd`, `zmq`), writers (`vidstabdetect`, `deshake`, `psnr`, `ssim*`,
+/// `metadata`, `paletteuse`), and plugin or code loaders (`frei0r`, `ladspa`, `lv2`, `dnn_*`,
+/// `libvmaf`, `libplacebo`, `program_opencl`, ...) aren't, so they're refused.
+pub const ALLOWED: &[(&str, &[FileOpt])] = &[
+    ("amplify", &[]),
+    (
+        "ass",
+        &[
+            (&["filename", "f"], Some(0), Use::Read),
+            (&["fontsdir"], Some(2), Use::ReadDir),
+        ],
+    ),
+    ("atadenoise", &[]),
+    ("avgblur", &[]),
+    ("avgblur_vulkan", &[]),
+    ("backgroundkey", &[]),
+    ("bilateral", &[]),
+    ("bilateral_cuda", &[]),
+    ("blend", &[]),
+    ("blend_vulkan", &[]),
+    ("bm3d", &[]),
+    ("boxblur", &[]),
+    ("bwdif", &[]),
+    ("bwdif_cuda", &[]),
+    ("bwdif_vulkan", &[]),
+    ("cas", &[]),
+    ("chromaber_vulkan", &[]),
+    ("chromahold", &[]),
+    ("chromakey", &[]),
+    ("chromakey_cuda", &[]),
+    ("chromashift", &[]),
+    ("colorbalance", &[]),
+    ("colorchannelmixer", &[]),
+    ("colorcontrast", &[]),
+    ("colorcorrect", &[]),
+    ("colorhold", &[]),
+    ("colorize", &[]),
+    ("colorkey", &[]),
+    ("colorlevels", &[]),
+    ("colormatrix", &[]),
+    ("colorspace", &[]),
+    ("colorspace_cuda", &[]),
+    ("colortemperature", &[]),
+    ("convolution", &[]),
+    ("copy", &[]),
+    ("crop", &[]),
+    (
+        "curves",
+        &[
+            (&["psfile"], Some(6), Use::Read),
+            (&["plot"], Some(7), Use::Write),
+        ],
+    ),
+    ("dblur", &[]),
+    ("dctdnoiz", &[]),
+    ("deband", &[]),
+    ("deblock", &[]),
+    ("decimate", &[]),
+    ("deflate", &[]),
+    ("deflicker", &[]),
+    ("despill", &[]),
+    ("dilation", &[]),
+    ("drawbox", &[]),
+    ("drawgrid", &[]),
+    (
+        "drawtext",
+        &[
+            (&["fontfile"], Some(0), Use::Read),
+            (&["textfile"], Some(2), Use::Read),
+        ],
+    ),
+    ("edgedetect", &[]),
+    ("eq", &[]),
+    ("erosion", &[]),
+    ("estdif", &[]),
+    ("exposure", &[]),
+    ("extractplanes", &[]),
+    ("fade", &[]),
+    ("fftdnoiz", &[]),
+    ("fftfilt", &[]),
+    ("fieldmatch", &[]),
+    ("fillborders", &[]),
+    ("flip_vulkan", &[]),
+    ("format", &[]),
+    ("framerate", &[]),
+    ("freezedetect", &[]),
+    ("fspp", &[]),
+    ("gblur", &[]),
+    ("gblur_vulkan", &[]),
+    ("geq", &[]),
+    ("gradfun", &[]),
+    ("grayworld", &[]),
+    ("guided", &[]),
+    ("haldclut", &[]),
+    ("hflip", &[]),
+    ("hflip_vulkan", &[]),
+    ("histeq", &[]),
+    ("hqdn3d", &[]),
+    ("hsvhold", &[]),
+    ("hsvkey", &[]),
+    ("hue", &[]),
+    ("huesaturation", &[]),
+    ("hwdownload", &[]),
+    ("hwupload", &[]),
+    ("hwupload_cuda", &[]),
+    ("inflate", &[]),
+    ("kerndeint", &[]),
+    ("kirsch", &[]),
+    ("lagfun", &[]),
+    ("lenscorrection", &[]),
+    ("limiter", &[]),
+    ("lumakey", &[]),
+    ("lut", &[]),
+    ("lut1d", &[(&["file"], Some(0), Use::Read)]),
+    ("lut2", &[]),
+    ("lut3d", &[(&["file"], Some(0), Use::Read)]),
+    ("lutrgb", &[]),
+    ("lutyuv", &[]),
+    ("maskedmerge", &[]),
+    ("maskfun", &[]),
+    ("median", &[]),
+    ("mergeplanes", &[]),
+    ("minterpolate", &[]),
+    ("monochrome", &[]),
+    ("mpdecimate", &[]),
+    ("negate", &[]),
+    ("nlmeans", &[]),
+    ("nlmeans_vulkan", &[]),
+    ("noise", &[]),
+    ("normalize", &[]),
+    ("null", &[]),
+    ("overlay", &[]),
+    ("overlay_cuda", &[]),
+    ("overlay_vulkan", &[]),
+    ("owdenoise", &[]),
+    ("pad", &[]),
+    ("perspective", &[]),
+    ("photosensitivity", &[]),
+    ("pp7", &[]),
+    ("prewitt", &[]),
+    ("pseudocolor", &[]),
+    ("pullup", &[]),
+    ("removegrain", &[]),
+    ("removelogo", &[(&["filename", "f"], Some(0), Use::Read)]),
+    ("rgbashift", &[]),
+    ("roberts", &[]),
+    ("rotate", &[]),
+    ("sab", &[]),
+    ("scale", &[]),
+    ("scale_cuda", &[]),
+    ("scale_vulkan", &[]),
+    ("scdet", &[]),
+    ("scharr", &[]),
+    ("selectivecolor", &[(&["psfile"], Some(10), Use::Read)]),
+    ("setdar", &[]),
+    ("setparams", &[]),
+    ("setrange", &[]),
+    ("setsar", &[]),
+    ("shuffleplanes", &[]),
+    ("smartblur", &[]),
+    ("sobel", &[]),
+    ("split", &[]),
+    ("spp", &[]),
+    (
+        "subtitles",
+        &[
+            (&["filename", "f"], Some(0), Use::Read),
+            (&["fontsdir"], Some(2), Use::ReadDir),
+        ],
+    ),
+    ("swapuv", &[]),
+    ("tblend", &[]),
+    ("threshold", &[]),
+    ("tlut2", &[]),
+    ("tmedian", &[]),
+    ("tmidequalizer", &[]),
+    ("tmix", &[]),
+    ("tonemap", &[]),
+    ("transpose", &[]),
+    ("transpose_vulkan", &[]),
+    ("unsharp", &[]),
+    ("vaguedenoiser", &[]),
+    ("varblur", &[]),
+    ("vflip", &[]),
+    ("vflip_vulkan", &[]),
+    ("vibrance", &[]),
+    ("vidstabtransform", &[(&["input"], Some(0), Use::Read)]),
+    ("vignette", &[]),
+    ("w3fdif", &[]),
+    ("yadif", &[]),
+    ("yadif_cuda", &[]),
+    ("zscale", &[]),
+];
+
+/// The table's file options of `f` that it sets: their index into `f.args` and use, in order.
+///
+/// # Errors
+/// One set twice (named and positional, or through two aliases).
+fn file_args(f: &Filter) -> Result<Vec<(usize, Use)>, String> {
+    let Some((_, opts)) = ALLOWED.iter().find(|(n, _)| *n == f.name) else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for (keys, pos, u) in *opts {
+        let mut at = f
+            .args
+            .iter()
+            .enumerate()
+            .filter(|(_, (k, _))| k.as_deref().is_some_and(|k| keys.contains(&k)))
+            .map(|(i, _)| i)
+            .collect::<Vec<_>>();
+        if let Some(p) = pos
+            && f.args.get(*p).is_some_and(|(k, _)| k.is_none())
+        {
+            at.push(*p);
+        }
+        match at[..] {
+            [] => {}
+            [i] => out.push((i, *u)),
+            _ => return Err(format!("{}: {} set twice", f.name, keys[0])),
+        }
+    }
+    out.sort_unstable_by_key(|(i, _)| *i);
+    Ok(out)
+}
+
+/// Escapes `chars`, `\` and whitespace at either end of `s` with backslashes: one level of
+/// ffmpeg's quoting, which [`token`] undoes.
 fn escape(s: &str, chars: &str) -> String {
+    let n = s.chars().count();
     let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        if c == '\\' || chars.contains(c) {
+    for (i, c) in s.chars().enumerate() {
+        if c == '\\' || chars.contains(c) || ((i == 0 || i + 1 == n) && " \n\t\r".contains(c)) {
             out.push('\\');
         }
         out.push(c);
@@ -255,54 +593,44 @@ fn escape(s: &str, chars: &str) -> String {
     out
 }
 
-/// A path as a value in graph text: escaped for the option parser, then for the graph parser.
-fn graph_value(p: &Path) -> String {
-    escape(&escape(&p.to_string_lossy(), "':="), "'[],;")
-}
-
-/// `graph` with each [`READS`] value replaced by `with(value)` (already graph text), and those
-/// values, in order. The rest of the text is kept byte for byte.
+/// `graph` with each file option's value `v` replaced by `with(v)` (a plain value, escaped
+/// here). Filters without one keep their text byte for byte; those with one get their options
+/// rewritten, every value escaped for both passes. Checked by reading the result back.
 fn rewrite(
     graph: &str,
-    mut with: impl FnMut(&str) -> Result<String, String>,
+    mut with: impl FnMut(&Filter, &str, Use) -> Result<String, String>,
 ) -> Result<String, String> {
-    let mut chains = Vec::new();
-    for chain in extra::split(graph, ';') {
-        let mut segs = Vec::new();
-        for seg in extra::split(&chain, ',') {
-            let filters = extra::parse(&seg)?;
-            let Some(f) = filters.first() else {
-                segs.push(seg);
-                continue;
-            };
-            let idx = file_args(f, READS);
-            let Some(eq) = seg.find('=').filter(|_| !idx.is_empty()) else {
-                segs.push(seg);
-                continue;
-            };
-            // The arguments as `extra::parse` splits them, trailing labels kept aside.
-            let rest = &seg[eq + 1..];
-            let mut args = rest.trim_end();
-            while args.ends_with(']') {
-                args = args.rsplit_once('[').map_or("", |(l, _)| l).trim_end();
+    let parsed = parse_graph(graph)?;
+    let (mut out, mut want, mut last) = (String::new(), Vec::new(), 0);
+    for p in parsed {
+        let mut f = p.filter;
+        let idx = file_args(&f)?;
+        if let Some(r) = p.opts.filter(|_| !idx.is_empty()) {
+            for (i, u) in idx {
+                let v = with(&f, &f.args[i].1, u)?;
+                f.args[i].1 = v;
             }
-            let tail = &rest[args.len()..];
-            let mut parts = extra::split(args, ':');
-            for i in idx {
-                let (k, v) = &f.args[i];
-                let v = with(v)?;
-                parts[i] = match k {
-                    Some(k) => format!("{k}={v}"),
-                    None => v,
-                };
-            }
-            segs.push(format!("{}={}{tail}", &seg[..eq], parts.join(":")));
+            let text = f
+                .args
+                .iter()
+                .map(|(k, v)| {
+                    let v = escape(v, "':=");
+                    k.as_ref().map_or(v.clone(), |k| format!("{k}={v}"))
+                })
+                .collect::<Vec<_>>()
+                .join(":");
+            out.push_str(&graph[last..r.start]);
+            out.push_str(&escape(&text, "'[],;"));
+            last = r.end;
         }
-        chains.push(segs.join(","));
+        want.push(f);
     }
-    Ok(chains.join(";"))
+    out.push_str(&graph[last..]);
+    if parse(&out)? != want {
+        return Err("the graph's file paths can't be written back into it".into());
+    }
+    Ok(out)
 }
-
 /// One filter's reach, from the statefulness table (unknown filters are stateless).
 pub fn reach(f: &Filter) -> Reach {
     let w = |pre, post| Reach {
@@ -371,44 +699,34 @@ fn is_url(v: &str) -> bool {
     })
 }
 
-/// Refuses filters and options that write files, open arbitrary inputs or name URLs
-/// (`docs/compositing.md#libavfilter-escape-hatch`).
+/// Refuses filters not on the allowlist ([`ALLOWED`]), options that write files, and values
+/// naming URLs (`docs/compositing.md#libavfilter-escape-hatch`).
 fn policy(f: &Filter) -> Result<(), String> {
-    if REFUSED.contains(&f.name.as_str()) {
+    if !ALLOWED.iter().any(|(n, _)| *n == f.name) {
         return Err(format!(
-            "{}: not allowed in a filter node (it opens inputs or writes files outside the \
-             render); file reads go through the options listed in docs/compositing.md",
+            "{}: not on the filter node's allowlist (pixel filters, and readers whose files are \
+             keyed; see docs/compositing.md#libavfilter-escape-hatch)",
             f.name
         ));
     }
-    if let Some(&i) = file_args(f, WRITES).first() {
-        let k = f.args[i].0.as_deref().unwrap_or("its first argument");
+    if let Some((i, _)) = file_args(f)?.into_iter().find(|(_, u)| *u == Use::Write) {
+        let k = f.args[i].0.as_deref().unwrap_or("its positional argument");
         return Err(format!(
-            "{}: {k} writes (or reads a directory of) files outside the render: not allowed in \
-             a filter node",
+            "{}: {k} writes a file outside the render: not allowed in a filter node",
             f.name
         ));
     }
-    // drawtext's text is drawn, never opened. Values joined too: an unescaped `scheme://`
-    // splits at its colon.
-    let vals: Vec<(Option<&str>, &str)> = f
+    // drawtext's text is drawn, never opened.
+    if let Some((k, _)) = f
         .args
         .iter()
         .filter(|(k, _)| !(f.name == "drawtext" && k.as_deref() == Some("text")))
-        .map(|(k, v)| (k.as_deref(), v.as_str()))
-        .collect();
-    let joined = vals.iter().map(|(_, v)| *v).collect::<Vec<_>>().join(":");
-    if let Some((k, _)) = vals.iter().find(|(_, v)| is_url(v)) {
+        .find(|(_, v)| is_url(v))
+    {
         return Err(format!(
             "{}: {} names a URL: a filter node reads local files only",
             f.name,
-            k.unwrap_or("an argument")
-        ));
-    }
-    if is_url(&joined) {
-        return Err(format!(
-            "{}: names a URL: a filter node reads local files only",
-            f.name
+            k.as_deref().unwrap_or("an argument")
         ));
     }
     Ok(())
@@ -422,10 +740,10 @@ impl Node {
     /// A graph that doesn't parse, a timing-changing filter without `timing: free`, or a
     /// frame counter (`n`) outside a whole-clip node.
     pub fn resolve(&self) -> Result<Reach, String> {
-        let filters = parse(&self.graph)?;
-        if self.graph.contains(';')
-            && !(self.graph.contains("[in]") && self.graph.contains("[out]"))
-        {
+        let parsed = parse_graph(&self.graph)?;
+        let chains = parsed.last().map_or(0, |p| p.chain + 1);
+        let filters: Vec<Filter> = parsed.into_iter().map(|p| p.filter).collect();
+        if chains > 1 && !(self.graph.contains("[in]") && self.graph.contains("[out]")) {
             return Err("a graph of several chains names its input [in] and output [out]".into());
         }
         let mut r = Reach::default();
@@ -465,32 +783,45 @@ impl Node {
         Ok(r)
     }
 
-    /// Resolves the files the graph reads ([`READS`]) against `dir` (the comp file's
+    /// Resolves the files the graph reads ([`ALLOWED`]) against `dir` (the comp file's
     /// directory), into [`files`](Self::files) and [`run`](Self::run).
     ///
     /// # Errors
     /// A graph that doesn't parse, or a file that isn't there.
     pub fn locate(&mut self, dir: &Path) -> Result<(), String> {
-        let mut files = Vec::new();
-        if parse(&self.graph)?
-            .iter()
-            .any(|f| f.name == "vidstabtransform" && file_args(f, READS).is_empty())
-        {
-            return Err(
-                "vidstabtransform: name its transforms file with input= (resolved \
-                        against the comp's directory)"
-                    .into(),
-            );
-        }
-        let run = rewrite(&self.graph, |v| {
-            let p = dir.join(v.trim());
-            if !p.is_file() {
-                return Err(format!("{}: no such file", p.display()));
+        for f in parse(&self.graph)? {
+            if f.name == "vidstabtransform" && file_args(&f)?.is_empty() {
+                return Err(
+                    "vidstabtransform: name its transforms file with input= (resolved \
+                            against the comp's directory)"
+                        .into(),
+                );
             }
+        }
+        let mut files = Vec::new();
+        let run = rewrite(&self.graph, |f, v, u| {
+            let p = dir.join(v.trim());
             let p = std::path::absolute(&p).unwrap_or(p);
-            let g = graph_value(&p);
-            files.push(p);
-            Ok(g)
+            match u {
+                Use::Read if p.is_file() => files.push(p.clone()),
+                Use::ReadDir if p.is_dir() => {
+                    let mut d = std::fs::read_dir(&p)
+                        .map_err(|e| format!("{}: {e}", p.display()))?
+                        .filter_map(|e| e.ok().map(|e| e.path()))
+                        .filter(|e| e.is_file())
+                        .collect::<Vec<_>>();
+                    d.sort();
+                    files.extend(d);
+                }
+                Use::Read => return Err(format!("{}: {}: no such file", f.name, p.display())),
+                Use::ReadDir => {
+                    return Err(format!("{}: {}: no such directory", f.name, p.display()));
+                }
+                Use::Write => return Err(format!("{}: writes files", f.name)),
+            }
+            p.to_str()
+                .map(str::to_owned)
+                .ok_or_else(|| format!("{}: {}: not UTF-8", f.name, p.display()))
         })?;
         self.files = files;
         self.run = run;
@@ -609,28 +940,160 @@ mod tests {
 
     #[test]
     fn policy_refuses_writers_sources_and_urls() {
-        let e = |g: &str| node(g).resolve().unwrap_err();
-        assert!(e("movie=a.mov[m];[in][m]overlay[out]").contains("not allowed"));
-        assert!(e("[in]eq,movie=b.mkv[out]").contains("movie"));
-        assert!(e("metadata=mode=print:file=log.txt").contains("file writes"));
-        assert!(e("ssim=stats.log").contains("its first argument"));
-        assert!(e("vidstabdetect=result=t.trf").contains("not allowed"));
-        assert!(e("sendcmd=f=cmds.txt,eq").contains("not allowed"));
-        assert!(e("curves=preset=vintage:plot=p.json").contains("plot"));
-        assert!(e("lut3d=file=https\\://example.com/a.cube").contains("URL"));
-        assert!(e("subtitles=http://example.com/a.srt").contains("URL"));
-        assert!(e("scdet,select='gt(scene,0.3)'").contains("prev_*/scene"));
-        assert!(e("drawtext=text='%{frame_num}'").contains("restarts"));
-        assert!(
-            node("drawtext=text='see https\\://example.com'")
+        let e = |g: &str| {
+            node(g)
                 .resolve()
-                .is_ok()
-        );
-        assert!(node("metadata=mode=print").resolve().is_ok());
+                .err()
+                .unwrap_or_else(|| panic!("{g}: accepted"))
+        };
+        let ok = |g: &str| {
+            node(g).resolve().unwrap_or_else(|e| panic!("{g}: {e}"));
+        };
+        assert!(e("movie=a.mov[m];[in][m]overlay[out]").contains("allowlist"));
+        assert!(e("[in]eq,movie=b.mkv[out]").contains("movie"));
+        assert!(e("metadata=mode=print:file=log.txt").contains("allowlist"));
+        assert!(e("metadata=mode=print").contains("allowlist"));
+        assert!(e("ssim=stats.log").contains("allowlist"));
+        assert!(e("vidstabdetect=result=t.trf").contains("allowlist"));
+        assert!(e("sendcmd=f=cmds.txt,eq").contains("allowlist"));
+        for g in [
+            "paletteuse=debug_kdtree=k.dot",
+            "deshake=filename=d.log",
+            "deshake_opencl=filename=d.log",
+            "ssim360=stats_file=s.log",
+            "frei0r=filter_name=x",
+            "ladspa=file=x",
+            "lv2=plugin=x",
+            "dnn_processing=model=m",
+            "libvmaf",
+            "libplacebo=custom_shader_path=s.hook",
+            "program_opencl=source=k.cl",
+            "showcqt",
+            "fsync=file=f",
+            // An escaped or instance-named name is still the name.
+            "mov\\ie=a.mov",
+            "'movie'=a.mov",
+            "movie@x=a.mov",
+        ] {
+            assert!(e(g).contains("allowlist"), "{g}: {}", e(g));
+        }
+        assert!(e("curves=preset=vintage:plot=p.json").contains("plot"));
+        assert!(e("curves=vintage:::::::p.json").contains("positional"));
+        assert!(e("lut3d=file=https\\\\\\://example.com/a.cube").contains("URL"));
+        assert!(e("lut3d=file=https\\://example.com/a.cube").contains("positional"));
+        assert!(e("subtitles='http\\://example.com/a.srt'").contains("URL"));
+        assert!(e("scdet,select='gt(scene,0.3)'").contains("allowlist"));
+        assert!(e("drawtext=text='%{frame_num}'").contains("restarts"));
+        ok("drawtext=text='see https\\://example.com'");
         assert_eq!(node("scdet").resolve().unwrap().preroll, 1);
         assert!(node("freezedetect").resolve().unwrap().whole_clip);
         assert_eq!(node("fieldmatch").resolve().unwrap().postroll, 2);
         assert!(e("pullup").contains("timing"));
+    }
+
+    /// Option text libavfilter reads differently from a one-pass parser: the graph parser
+    /// unescapes once, the option parser again.
+    #[test]
+    fn two_passes_like_libavfilter() {
+        let e = |g: &str| {
+            node(g)
+                .resolve()
+                .err()
+                .unwrap_or_else(|| panic!("{g}: accepted"))
+        };
+        let ok = |g: &str| {
+            node(g).resolve().unwrap_or_else(|e| panic!("{g}: {e}"));
+        };
+        // The bypasses: a hidden `file=` (pass 1 turns `\:` into `:`) and an escaped key.
+        for g in [
+            "metadata=mode=print\\:file=/tmp/x",
+            "metadata=mode=print:fi\\le=/tmp/x",
+            "metadata=mode=print:'file'=/tmp/x",
+            "metadata=mode=print:'fi'le=/tmp/x",
+            "metadata=mode=print\\\\:file=/tmp/x",
+            "metadata='mode=print:file=/tmp/x'",
+        ] {
+            assert!(e(g).contains("allowlist"), "{g}: {}", e(g));
+        }
+        // The same tricks on an allowed filter reach its write option, or a key that isn't
+        // a plain name.
+        for g in [
+            "curves=preset=vintage\\:plot=/tmp/x",
+            "curves=preset=vintage:pl\\ot=/tmp/x",
+            "curves=preset=vintage:'plot'=/tmp/x",
+            "curves='preset=vintage:plot=/tmp/x'",
+        ] {
+            assert!(e(g).contains("plot"), "{g}: {}", e(g));
+        }
+        for g in [
+            "eq=gamma=1.1:/gamma=g.txt",
+            "eq=gamma=1.1:\\/gamma=g.txt",
+            "eq=gamma=1.1:ga-mma=1",
+            "eq=gamma=1.1:g.amma=1",
+            "eq=gamma=1.1:=1",
+        ] {
+            assert!(e(g).contains("plain option name"), "{g}: {}", e(g));
+        }
+        // Pass 2 sees a quoted key (pass 1 kept the quotes): ffmpeg takes it as a value.
+        assert!(e("eq=gamma=1.1:\\'brightness\\'=0.1").contains("positional"));
+        assert!(e("eq=\\'brightness\\'=0.1").contains("`=`"));
+        assert!(e("eq=gamma=1.1:gamma=1.2").contains("set twice"));
+        assert!(e("lut3d=a.cube:file=b.cube").contains("set twice"));
+        assert!(e("subtitles=filename=a.srt:f=b.srt").contains("set twice"));
+        // Unterminated quotes and trailing backslashes, in either pass.
+        assert!(e("eq=brightness='0.1").contains("unterminated quote"));
+        assert!(e("eq=brightness=\\'0.1").contains("unterminated quote"));
+        assert!(e("eq=brightness=0.1\\").contains("trailing backslash"));
+        assert!(e("eq=brightness=0.1\\\\").contains("trailing backslash"));
+        assert!(e("sws_flags=bicubic;eq").contains("sws_flags"));
+        assert!(e("eq=gamma=1]").contains("trailing"));
+        // Legit quoting still passes, and values come out as ffmpeg sees them.
+        ok("eq=brightness='0.1*sin(2*PI*t)'");
+        ok("eq=eval=frame:brightness=0.1*sin(2*PI*t):contrast='1.1'");
+        ok("eq=eval=frame:brightness=0.1*mod(t\\,2)");
+        ok("drawtext=text='10\\:00, [ok]; fine':x=10:y=h-20");
+        ok("drawtext=text=a\\\\\\:b");
+        ok("[in] eq = gamma = 1.1 [x] ; [x] hue@h=s=0 [out]");
+        ok("eq=gamma=1.1,");
+        let f = parse("eq=brightness='0.1*sin(2*PI*t)':contrast=1\\,1").unwrap();
+        assert_eq!(
+            f[0].args,
+            [
+                (Some("brightness".into()), "0.1*sin(2*PI*t)".into()),
+                (Some("contrast".into()), "1,1".into())
+            ]
+        );
+        let f = parse("drawtext=text='10\\:00, [ok]'").unwrap();
+        assert_eq!(f[0].args[0].1, "10:00, [ok]");
+        let f = parse("drawtext=text=a\\\\\\:b:x=1").unwrap();
+        assert_eq!(f[0].args[0].1, "a:b");
+        let f = parse("[in]hue@h=s=0[out]").unwrap();
+        assert_eq!(f[0].name, "hue");
+        // Positional indices: drawtext's third is textfile, subtitles' third fontsdir.
+        let f = parse("drawtext=f.ttf:hi:t.txt").unwrap();
+        assert_eq!(file_args(&f[0]).unwrap(), [(0, Use::Read), (2, Use::Read)]);
+        let f = parse("subtitles=a.srt:640x480:fonts").unwrap();
+        assert_eq!(
+            file_args(&f[0]).unwrap(),
+            [(0, Use::Read), (2, Use::ReadDir)]
+        );
+    }
+
+    #[test]
+    fn escape_round_trips() {
+        for v in [
+            "plain",
+            "/a b/c,d[e]f;g:h=i'j\\k",
+            " lead",
+            "trail ",
+            " both\t",
+            "\\",
+            "''",
+        ] {
+            let text = format!("lut3d=file={}", escape(&escape(v, "':="), "'[],;"));
+            let f = parse(&text).unwrap();
+            assert_eq!(f[0].args, [(Some("file".into()), v.into())], "{text}");
+        }
     }
 
     #[test]

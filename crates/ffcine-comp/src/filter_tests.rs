@@ -342,12 +342,27 @@ fn canvas_fps_is_in_the_key() {
 fn writers_sources_and_urls_are_refused_at_check() {
     let dir = scratch("policy");
     let e = |g: &str| comp_in(&dir, "30", &graph(g)).err().unwrap_or_default();
-    assert!(e("[in]movie=b.mov[m];[in][m]overlay[out]").contains("not allowed"));
-    assert!(e("metadata=mode=print:file=meta.txt").contains("writes"));
-    assert!(e("lut3d=file=https\\://example.com/a.cube").contains("URL"));
-    assert!(e("psnr=stats_file=psnr.log").contains("writes"));
-    assert!(e("vidstabdetect=result=t.trf").contains("not allowed"));
-    assert!(e("sendcmd=f=c.txt,eq").contains("not allowed"));
+    for g in [
+        "[in]movie=b.mov[m];[in][m]overlay[out]",
+        "metadata=mode=print:file=meta.txt",
+        "metadata=mode=print\\:file=meta.txt",
+        "metadata=mode=print:fi\\le=meta.txt",
+        "psnr=stats_file=psnr.log",
+        "vidstabdetect=result=t.trf",
+        "sendcmd=f=c.txt,eq",
+        "paletteuse=debug_kdtree=k.dot",
+        "deshake=filename=d.log",
+        "ssim360=stats_file=s.log",
+    ] {
+        let e = e(g);
+        assert!(
+            e.contains("filter.graph") && e.contains("allowlist"),
+            "{g}: {e}"
+        );
+    }
+    assert!(e("curves=vintage:pl\\ot=p.gp").contains("writes"));
+    assert!(e("eq=gamma=1.1:/gamma=g.txt").contains("plain option name"));
+    assert!(e("lut3d=file=https\\\\\\://example.com/a.cube").contains("URL"));
     assert_eq!(e("eq=gamma=1.1"), "");
     std::fs::remove_dir_all(&dir).expect("cleanup");
 }
