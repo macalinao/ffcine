@@ -247,3 +247,107 @@ fn n_and_timing_are_checked() {
     );
     assert!(err(graph("[in]split[a][b];[a][b]blend=all_mode=average")).contains("[out]"));
 }
+
+/// [`Fake`], hashing small files by their bytes.
+struct Contents;
+
+impl Media for Contents {
+    fn dims(&self, p: &Path) -> Result<(u32, u32)> {
+        Fake("ffmpeg 1").dims(p)
+    }
+    fn identity(&self, path: &Path) -> Value {
+        json!(path)
+    }
+    fn video_rate(&self, p: &Path) -> Result<(f64, u64)> {
+        Fake("ffmpeg 1").video_rate(p)
+    }
+    fn content_hash(&self, path: &Path) -> Value {
+        json!(std::fs::read(path).expect("read"))
+    }
+}
+
+/// A comp in `dir` at `fps` with one filtered layer.
+fn comp_in(dir: &Path, fps: &str, filter: &Value) -> std::result::Result<Comp, String> {
+    Comp::from_value(
+        &json!({
+            "schema": "ffcine.comp/1",
+            "canvas": { "size": [1080, 1920], "fps": fps, "duration": 2.0 },
+            "layers": [layer(filter.clone(), json!({}))],
+        }),
+        dir,
+    )
+    .map_err(|e| e.to_string())
+}
+
+fn first_key(c: &Comp) -> Value {
+    let r = c.pieces()[0].clone();
+    c.lower(r, OUT, &Contents).expect("lower").recipe
+}
+
+/// A unique scratch directory for a test.
+fn scratch(name: &str) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("ffcine-{name}-{}", std::process::id()));
+    std::fs::create_dir_all(&d).expect("scratch dir");
+    d
+}
+
+#[test]
+#[allow(clippy::many_single_char_names)]
+fn a_referenced_lut_keys_by_its_contents_from_the_comps_dir() {
+    let dir = scratch("lut-key");
+    let lut = dir.join("look.cube");
+    std::fs::write(&lut, "LUT_3D_SIZE 2\n# a\n").expect("write");
+    let g = graph("lut3d=file=look.cube");
+    let c = comp_in(&dir, "30", &g).expect("comp");
+    let a = first_key(&c);
+    // The graph ffmpeg runs names the LUT by its absolute path.
+    let p = c
+        .lower(c.pieces()[0].clone(), OUT, &Contents)
+        .expect("lower");
+    let run = p
+        .layers
+        .iter()
+        .find_map(|l| match &l.source {
+            LayerSource::Filtered(p) => Some(p.graph.clone()),
+            _ => None,
+        })
+        .expect("a filter prep");
+    assert!(run.contains(&lut.to_string_lossy().into_owned()), "{run}");
+    assert_eq!(a, first_key(&comp_in(&dir, "30", &g).expect("comp")));
+    std::fs::write(&lut, "LUT_3D_SIZE 2\n# b\n").expect("write");
+    assert_ne!(a, first_key(&comp_in(&dir, "30", &g).expect("comp")));
+    // Missing: an error at comp check.
+    std::fs::remove_file(&lut).expect("remove");
+    let e = comp_in(&dir, "30", &g).err().unwrap_or_default();
+    assert!(
+        e.contains("filter.graph") && e.contains("no such file"),
+        "{e}"
+    );
+    std::fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+#[test]
+fn canvas_fps_is_in_the_key() {
+    let dir = scratch("fps-key");
+    let g = graph("eq=eval=frame:gamma=1+0.1*sin(t)");
+    let a = first_key(&comp_in(&dir, "30", &g).expect("comp"));
+    let b = first_key(&comp_in(&dir, "30000/1001", &g).expect("comp"));
+    assert_ne!(a, b);
+    // Unfiltered layers key as before: the node's keys are only in filtered layers.
+    assert!(a.to_string().contains("\"fps\":30"), "{a}");
+    std::fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+#[test]
+fn writers_sources_and_urls_are_refused_at_check() {
+    let dir = scratch("policy");
+    let e = |g: &str| comp_in(&dir, "30", &graph(g)).err().unwrap_or_default();
+    assert!(e("[in]movie=b.mov[m];[in][m]overlay[out]").contains("not allowed"));
+    assert!(e("metadata=mode=print:file=meta.txt").contains("writes"));
+    assert!(e("lut3d=file=https\\://example.com/a.cube").contains("URL"));
+    assert!(e("psnr=stats_file=psnr.log").contains("writes"));
+    assert!(e("vidstabdetect=result=t.trf").contains("not allowed"));
+    assert!(e("sendcmd=f=c.txt,eq").contains("not allowed"));
+    assert_eq!(e("eq=gamma=1.1"), "");
+    std::fs::remove_dir_all(&dir).expect("cleanup");
+}

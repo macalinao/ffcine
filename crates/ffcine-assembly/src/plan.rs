@@ -705,6 +705,11 @@ impl ffcine_comp::Media for CompMedia<'_> {
     fn ffmpeg_build(&self) -> String {
         self.fp.ffmpeg_build()
     }
+    fn content_hash(&self, path: &Path) -> Value {
+        self.fp
+            .content_hash(path)
+            .map_or_else(|| self.identity(path), Value::String)
+    }
     fn profile(&self, path: &Path) -> ffcine_core::Result<ffcine_core::camera::Profile> {
         self.profile
             .map_or(Ok(ffcine_core::camera::Profile::Rec709), |f| f(path))

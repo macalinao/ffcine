@@ -143,10 +143,16 @@ pub(crate) fn filtergraph(p: &Prep, color: ColorSpace, carrier: &str) -> String 
 /// Arguments for the decoder process: `frames` frames of the source from `p.start`, upright, as
 /// YUV4MPEG in `carrier` on stdout.
 fn decode_args(p: &Prep, carrier: &str, frames: i64, rgb: bool) -> Vec<OsString> {
-    let mut v: Vec<OsString> = ["-ss", &p.start.as_secs_f64().to_string(), "-i"]
-        .iter()
-        .map(OsString::from)
-        .collect();
+    let mut v: Vec<OsString> = [
+        "-protocol_whitelist",
+        "file",
+        "-ss",
+        &p.start.as_secs_f64().to_string(),
+        "-i",
+    ]
+    .iter()
+    .map(OsString::from)
+    .collect();
     v.push(p.input.clone().into());
     if rgb {
         // YUV4MPEG has no RGB: full-range BT.709 YCbCr,, as tagged.
@@ -185,6 +191,8 @@ fn filter_args(p: &Prep, graph: &str, out: &Path) -> Vec<OsString> {
         }
     }
     for a in [
+        "-protocol_whitelist",
+        "pipe",
         "-f",
         "yuv4mpegpipe",
         "-i",
@@ -332,19 +340,41 @@ pub(crate) fn run(
     let fil_ok = fil.wait().is_ok_and(|s| s.success());
     let dec_log = dec_log.and_then(|h| h.join().ok()).unwrap_or_default();
     let fil_log = fil_log.and_then(|h| h.join().ok()).unwrap_or_default();
-    if !fil_ok {
-        return Err(format!("filter graph `{}`: {fil_log}", p.graph));
-    }
-    // The decoder stops early when the map needs no more frames: a killed pipe is fine then.
-    fed.map_err(|e| {
+    let with_log = |e: String| {
         if dec_log.is_empty() {
             e
         } else {
             format!("{e}: {dec_log}")
         }
-    })?;
-    let _ = dec_ok;
+    };
+    // A short or failed decode first; a failed write is the filter process's failure.
+    if let Err(e) = &fed
+        && !e.starts_with("feeding")
+    {
+        return Err(with_log(e.clone()));
+    }
+    if !fil_ok {
+        return Err(format!("filter graph `{}`: {fil_log}", p.graph));
+    }
+    fed?;
+    if !dec_ok {
+        return Err(with_log(format!("decoding {}", p.input.display())));
+    }
     Ok(())
+}
+
+/// Fails unless the intermediate's size `got` is the layer's source size `want`: the layer's
+/// `fit` and `crop` place the source, so a graph keeps its size.
+pub(crate) fn check_dims(got: Option<(u32, u32)>, want: (u32, u32)) -> Result<(), String> {
+    match got {
+        Some(g) if g == want => Ok(()),
+        Some((w, h)) => Err(format!(
+            "the graph output {w}x{h} from a {}x{} source: a filter node must keep the layer's \
+             size (scale, crop and pad with the layer's fit, crop and transform instead)",
+            want.0, want.1
+        )),
+        None => Err("the graph wrote no video".into()),
+    }
 }
 
 /// Copies the mapped frames from the decoder to the filter process.
@@ -382,21 +412,24 @@ fn feed(dec: &mut Child, fil: &mut Child, p: &Prep) -> Result<(), String> {
         dst.write_all(b"FRAME\n").map_err(wr)?;
         dst.write_all(frame).map_err(wr)
     };
+    let short = |got: i64| {
+        format!(
+            "the source decoded to {got} frames from {:.3} s, the frame map needs {}",
+            p.start.as_secs_f64(),
+            p.map.iter().copied().max().unwrap_or(0) + 1
+        )
+    };
     if p.map.windows(2).all(|w| w[0] <= w[1]) {
-        // Forward: one frame held. Past the decoded end the last frame holds.
-        let (mut cur, mut at, mut end) = (Vec::new(), -1i64, false);
+        // Forward: one frame held.
+        let (mut cur, mut at) = (Vec::new(), -1i64);
         for &k in p.map.iter() {
-            while at < k && !end {
+            while at < k {
                 let mut b = Vec::new();
-                if next(&mut b)? {
-                    cur = b;
-                    at += 1;
-                } else {
-                    end = true;
+                if !next(&mut b)? {
+                    return Err(short(at + 1));
                 }
-            }
-            if at < 0 {
-                return Err("the source decoded to no frames".into());
+                cur = b;
+                at += 1;
             }
             put(&cur)?;
         }
@@ -417,12 +450,11 @@ fn feed(dec: &mut Child, fil: &mut Child, p: &Prep) -> Result<(), String> {
             }
             held.push(b);
         }
-        let last = held
-            .len()
-            .checked_sub(1)
-            .ok_or("the source decoded to no frames")?;
+        if held.len() < frames {
+            return Err(short(i64::try_from(held.len()).unwrap_or(i64::MAX)));
+        }
         for &k in p.map.iter() {
-            put(&held[usize::try_from(k).unwrap_or(0).min(last)])?;
+            put(&held[usize::try_from(k).unwrap_or(0)])?;
         }
     }
     dst.flush().map_err(wr)
@@ -440,6 +472,7 @@ mod tests {
             hw: Hw::Cpu,
             free_timing: false,
             input: "a.mov".into(),
+            dims: (4, 2),
             start: Duration::ZERO,
             map: Arc::from(vec![0, 1, 2]),
             rate: 24.0,
@@ -463,6 +496,26 @@ mod tests {
         p.free_timing = true;
         let g = filtergraph(&p, c, "yuv420p10le");
         assert!(g.ends_with("format=p010le,hwupload[in];[in]split[a][b];[a][b]blend=all_mode=average[out];[out]hwdownload,format=p010le,setpts=PTS-STARTPTS[fo]"), "{g}");
+    }
+
+    #[test]
+    fn dims_must_match() {
+        assert!(check_dims(Some((1920, 1080)), (1920, 1080)).is_ok());
+        let e = check_dims(Some((960, 540)), (1920, 1080)).unwrap_err();
+        assert!(
+            e.contains("960x540") && e.contains("keep the layer's size"),
+            "{e}"
+        );
+        assert!(check_dims(None, (4, 2)).is_err());
+    }
+
+    #[test]
+    fn processes_take_local_inputs_only() {
+        let p = prep("eq");
+        let d = decode_args(&p, "yuv420p", 3, false);
+        assert_eq!(d[..2], ["-protocol_whitelist", "file"].map(OsString::from));
+        let f = filter_args(&p, "eq", Path::new("o.mkv"));
+        assert_eq!(f[..2], ["-protocol_whitelist", "pipe"].map(OsString::from));
     }
 
     #[test]

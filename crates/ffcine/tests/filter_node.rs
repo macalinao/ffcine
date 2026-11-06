@@ -32,15 +32,15 @@ fn ffmpeg(args: &[&str]) -> Vec<u8> {
     out.stdout
 }
 
-/// A 2 s, 30 fps comp of one layer.
-fn comp(layer: &Value) -> Comp {
+/// A 2 s, 30 fps comp of one layer, in `dir`.
+fn comp(layer: &Value, dir: &Path) -> Comp {
     Comp::from_value(
         &json!({
             "schema": "ffcine.comp/1",
             "canvas": { "size": [320, 180], "fps": "30", "duration": 2, "background": "black" },
             "layers": [layer],
         }),
-        Path::new("/"),
+        dir,
     )
     .expect("comp")
 }
@@ -61,6 +61,15 @@ fn renderer<'a>(d: &Path, ff: &'a backend::Ffmpeg) -> Renderer<'a> {
 /// Renders `c` over `pieces` (consecutive ranges) into `out` and returns the framemd5 lines of
 /// all of them, in order.
 fn render(c: &Comp, pieces: &[std::ops::Range<i64>], d: &Path, tag: &str) -> Vec<String> {
+    try_render(c, pieces, d, tag).expect("render")
+}
+
+fn try_render(
+    c: &Comp,
+    pieces: &[std::ops::Range<i64>],
+    d: &Path,
+    tag: &str,
+) -> Result<Vec<String>, String> {
     let ff = backend::Ffmpeg::new().expect("backend");
     let probe = |p: &Path| {
         let info = ffcine::Backend::probe(&ff, p)?;
@@ -88,7 +97,7 @@ fn render(c: &Comp, pieces: &[std::ops::Range<i64>], d: &Path, tag: &str) -> Vec
         enc.rate = ffcine::RateControl::ConstQp(0);
         enc.color = ColorSpace::BT709_TV;
         r.render_piece(&piece, 30.0, &out, enc, None)
-            .expect("render");
+            .map_err(|e| e.to_string())?;
         let o = out.to_str().expect("utf-8");
         let lines = ffmpeg(&["-i", o, "-map", "0:v", "-f", "framemd5", "-"]);
         md5.extend(
@@ -98,7 +107,7 @@ fn render(c: &Comp, pieces: &[std::ops::Range<i64>], d: &Path, tag: &str) -> Vec
                 .map(|l| l.rsplit(',').next().unwrap_or("").trim().to_owned()),
         );
     }
-    md5
+    Ok(md5)
 }
 
 /// A 3 s, 30 fps `testsrc2` source (H.264, long GOP: the decoder has to seek) at `d/src.mp4`.
@@ -133,7 +142,7 @@ fn whole_vs_split(name: &str, filter: &Value, extra: &Value) -> Vec<String> {
     for (k, v) in extra.as_object().expect("object") {
         layer[k] = v.clone();
     }
-    let c = comp(&layer);
+    let c = comp(&layer, &d);
     let whole = render(&c, &[0..60], &d, "whole");
     let split = render(&c, &[0..17, 17..41, 41..60], &d, "split");
     assert_eq!(whole.len(), 60);
@@ -186,4 +195,49 @@ fn hw_nodes_split() {
     );
     assert_ne!(cuda, plain);
     assert_ne!(vulkan, plain);
+}
+
+/// A 2-point 3D LUT that inverts.
+const INVERT: &str = "LUT_3D_SIZE 2
+1 1 1
+0 1 1
+1 0 1
+0 0 1
+1 1 0
+0 1 0
+1 0 0
+0 0 0
+";
+
+#[test]
+#[ignore = "needs a Vulkan GPU, NVENC and ffmpeg"]
+fn a_relative_lut_reads_from_the_comps_dir() {
+    // A directory name the graph text must escape.
+    let d = dir("lut");
+    std::fs::create_dir_all(d.join("my luts, v1")).expect("lut dir");
+    std::fs::write(d.join("my luts, v1/invert.cube"), INVERT).expect("lut");
+    let plain = whole_vs_split("lut-null", &json!({ "graph": "null" }), &json!({}));
+    let inverted = whole_vs_split(
+        "lut",
+        &json!({ "graph": "lut3d=file='my luts, v1/invert.cube'" }),
+        &json!({}),
+    );
+    assert_ne!(inverted, plain, "the LUT changed nothing");
+}
+
+#[test]
+#[ignore = "needs a Vulkan GPU, NVENC and ffmpeg"]
+fn a_graph_that_resizes_is_an_error() {
+    let d = dir("dims");
+    let src = source(&d);
+    let c = comp(
+        &json!({
+            "source": { "video": src.to_str().expect("utf-8") },
+            "filter": { "graph": "scale=160:90" },
+        }),
+        &d,
+    );
+    let e = try_render(&c, &[0..60], &d, "dims").expect_err("a resized intermediate");
+    assert!(e.contains("keep the layer's size"), "{e}");
+    let _ = std::fs::remove_dir_all(&d);
 }

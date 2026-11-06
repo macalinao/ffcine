@@ -61,6 +61,11 @@ pub trait Media {
             "the frame rate is unknown (needed for a time remap)",
         ))
     }
+    /// A small file's contents in keys (a filter node's LUTs, fonts, text files): by default its
+    /// [`identity`](Self::identity).
+    fn content_hash(&self, path: &Path) -> Value {
+        self.identity(path)
+    }
     /// The ffmpeg build that runs filter nodes (in their keys).
     fn ffmpeg_build(&self) -> String {
         String::from("unknown")
@@ -631,6 +636,8 @@ impl Comp {
             "postroll": reach.postroll,
             "whole_clip": reach.whole_clip,
             "timing": if node.free_timing { "free" } else { "keep" },
+            "fps": fps,
+            "files": node.files.iter().map(|f| media.content_hash(f)).collect::<Vec<_>>(),
             "ffmpeg": media.ffmpeg_build(),
             "video": media.identity(p),
             "map": map_digest(&picks),
@@ -651,7 +658,8 @@ impl Comp {
             },
         );
         let prep = Prep {
-            graph: node.graph.clone(),
+            graph: node.run.clone(),
+            dims: media.dims(p)?,
             hw: node.hw,
             free_timing: node.free_timing,
             input: p.to_owned(),

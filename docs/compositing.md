@@ -550,7 +550,8 @@ For anything ffcine has no native primitive for, a layer gets a raw libavfilter 
   `nlmeans_vulkan`), downloading after. ffcine doesn't guess the mode from the graph. A graph
   of one chain is spliced in as is; one of several chains (`;`) names its input `[in]` and
   its output `[out]`. The graph must output one video stream at the input rate with the same
-  frame count (checked after the run), and the frames are tagged with the source's colour tags
+  frame count and the source's size (both checked after the run: the layer's `fit`, `crop`
+  and `transform` place the picture, so scale, crop and pad there, not in the graph), and the frames are tagged with the source's colour tags
   (`setparams` ahead of the graph), which the graph may change (its own `setparams`).
 - **Per comp output** ([Not yet](#not-yet)): `canvas.filter` would run the same way over the
   composited canvas. The segment renders lossless, the graph runs, then the profile's encoder.
@@ -560,8 +561,10 @@ For anything ffcine has no native primitive for, a layer gets a raw libavfilter 
   layer starts at PTS 3 s, not 0, so `t`-based options (`eq=eval=frame:brightness='0.1*sin(t)'`,
   `drawtext` timing) render the same split or unsplit. `layer` is the default because moving the
   layer on the timeline then changes nothing: the key needs no position. libavfilter's `n` (a
-  filter's own frame counter) can't be offset: an option that reads `n` (or `N`) is an error
-  unless the node is `whole_clip`, telling you to use `t*FRAME_RATE` or `whole_clip`.
+  filter's own frame counter) can't be offset: an option that reads `n` (or `N`, drawtext's
+  `%{n}` and `%{frame_num}`, or `select`'s `prev_*` and `scene`, which remember earlier
+  frames) is an error unless the node is `whole_clip`, telling you to use `t*FRAME_RATE` or
+  `whole_clip`.
 - **State**: a graph is stateful if any filter in it reads other frames. `ffcine-render` keeps
   a table of known filters and their reach in frames, under its own `FILTER_TABLE_REVISION`:
 
@@ -574,8 +577,10 @@ For anything ffcine has no native primitive for, a layer gets a raw libavfilter 
   | `tmedian`, `tmidequalizer` | `radius` | `radius` | |
   | `fftdnoiz` | `prev` | `next` | |
   | `yadif`, `bwdif`, `w3fdif` (and `_cuda`) | 1 | 1 | |
-  | `lagfun`, `hqdn3d` (recursive: every past frame counts), `vidstabtransform`, `deshake`, `normalize`, `photosensitivity` | | | whole clip |
-  | `minterpolate`, `framerate`, `mpdecimate`, `decimate` | | | change timing: rejected unless `timing: free`, then whole clip |
+  | `scdet` | 1 | 0 | |
+  | `fieldmatch` | 2 | 2 | |
+  | `lagfun`, `hqdn3d` (recursive: every past frame counts), `vidstabtransform`, `deshake`, `normalize`, `photosensitivity`, `freezedetect` | | | whole clip |
+  | `minterpolate`, `framerate`, `mpdecimate`, `decimate`, `pullup` | | | change timing: rejected unless `timing: free`, then whole clip |
 
   Windowed filters get pre/post-roll; recursive ones (whose output depends on every earlier
   frame) can only match an unsplit render by running over the whole clip. Rolls in the table
@@ -589,13 +594,31 @@ For anything ffcine has no native primitive for, a layer gets a raw libavfilter 
 - **Expressions need none of this**: they are pure functions of time and frame, so a piece
   samples its own frames and gets the values a whole render would.
 - **Key**: the node's recipe is the graph text verbatim, `hw`, `clock`, the resolved
-  `preroll`/`postroll`/`whole_clip`, `FILTER_TABLE_REVISION` (stateful nodes only), the ffmpeg
-  build (the first line of `ffmpeg -version` plus its libavfilter version), and its inputs: the source fingerprint and the frame-map slice
-  it reads, including pre-roll and post-roll. For a whole-clip node that is the whole layer's
+  `preroll`/`postroll`/`whole_clip`, `FILTER_TABLE_REVISION` (stateful nodes only), the canvas
+  `fps` (the fed rate, which `t` and temporal filters see), the ffmpeg build (the first line of
+  `ffmpeg -version` plus its libavfilter version), the contents of every file the graph reads
+  (below), and its inputs: the source fingerprint and the frame-map slice it reads, including pre-roll and post-roll. For a whole-clip node that is the whole layer's
   map; with `clock: "comp"` it also includes the layer's `in`. It goes into the layer's recipe,
   so the segment key changes when any of these do. `RENDER_REVISION` is bumped when ffcine
   changes how nodes run (the PTS rule, re-tagging); a change to the table bumps only
   `FILTER_TABLE_REVISION`, which re-renders only stateful nodes.
+- **Files and safety**: a graph runs ffmpeg's filters with the renderer's rights, so what it
+  may touch is limited. File reads go only through these options, each resolved against the
+  comp file's directory (not ffmpeg's working directory), passed to ffmpeg as an absolute path,
+  and keyed by its contents; a missing file is an error at `comp check`: `lut3d`/`lut1d`
+  `file`, `subtitles`/`ass` `filename`, `drawtext` `fontfile` and `textfile`,
+  `vidstabtransform` `input` (required: its default name would be read from the working
+  directory), `curves` `psfile`, `removelogo` `filename`, `find_rect` `object`, `cover_rect`
+  `cover`, the `dnn_*`, `sr` and `derain` `model` (and `labels`), and `libplacebo`
+  `custom_shader_path`. Refused at `comp check`: sources and command feeds that open arbitrary
+  inputs (`movie`, `amovie`, `sendcmd`, `asendcmd`, `zmq`, `azmq`), plugin loaders (`frei0r`),
+  writers (`vidstabdetect`, `metadata`/`ametadata` `file`, `psnr`/`ssim`/`xpsnr` `stats_file`,
+  `vmafmotion` `stats_file`, `libvmaf` `log_path`, `signature` `filename`, `curves` `plot`),
+  directories that can't be keyed (`subtitles`/`ass` `fontsdir`), and any option value naming a
+  URL (`scheme://`, except `drawtext`'s `text`, which is only drawn). Both `ffmpeg` processes
+  run with `-protocol_whitelist` (`file` for the decoder, `pipe` for the graph's input). A
+  file named by any other option is read relative to the renderer's working directory and not
+  keyed: don't.
 - **Caveats**: CPU graphs are slow at 4K (a download, the filter, an upload, a lossless encode)
   and run on the prep thread pool, not the GPU pipeline. GPL filters exist only if the ffmpeg
   in use was built with them, and their licence is then the user's concern. Audio is ignored.
@@ -629,7 +652,8 @@ piece's intermediate holds just its frames (rolls dropped by a `trim` after the 
 never promoted to the base. Layers without `filter` and timelines keep their keys and pixels
 (`RENDER_REVISION` stays 8). The cache tests are `ffcine-comp`'s `filter_tests` and
 `ffcine-assembly`'s `ffmpeg_build_keys_filter_nodes_only`; the split tests (plus `hw: cuda`
-and `hw: vulkan` graphs) are `crates/ffcine/tests/filter_node.rs`. `canvas.filter`, filters on
+and `hw: vulkan` graphs, a relative LUT read from the comp's directory, and a resizing graph
+refused) are `crates/ffcine/tests/filter_node.rs`. `canvas.filter`, filters on
 stills and nested comps, and the rest are [Not yet](#not-yet).
 
 ## Rendering

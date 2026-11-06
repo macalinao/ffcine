@@ -346,7 +346,7 @@ pub(crate) const FILTER_HINT: &str =
     "(other libavfilter graphs run through the layer's `filter`, the escape hatch)";
 
 /// A layer's `filter` (`docs/compositing.md#libavfilter-escape-hatch`) and its reach.
-fn filter_node(v: &Value, path: &str) -> Result<(Node, Reach)> {
+fn filter_node(v: &Value, path: &str, dir: &Path) -> Result<(Node, Reach)> {
     let m = object(v, path)?;
     check_keys(
         m,
@@ -407,7 +407,7 @@ fn filter_node(v: &Value, path: &str) -> Result<(Node, Reach)> {
                 .ok_or_else(|| err(at("whole_clip"), format!("expected true or false, got {v}")))
         })
         .transpose()?;
-    let node = Node {
+    let mut node = Node {
         graph: graph.to_owned(),
         hw,
         clock,
@@ -415,8 +415,11 @@ fn filter_node(v: &Value, path: &str) -> Result<(Node, Reach)> {
         postroll: roll("postroll")?,
         whole_clip,
         free_timing,
+        files: Vec::new(),
+        run: graph.to_owned(),
     };
     let reach = node.resolve().map_err(|e| err(at("graph"), e))?;
+    node.locate(dir).map_err(|e| err(at("graph"), e))?;
     Ok((node, reach))
 }
 
@@ -1233,7 +1236,7 @@ impl Comp {
                      see docs/compositing.md#not-yet)",
                 ));
             }
-            Some(v) => Some(filter_node(v, &format!("{path}.filter"))?),
+            Some(v) => Some(filter_node(v, &format!("{path}.filter"), dir)?),
         };
         let blend = match m.get("blend") {
             None => BlendMode::Normal,

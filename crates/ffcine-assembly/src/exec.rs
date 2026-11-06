@@ -687,6 +687,14 @@ impl Renderer<'_> {
                             what: what.clone(),
                             log,
                         })?;
+                        let out = self.backend.probe(partial)?;
+                        let got = out.video().map(|(_, v)| (v.width, v.height));
+                        crate::filter_prep::check_dims(got, p.dims).map_err(|log| {
+                            ExecError::Ffmpeg {
+                                what: what.clone(),
+                                log,
+                            }
+                        })?;
                         if !p.free_timing {
                             self.check_frames(partial, p.store.len(), &what)?;
                         }
@@ -750,7 +758,8 @@ impl Renderer<'_> {
             what: what.into(),
             log: format!(
                 "the graph gave {} frames for {want}: a graph that changes the frame count or \
-                 timing needs `timing: free`",
+                 timing needs \"timing\": \"free\" in the layer's filter (the layer then takes \
+                 whatever frames it outputs)",
                 got.map_or_else(|| "an unknown number of".into(), |n| n.to_string())
             ),
         })
