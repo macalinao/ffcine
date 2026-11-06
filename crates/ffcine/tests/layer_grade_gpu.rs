@@ -75,6 +75,7 @@ fn render(d: &Path, project: &Value, layer: &Value, name: &str) -> Vec<u8> {
         fp: &FsFingerprinter,
         dims: &dims,
         profile: None,
+        rate: None,
     };
     let size = Size {
         width: W,

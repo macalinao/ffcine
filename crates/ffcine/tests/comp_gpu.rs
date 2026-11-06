@@ -93,6 +93,7 @@ fn render(comp: &Comp, at: i64, out: &Path, d: &Path) -> Base {
         fp: &FsFingerprinter,
         dims: &dims,
         profile: None,
+        rate: None,
     };
     let size = Size {
         width: W,
@@ -379,6 +380,7 @@ fn bench_layers() {
         fp: &FsFingerprinter,
         dims: &dims,
         profile: None,
+        rate: None,
     };
     let r = Renderer {
         backend: &ff,

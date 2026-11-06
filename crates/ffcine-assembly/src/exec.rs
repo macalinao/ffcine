@@ -29,7 +29,7 @@ use crate::comp::{self, Finish, Layout, Placement, TransitionKind};
 use crate::plan::{
     AudioPlan, OverlaySource, Plan, SegLayer, Segment, Shot, Split, TextLayer, Unit, grain_for,
 };
-use crate::recipe::Key;
+use crate::recipe::{Fingerprinter as _, Key};
 use ffcine_render::Warp;
 use ffcine_stabilize::{Detection, SourceRange};
 
@@ -614,7 +614,9 @@ impl Renderer<'_> {
                 (input, start, g)
             }
             Unit::Comp(p) => {
-                layers.extend(p.layers.iter().cloned());
+                let mut ls = p.layers.clone();
+                self.intra_preps(&mut ls)?;
+                layers.extend(ls);
                 overlays.extend(p.overlays.iter().cloned());
                 match &p.base {
                     Base::Black => (
@@ -648,6 +650,77 @@ impl Renderer<'_> {
             let _ = std::fs::remove_file(t);
         }
         r
+    }
+
+    /// Points remapped video layers whose frame map steps back (reverse, boomerang) at an
+    /// all-intra lossless intermediate of the span the map covers, so each step back is one
+    /// seek to one frame (`docs/compositing.md#time-remapping`). Nested comps' layers too.
+    fn intra_preps(&self, layers: &mut [Layer]) -> Result<()> {
+        for l in layers {
+            match &mut l.source {
+                LayerSource::Video {
+                    input,
+                    start,
+                    map: Some(map),
+                } if map.windows(2).any(|w| w[1] < w[0]) => {
+                    let frames = map.iter().copied().max().unwrap_or(0) + 1;
+                    let at = start.as_secs_f64();
+                    let id = json!({
+                        "intra": crate::recipe::FsFingerprinter.fingerprint(input),
+                        "start": at,
+                        "frames": frames,
+                    });
+                    let prep = self
+                        .dir("prep")?
+                        .join(format!("{}.intra.mkv", Key::of(&id)));
+                    Self::atomic(&prep, |out| {
+                        let mut v: Vec<OsString> = args(&[
+                            "-hwaccel",
+                            "cuda",
+                            "-hwaccel_output_format",
+                            "cuda",
+                            "-ss",
+                            &at.to_string(),
+                            "-i",
+                        ])
+                        .collect();
+                        v.push(input.clone().into());
+                        v.extend(args(&[
+                            "-map",
+                            "0:v:0",
+                            "-frames:v",
+                            &frames.to_string(),
+                            "-fps_mode",
+                            "passthrough",
+                            "-vf",
+                            "scale_cuda=format=p010le",
+                            "-c:v",
+                            "hevc_nvenc",
+                            "-tune",
+                            "lossless",
+                            "-g",
+                            "1",
+                        ]));
+                        v.push(out.into());
+                        self.ffmpeg("all-intra prep", &v)
+                    })?;
+                    *input = prep;
+                    *start = Duration::ZERO;
+                }
+                LayerSource::Scene(s) => {
+                    let mut inner = s.layers.clone();
+                    self.intra_preps(&mut inner)?;
+                    if inner != s.layers {
+                        *s = Arc::new(ffcine_render::Scene {
+                            layers: inner,
+                            ..(**s).clone()
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     /// A split-screen piece: the backdrop as the base, the panels as layers. A panel's first
