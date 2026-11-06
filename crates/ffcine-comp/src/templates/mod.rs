@@ -166,7 +166,6 @@ mod tests {
     use super::expand;
     use crate::Comp;
 
-    const DOC: &str = include_str!("../../../../docs/compositing.md");
     const STORY: &str = include_str!("../../tests/data/story.comp.json");
     const LOWERED: &str = include_str!("../../tests/data/story.lowered.json");
 
@@ -186,12 +185,12 @@ mod tests {
         serde_json::from_str(s).expect("json")
     }
 
-    /// The first JSON code block after `heading` in docs/compositing.md.
-    fn doc_block(heading: &str) -> Value {
-        let at = DOC.find(heading).expect("heading");
-        let a = DOC[at..].find("```json\n").expect("block") + at + 8;
-        let b = DOC[a..].find("```").expect("end") + a;
-        parse(&DOC[a..b])
+    /// The first JSON code block after `heading` in `doc`.
+    fn doc_block(doc: &str, heading: &str) -> Value {
+        let at = doc.find(heading).expect("heading");
+        let a = doc[at..].find("```json\n").expect("block") + at + 8;
+        let b = doc[a..].find("```").expect("end") + a;
+        parse(&doc[a..b])
     }
 
     #[test]
@@ -202,8 +201,17 @@ mod tests {
 
     #[test]
     fn golden_files_are_the_docs_examples() {
-        assert_eq!(doc_block("## Templates"), parse(STORY));
-        assert_eq!(doc_block("### Worked example: the story"), parse(LOWERED));
+        // Read at run time: the Nix build's source has the crates but not `docs/`.
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/compositing.md");
+        let Ok(doc) = std::fs::read_to_string(&path) else {
+            eprintln!("skipped: no {}", path.display());
+            return;
+        };
+        assert_eq!(doc_block(&doc, "## Templates"), parse(STORY));
+        assert_eq!(
+            doc_block(&doc, "### Worked example: the story"),
+            parse(LOWERED)
+        );
     }
 
     #[test]
