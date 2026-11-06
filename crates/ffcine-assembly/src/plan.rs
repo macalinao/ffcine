@@ -27,6 +27,9 @@ pub use ffcine_text::TextLayer;
 /// `ffcine.time.ramp/1`.
 pub const RAMP_SCHEMA: &str = "ffcine.time.ramp/1";
 
+/// The generator kind of a comp clip in a timeline ([`plan_with`]).
+pub const COMP_GENERATOR: &str = "ffcine.comp";
+
 /// Errors from [`plan`].
 #[derive(Debug, thiserror::Error)]
 pub enum PlanError {
@@ -41,6 +44,9 @@ pub enum PlanError {
     /// A comp piece that doesn't lower (a parameter out of range, an unreadable layer source).
     #[error("comp: {0}")]
     Comp(ffcine_core::Error),
+    /// An `ffcine.comp` clip that can't be read or doesn't fit the timeline.
+    #[error("comp clip {clip:?}: {msg}")]
+    CompClip { clip: String, msg: String },
     #[error("clip {clip:?}: {source}")]
     Grade {
         clip: String,
@@ -558,13 +564,43 @@ impl Plan {
 ///
 /// The picture is the first video track. Split-screen `Stack`s render as their first panel until
 /// compositing lands; other video tracks are text (`TextLayer`) or not yet composited (warned).
-#[allow(clippy::too_many_lines)]
+/// `ffcine.comp` clips need probed media: plan those timelines with [`plan_with`].
 pub fn plan(
     timeline: &Timeline,
     base_dir: &Path,
     profile: &Profile,
     fp: &dyn Fingerprinter,
     text: Option<&TextLayer>,
+) -> Result<Plan, PlanError> {
+    plan_with(timeline, base_dir, profile, fp, text, None)
+}
+
+/// Whether `timeline` has an `ffcine.comp` clip (so [`plan_with`] needs `media`).
+pub fn has_comp_clips(timeline: &Timeline) -> bool {
+    timeline.clips().iter().any(|c| comp_clip(c).is_some())
+}
+
+/// `clip`'s `ffcine.comp` generator parameters, if it is one.
+fn comp_clip(clip: &Clip) -> Option<&Map<String, Value>> {
+    match clip.media_reference()? {
+        MediaReference::Generator(g) if g.generator_kind == COMP_GENERATOR => Some(&g.parameters),
+        _ => None,
+    }
+}
+
+/// [`plan`], with `media` to lower `ffcine.comp` clips (`docs/timeline.md`): a clip whose
+/// `GeneratorReference` is `ffcine.comp` with parameters `{"schema": "ffcine.comp/1", "src":
+/// PATH}` (relative to the timeline) or the comp document itself, inline. Its `source_range` is
+/// comp time; each comp piece it covers is a segment ([`Unit::Comp`]) keyed by its lowered
+/// layers, as [`plan_comp`]'s are.
+#[allow(clippy::too_many_lines)]
+pub fn plan_with(
+    timeline: &Timeline,
+    base_dir: &Path,
+    profile: &Profile,
+    fp: &dyn Fingerprinter,
+    text: Option<&TextLayer>,
+    media: Option<&dyn ffcine_comp::Media>,
 ) -> Result<Plan, PlanError> {
     let project = match timeline.project() {
         Some(p) => p?,
@@ -586,6 +622,7 @@ pub fn plan(
         rate,
         fp,
         profile,
+        media,
         clips: 0,
         warnings: Vec::new(),
     };
@@ -808,6 +845,12 @@ enum Elem {
         kind: TransitionKind,
     },
     Split(Split),
+    /// An `ffcine.comp` clip: its lowered pieces, `frames` in all.
+    Comp {
+        name: String,
+        pieces: Vec<(String, i64, Unit)>,
+        frames: i64,
+    },
 }
 
 struct Planner<'a> {
@@ -816,6 +859,8 @@ struct Planner<'a> {
     rate: f64,
     fp: &'a dyn Fingerprinter,
     profile: &'a Profile,
+    /// For lowering `ffcine.comp` clips.
+    media: Option<&'a dyn ffcine_comp::Media>,
     /// Clips seen so far ([`Shot::clip_index`]).
     clips: usize,
     warnings: Vec<String>,
@@ -900,6 +945,7 @@ impl Planner<'_> {
                 Item::Clip(c) if !c.enabled => {
                     out.push(Elem::Gap(item_frames(item, self.rate)));
                 }
+                Item::Clip(c) if comp_clip(c).is_some() => out.push(self.comp(c)?),
                 Item::Clip(c) => match self.shot(c)? {
                     Some(s) => out.push(Elem::Shot(s)),
                     None => out.push(Elem::Gap(item_frames(item, self.rate))),
@@ -981,6 +1027,13 @@ impl Planner<'_> {
                         ));
                         continue;
                     }
+                    Elem::Comp { name, frames, .. } => {
+                        self.warn(format!(
+                            "split-screen {:?}: comp clip {name:?} in a panel rendered black",
+                            s.name
+                        ));
+                        (frames, None)
+                    }
                 };
                 if frames > 0 {
                     parts.push(PanelPart {
@@ -1002,12 +1055,85 @@ impl Planner<'_> {
         })
     }
 
+    /// An `ffcine.comp` clip lowered over its source range (comp time; default the whole comp).
+    fn comp(&mut self, c: &Clip) -> Result<Elem, PlanError> {
+        let bad = |msg: String| PlanError::CompClip {
+            clip: c.name.clone(),
+            msg,
+        };
+        let params = comp_clip(c).cloned().unwrap_or_default();
+        let schema = params.get("schema").and_then(Value::as_str);
+        if schema != Some("ffcine.comp/1") {
+            return Err(bad(format!(
+                "parameters need \"schema\": \"ffcine.comp/1\" (got {schema:?})"
+            )));
+        }
+        let comp = match params.get("src") {
+            Some(Value::String(src)) => {
+                if params.len() > 2 {
+                    return Err(bad("`src` or an inline comp, not both".into()));
+                }
+                ffcine_comp::Comp::from_file(&self.base_dir.join(src))
+            }
+            Some(other) => return Err(bad(format!("`src`: expected a path, got {other}"))),
+            None => ffcine_comp::Comp::from_value(&Value::Object(params), self.base_dir),
+        }
+        .map_err(|e| bad(e.to_string()))?;
+        if (comp.canvas.fps - self.rate).abs() > 1e-6 * self.rate {
+            return Err(bad(format!(
+                "canvas fps {} differs from the timeline's {}",
+                comp.canvas.fps, self.rate
+            )));
+        }
+        let Some(media) = self.media else {
+            return Err(bad("comp clips need probed media (plan_with)".into()));
+        };
+        let (from, frames) = match &c.source_range {
+            Some(r) => (
+                frames_at(&r.start_time, self.rate),
+                frames_at(&r.duration, self.rate),
+            ),
+            None => (0, comp.frames()),
+        };
+        let mut pieces = Vec::new();
+        for r in comp.pieces() {
+            let (a, b) = (r.start.max(from), r.end.min(from + frames));
+            if b > a {
+                let piece = comp
+                    .lower(a..b, self.profile.size, media)
+                    .map_err(|e| bad(e.to_string()))?;
+                pieces.push((c.name.clone(), b - a, Unit::Comp(Arc::new(piece))));
+            }
+        }
+        let got: i64 = pieces.iter().map(|p| p.1).sum();
+        if got < frames {
+            // Past the comp's end: black, like a gap.
+            pieces.push((c.name.clone(), frames - got, Unit::Gap));
+        }
+        Ok(Elem::Comp {
+            name: c.name.clone(),
+            pieces,
+            frames,
+        })
+    }
+
     /// The non-text clips of an overlay video track.
     fn overlays(&mut self, t: &Track) -> Result<Vec<OverlayClip>, PlanError> {
         let mut out = Vec::new();
         let mut at = 0;
         for item in &t.children {
             let n = item_frames(item, self.rate);
+            if let Item::Clip(c) = item
+                && c.enabled
+                && comp_clip(c).is_some()
+            {
+                self.warn(format!(
+                    "track {:?}: comp clip {:?} composited on the picture track only, left out",
+                    t.name, c.name
+                ));
+                at += n;
+                continue;
+            }
             if let Item::Clip(c) = item
                 && c.enabled
                 && !matches!(c.media_reference(),
@@ -1309,6 +1435,14 @@ impl Planner<'_> {
                     after,
                     kind,
                 } => pending = Some((name, before, after, kind)),
+                Elem::Comp { name, pieces, .. } => {
+                    if let Some((t, ..)) = pending.take() {
+                        self.warn(format!(
+                            "transition {t:?} into comp clip {name:?} rendered as a cut"
+                        ));
+                    }
+                    out.extend(pieces);
+                }
                 Elem::Split(sp) => {
                     let label = format!("split {}", sp.panels.len());
                     let mut sp = sp;
@@ -1498,6 +1632,7 @@ fn fit(elems: &mut Vec<Elem>, total: i64) {
         Elem::Gap(n) => *n,
         Elem::Transition { .. } => 0,
         Elem::Split(s) => s.total,
+        Elem::Comp { frames, .. } => *frames,
     };
     let mut sum: i64 = elems.iter().map(len).sum();
     while sum > total {
@@ -1539,7 +1674,13 @@ fn split_at(units: Vec<(String, i64, Unit)>, cuts: &[i64], rate: f64) -> Vec<(St
                 inner.push(c);
             }
         }
-        if inner.is_empty() || matches!(unit, Unit::Transition { .. } | Unit::SplitDissolve { .. })
+        // Comp pieces are cut where their values change already, and a part of one would need
+        // lowering again.
+        if inner.is_empty()
+            || matches!(
+                unit,
+                Unit::Transition { .. } | Unit::SplitDissolve { .. } | Unit::Comp(_)
+            )
         {
             out.push((name, frames, unit));
         } else {
@@ -1710,6 +1851,114 @@ mod tests {
             media,
             Some(TimeRange::from_frames(0.0, 400.0, RATE)),
         ))
+    }
+
+    /// An `ffcine.comp` generator clip over `from..to` frames of comp time.
+    fn comp_clip(name: &str, params: &Value, from: f64, to: f64) -> Item {
+        let g = ffcine_timeline::GeneratorReference::new(
+            COMP_GENERATOR,
+            params.as_object().cloned().unwrap_or_default(),
+        );
+        Item::Clip(Clip::new(
+            name,
+            MediaReference::Generator(g),
+            Some(TimeRange::from_frames(from, to, RATE)),
+        ))
+    }
+
+    #[test]
+    fn comp_clips_lower_to_comp_segments() {
+        let inline = json!({
+            "schema": "ffcine.comp/1",
+            "canvas": { "size": [1920, 1080], "fps": "24000/1001", "duration": 3.0 },
+            "layers": [
+                { "source": { "still": "a.png" } },
+                { "source": { "solid": "white" }, "in": 1.0, "fade": 0.5 },
+            ],
+        });
+        let dims = |_: &Path| Ok((1920, 1080));
+        let media = CompMedia {
+            fp: &Fake,
+            dims: &dims,
+            profile: None,
+            rate: None,
+        };
+        let with = |t: &Timeline| {
+            plan_with(
+                t,
+                Path::new("/proj"),
+                &Profile::preview(),
+                &Fake,
+                None,
+                Some(&media),
+            )
+        };
+        let shot = || clip("a", "A", 0.0, 48.0, "day");
+        let t = timeline(
+            vec![shot(), comp_clip("c", &inline, 12.0, 60.0), shot()],
+            vec![],
+        );
+        assert!(has_comp_clips(&t));
+        let p = with(&t).expect("plan");
+        let comps: Vec<&Segment> = p
+            .segments
+            .iter()
+            .filter(|s| matches!(s.unit, Unit::Comp(_)))
+            .collect();
+        assert_eq!(comps.len(), 2, "split where the white layer comes in");
+        assert_eq!(comps.iter().map(|s| s.frames).sum::<i64>(), 48);
+        assert_eq!(p.frames(), 144);
+        // The shots around it key as they would around a gap.
+        let gap = timeline(
+            vec![
+                shot(),
+                Item::Gap(Gap::new(RationalTime::new(48.0, RATE))),
+                shot(),
+            ],
+            vec![],
+        );
+        assert!(!has_comp_clips(&gap));
+        let g = plan_of(&gap);
+        assert_eq!(p.segments[0].key, g.segments[0].key);
+        assert_eq!(
+            p.segments.last().map(|s| &s.key),
+            g.segments.last().map(|s| &s.key)
+        );
+
+        // Past the comp's end is black; a transition into it is a cut.
+        let mut tr = vec![shot()];
+        tr.push(Item::Transition(Transition::dissolve(
+            RationalTime::new(6.0, RATE),
+            RationalTime::new(6.0, RATE),
+        )));
+        tr.push(comp_clip("c", &inline, 48.0, 96.0));
+        let p = with(&timeline(tr, vec![])).expect("plan");
+        assert!(matches!(
+            p.segments.last().map(|s| &s.unit),
+            Some(Unit::Gap)
+        ));
+        assert!(
+            p.warnings.iter().any(|w| w.contains("rendered as a cut")),
+            "{:?}",
+            p.warnings
+        );
+
+        // No media, the wrong schema or rate, or `src` beside an inline comp: errors.
+        let err = |params: &Value, m: Option<&dyn ffcine_comp::Media>| {
+            let t = timeline(vec![comp_clip("c", params, 0.0, 24.0)], vec![]);
+            plan_with(&t, Path::new("/proj"), &Profile::preview(), &Fake, None, m)
+                .expect_err("an error")
+                .to_string()
+        };
+        assert!(err(&inline, None).contains("probed media"));
+        let mut bad = inline.clone();
+        bad["schema"] = json!("ffcine.comp/2");
+        assert!(err(&bad, Some(&media)).contains("ffcine.comp/1"));
+        let mut bad = inline.clone();
+        bad["canvas"]["fps"] = json!(30);
+        assert!(err(&bad, Some(&media)).contains("fps"));
+        let both = json!({"schema": "ffcine.comp/1", "src": "a.comp.json", "layers": []});
+        assert!(err(&both, Some(&media)).contains("not both"));
     }
 
     fn timeline(video: Vec<Item>, audio: Vec<Item>) -> Timeline {
