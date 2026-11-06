@@ -664,7 +664,7 @@ impl Renderer<'_> {
         for l in layers {
             match &l.source {
                 LayerSource::Filtered(p) => {
-                    let p = p.clone();
+                    let p = Arc::clone(p);
                     let out = self.dir("prep")?.join(format!(
                         "{}.filter.mkv",
                         Key::of(&json!({"prep": crate::filter_prep::FILTER_PREP, "node": p.key}))
@@ -680,7 +680,7 @@ impl Renderer<'_> {
                             &self.ffmpeg,
                             &p,
                             &v.pixel_format,
-                            &v.color,
+                            v.color,
                             partial,
                         )
                         .map_err(|log| ExecError::Ffmpeg {

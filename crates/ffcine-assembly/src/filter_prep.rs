@@ -56,10 +56,9 @@ pub(crate) fn carrier(pix_fmt: &str) -> &'static str {
         return f;
     }
     match pix_fmt {
-        "yuvj420p" => "yuv420p",
+        "yuvj420p" | "nv12" => "yuv420p",
         "yuvj422p" => "yuv422p",
         "yuvj444p" => "yuv444p",
-        "nv12" => "yuv420p",
         "p010le" | "p010be" => "yuv420p10le",
         f if f.starts_with("yuva")
             || f.contains("rgba")
@@ -96,7 +95,7 @@ fn upload_format(carrier: &str) -> &'static str {
 
 /// `setparams` options tagging the fed frames as the source is tagged (the raw pipe drops the
 /// tags). The graph may re-tag them; the encoder writes what comes out.
-fn tags(c: &ColorSpace) -> String {
+fn tags(c: ColorSpace) -> String {
     let mut v = Vec::new();
     for (k, s) in [
         ("range", c.range.as_str()),
@@ -113,7 +112,7 @@ fn tags(c: &ColorSpace) -> String {
 
 /// The second process's filtergraph: tag, clock, (upload,) the user's graph, (download,) trim.
 /// A graph of several chains names its ends `[in]` and `[out]`.
-pub(crate) fn filtergraph(p: &Prep, color: &ColorSpace, carrier: &str) -> String {
+pub(crate) fn filtergraph(p: &Prep, color: ColorSpace, carrier: &str) -> String {
     let mut pre = Vec::new();
     let t = tags(color);
     if !t.is_empty() {
@@ -179,7 +178,7 @@ fn filter_args(p: &Prep, graph: &str, out: &Path) -> Vec<OsString> {
     match p.hw {
         Hw::Cpu => {}
         Hw::Cuda => {
-            v.extend(["-init_hw_device", "cuda=hw", "-filter_hw_device", "hw"].map(Into::into))
+            v.extend(["-init_hw_device", "cuda=hw", "-filter_hw_device", "hw"].map(Into::into));
         }
         Hw::Vulkan => {
             v.extend(["-init_hw_device", "vulkan=hw", "-filter_hw_device", "hw"].map(Into::into));
@@ -291,18 +290,18 @@ pub(crate) fn run(
     ffmpeg: &OsStr,
     p: &Prep,
     pix_fmt: &str,
-    color: &ColorSpace,
+    color: ColorSpace,
     out: &Path,
 ) -> Result<(), String> {
     let carrier = carrier(pix_fmt);
     let frames = p.map.iter().copied().max().unwrap_or(0) + 1;
     let rgb = is_rgb(pix_fmt);
-    let mut color = *color;
+    let mut color = color;
     if rgb {
         color.matrix = Matrix::Bt709;
         color.range = Range::Full;
     }
-    let graph = filtergraph(p, &color, carrier);
+    let graph = filtergraph(p, color, carrier);
     let mut dec = spawn(
         ffmpeg,
         &decode_args(p, carrier, frames, rgb),
@@ -329,8 +328,8 @@ pub(crate) fn run(
         let _ = dec.kill();
     }
     drop(fil.stdin.take());
-    let dec_ok = dec.wait().map(|s| s.success()).unwrap_or(false);
-    let fil_ok = fil.wait().map(|s| s.success()).unwrap_or(false);
+    let dec_ok = dec.wait().is_ok_and(|s| s.success());
+    let fil_ok = fil.wait().is_ok_and(|s| s.success());
     let dec_log = dec_log.and_then(|h| h.join().ok()).unwrap_or_default();
     let fil_log = fil_log.and_then(|h| h.join().ok()).unwrap_or_default();
     if !fil_ok {
@@ -455,14 +454,14 @@ mod tests {
     fn graphs() {
         let c = ColorSpace::BT709_TV;
         assert_eq!(
-            filtergraph(&prep("tmix=frames=3"), &c, "yuv420p"),
+            filtergraph(&prep("tmix=frames=3"), c, "yuv420p"),
             "[0:v]setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709,\
              setpts=PTS+7,tmix=frames=3,trim=start_frame=2:end_frame=5,setpts=PTS-STARTPTS[fo]"
         );
         let mut p = prep("[in]split[a][b];[a][b]blend=all_mode=average[out]");
         p.hw = Hw::Cuda;
         p.free_timing = true;
-        let g = filtergraph(&p, &c, "yuv420p10le");
+        let g = filtergraph(&p, c, "yuv420p10le");
         assert!(g.ends_with("format=p010le,hwupload[in];[in]split[a][b];[a][b]blend=all_mode=average[out];[out]hwdownload,format=p010le,setpts=PTS-STARTPTS[fo]"), "{g}");
     }
 

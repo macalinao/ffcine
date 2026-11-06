@@ -81,7 +81,7 @@ fn preps(c: &Comp) -> Vec<Vec<Arc<Prep>>> {
                 .layers
                 .iter()
                 .filter_map(|l| match &l.source {
-                    LayerSource::Filtered(p) => Some(p.clone()),
+                    LayerSource::Filtered(p) => Some(Arc::clone(p)),
                     _ => None,
                 })
                 .collect()

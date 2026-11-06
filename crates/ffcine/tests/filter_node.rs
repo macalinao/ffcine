@@ -2,6 +2,7 @@
 //! and in three: the same frames (framemd5), for a `t`-dependent graph, a stateful one with a
 //! pre-roll (`tmix`) and a whole-clip one (`deflicker`). `cargo test -p ffcine --test
 //! filter_node -- --ignored --test-threads=1`; needs `ffmpeg` on PATH, a Vulkan GPU and NVENC.
+#![allow(clippy::single_range_in_vec_init)]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
