@@ -217,6 +217,27 @@ A title sequence or end screen: `kind` (`title`, `end`), `title`, `subtitle`, `l
 
 Solid colour: `colour [r, g, b, a]`, sRGB 0..1.
 
+### `ffcine.comp`
+
+A composition ([compositing.md](compositing.md)) as a clip on the picture track. Unlike the other
+generators its parameters carry `schema`:
+
+| Parameter | Meaning |
+|---|---|
+| `schema` | `ffcine.comp/1` (required) |
+| `src` | path to a comp file (`.comp.json`, `.comp.yaml`), relative to the timeline |
+| anything else | without `src`, the parameters are the comp document itself, inline (`canvas`, `layers`, `template`, ...; relative media resolve against the timeline) |
+
+The clip's `source_range` is comp time (frame 0 is the comp's start, and a start before it is an
+error; past its end is black), and
+the comp's `canvas.fps` must be the timeline's rate. Its pieces render as segments like a comp
+file's ([assembly.md](assembly.md#keys)), scaled to the timeline's output size, so the canvas
+must have the output's aspect (else it's an error). The timeline's audio tracks are its sound.
+On another video track, in a split-screen panel or next to a transition it isn't composited yet
+(warned: left out, or a cut). Its effects (grade, transform, blend, fades) are not applied yet
+(one warning per effect), and the timeline's grain isn't drawn on it:
+[compositing.md](compositing.md#not-yet).
+
 ## `edit.yaml` import
 
 `ffcine import edit.yaml -o edit.otio`. Tracks, bottom first: `V1` (shots), `PiP N` (per-shot

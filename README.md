@@ -58,7 +58,7 @@ ffcine render --profile master -o master.mp4 timeline.otio
 | `grade`, `batch`, `looks` | grade one shot, many shots on one warm pipeline, or compare looks |
 | `stabilize`, `jitter` | optical-flow or gyro stabilization; measure residual jitter |
 | `import`, `subs`, `title` | other editors' projects to an ffcine timeline; `.ass` subtitles as text clips; title sequences and end screens |
-| `render`, `diff`, `comp` | render a timeline or a comp (video, still, text and nested-comp layers with keyframes, expressions, time remaps and libavfilter graphs) to a master with a segment cache; what changed between renders; check a comp |
+| `render`, `diff`, `comp` | render a timeline or a comp (video, still, text and nested-comp layers with keyframes, expressions, time remaps and libavfilter graphs) to a master with a segment cache; what changed between renders; check a comp, write out its template, or start one from the `story` template |
 | `audio`, `sync`, `beats` | the timeline's audio mix (R128, buses, ducking); line up recorder WAVs; a song's tempo and beats |
 | `ingest`, `catalog`, `fetch-luts`, `bake` | verified card offload; clip catalog with picture profiles; camera LUTs; camera LUT + LUT + look baked to one `.cube` |
 | `triage`, `search`, `snap` | index a card (strips, scene cuts, transcripts); find words; snap cuts to words |

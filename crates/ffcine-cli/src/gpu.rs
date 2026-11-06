@@ -237,7 +237,8 @@ pub(crate) enum Cmd {
     /// cached by content: after an edit only changed ones render, the master joins them by stream
     /// copy, and an audio-only change is a remux. Re-run after an interruption to resume. The
     /// audio is the finished mix, as `ffcine audio`; the mix flags override project.mix. A comp
-    /// file (ffcine.comp/1) renders the same way, picture only, at its canvas aspect.
+    /// file (ffcine.comp/1) renders the same way, picture only, at its canvas aspect; so does a
+    /// timeline clip that is one (generator ffcine.comp).
     #[bpaf(command, footer(crate::help::RENDER))]
     Render(#[bpaf(external(assemble::render_args))] assemble::RenderArgs),
     /// Check compositions (ffcine.comp/1): `ffcine comp check COMP`.

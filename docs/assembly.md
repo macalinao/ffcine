@@ -36,6 +36,10 @@ is ever pruned, and old masters stay where they are.
      pictures slide the way of `direction`, motion-blurred by their speed);
    - one per **split-screen** (`Stack` with more than one child, `ffcine.comp.layout/1`): every
      panel, each flattened to its own shots and holds;
+   - one per piece of an **`ffcine.comp` clip** ([timeline.md](timeline.md#ffcinecomp)), the
+     comp's pieces over the clip's source range (`Unit::Comp`, keyed as below). It needs the
+     layers' media probed: `plan_with` takes them (`ffcine render`/`diff` do when the timeline
+     has one), and `plan` refuses such a timeline;
    - one per run of **gap**: black.
 
    Shots, split-screens and gaps are cut at every `ffcine.text` in and out point
@@ -44,7 +48,8 @@ is ever pruned, and old masters stay where they are.
    (`TextLayer::fingerprint`) and the overlay clips over it, so a caption or logo edit
    re-renders only the seconds under it. Overlay clips are the non-text clips of the other video
    tracks (`PiP N` from `edit.yaml`), bottom track first. Audio tracks become one mix.
-2. **Segments** (`exec`). A unit missing from `<cache>/seg/<key>.mp4` renders in one GPU
+2. **Segments** (`lower.rs`, `exec`). Each unit is lowered to an `ffcine_comp::Piece` (a base,
+   its grade, layers over it), as a comp's pieces are. A unit missing from `<cache>/seg/<key>.mp4` renders in one GPU
    `Pipeline` pass (decode, denoise, stabilize warp, reframe crop, LUT, look hook, finish, scale to the profile size, sharpen, grain,
    layers, text overlays, NVENC). MP4 keeps exact `1001/24000` timestamps; MKV's millisecond ones
    made frame durations alternate between 41 and 42 ms:
@@ -161,7 +166,11 @@ the same cache: `plan_comp` cuts it into pieces at layer in/out points (none und
 and each piece is a segment (`Unit::Comp`) whose key is the profile, the rate, the frame count and
 the piece's lowered values: source fingerprints and start times, rects and rotations, and every
 hook value, as `f32` digests. Equivalent rewrites (keys to an expression) keep their keys, and an
-edit after a cut re-renders only the pieces whose values changed.
+edit after a cut re-renders only the pieces whose values changed. The same comp as a clip in a
+timeline keys its pieces the same way (with the timeline's text and grain settings; the text is
+drawn on it, the grain not yet: [compositing.md](compositing.md#not-yet)), so two clips showing
+the same comp frames share segments. A template (`"template": {"story": {...}}`) is expanded when
+the comp is read, so only its lowered layers reach the key.
 
 ## Per-clip filters
 

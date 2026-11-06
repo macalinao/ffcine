@@ -20,6 +20,7 @@ pub mod comp;
 pub mod diff;
 pub mod exec;
 mod filter_prep;
+mod lower;
 pub mod plan;
 pub mod profile;
 pub mod proxy;
@@ -28,8 +29,8 @@ pub mod recipe;
 pub use diff::Diff;
 pub use exec::{Detector, Grader, Progress, Renderer, Report};
 pub use plan::{
-    AudioPlan, CompMedia, Filters, Plan, PlanError, Ramp, Segment, Shot, TextLayer, Unit, plan,
-    plan_comp,
+    AudioPlan, COMP_GENERATOR, CompMedia, Filters, Plan, PlanError, Ramp, Segment, Shot, TextLayer,
+    Unit, has_comp_clips, plan, plan_comp, plan_with,
 };
 pub use profile::Profile;
 pub use recipe::{AUDIO_REVISION, FsFingerprinter, Key, RENDER_REVISION};

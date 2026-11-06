@@ -1,0 +1,15 @@
+{ "schema": "ffcine.comp/1",
+  "template": { "story": {
+    "size": [1080, 1920], "fps": "30", "duration": 6.0,
+    "tiles": 3, "gutter": 12, "radius": 24,
+    "background": { "from": "black", "to": "white", "duration": 1.0 },
+    "enter": { "fade": 0.4, "stagger": 0.25 },
+    "swap": { "at": 2.5, "stagger": 0.12, "slide": 0.4, "direction": "left" },
+    "exit": { "at": 5.2, "stagger": 0.12, "slide": 0.4, "fade": 0.4 },
+    "ken_burns": [1.0, 1.06],
+    "grade": { "camera": "auto" },
+    "panels": [
+      [ { "video": "a.mov", "source_in": 12.0, "punch": { "at": 1.6, "zoom": 1.12, "duration": 0.15 } },
+        { "still": "d.heic" } ],
+      [ { "still": "b.heic" }, { "video": "e.mov", "source_in": 3.5 } ],
+      [ { "video": "c.mov", "speed": [[0, 1], [1.0, 2], [2.0, 1]] }, { "still": "f.heic" } ] ] } } }

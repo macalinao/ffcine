@@ -1,8 +1,9 @@
 # Compositing and keyframes (design)
 
-Status: design. Steps 1 to 4 of the [phased plan](#phased-plan) (param tracks and expressions,
-`ffcine_core::anim`; the compositor core, `ffcine-comp`; media layers; per-layer grade) are
-built, step 4 in part; the rest is not. It turns what assembly already composites
+Status: design. Steps 1 to 7 of the [phased plan](#phased-plan) (param tracks and expressions,
+`ffcine_core::anim`; the compositor core, `ffcine-comp`; media layers; per-layer grade; time
+remapping; the libavfilter node; templates and comp clips) are built, steps 4 and 6 in part
+([Not yet](#not-yet)). It turns what assembly already composites
 (split-screens, picture-in-picture, transitions, stills, text) into one general model: a
 **composition** of ordered **layers** whose parameters are **tracks**. Anything one would write
 today as a hand-made ffmpeg filter graph should be expressible in ffcine itself, and layouts and
@@ -27,7 +28,7 @@ What exists and is reused (read before changing anything):
 | `shaders::{alpha, finish, background, look, motion_blur}` | `shaders.rs` | opacity/radius, fades, canvas background, grade, whip |
 | `extra` parser (`eq`, `hue`, `colorbalance`, `curves`, `unsharp`, `vignette` as hooks) | `extra.rs` | per-layer filters on the GPU |
 | `ffcine_reframe::{Keyed, Interp}`, `ffcine_text::anim::{Ease, Keys}`, `ffcine_audio::schema::Interp` | three keyframe implementations | merged into one in [Param tracks](#param-tracks) |
-| `comp::{Placement, Layout, Finish}`, `plan::{Unit, Shot, Split, SegLayer, Ramp}`, `exec::Renderer::{split, overlay_layer, input_ctx}` | `ffcine-assembly` | what the existing features lower through |
+| `comp::{Placement, Layout, Finish}`, `plan::{Unit, Shot, Split, SegLayer, Ramp}`, `exec::Renderer::input_ctx`, `lower.rs` (`Renderer::{lower, split, overlay_layer}`) | `ffcine-assembly` | what the existing features lower through |
 | `TileGrid` (HEIF grids, `clap`, `irot`) | `backend/tiles.rs` | HEIC stills |
 | retime prep (NVDEC, `setpts`/`fps`, lossless NVENC) | `exec::Renderer::input_ctx` | time remapping |
 | segment keys, `RENDER_REVISION` (8) | `recipe.rs`, `plan.rs` | caching of comps |
@@ -193,8 +194,10 @@ The render size a profile plans for a canvas is at most 16384 px a side.
 ```
 
 `parameters` is either `src` (a file) or the comp inline. `source_range.start_time` is comp time,
-so trimming works like any clip. The clip's effects (`ffcine.color.grade/1`,
-`ffcine.geo.transform/1`, `ffcine.comp.blend/1`, fades) apply to the comp as one layer. Other
+so trimming works like any clip (a start before the comp's frame 0 is an error). The clip's
+effects (`ffcine.color.grade/1`, `ffcine.geo.transform/1`, `ffcine.comp.blend/1`, fades) are
+meant to apply to the comp as one layer; they are not applied yet (each is warned, [Not
+yet](#not-yet)), and neither is the timeline's grain. Other
 OTIO readers see a generator clip of the right length. The comp is not spread over OTIO tracks
 and Stacks: OTIO has no per-layer keyframes, other tools couldn't render our effects anyway, and
 deeply nested Stacks would be unreadable.
@@ -212,11 +215,12 @@ ffcine render --profile master -o story-4k.mp4 story.comp.json
 ffcine still story.comp.json --at 2.6 -o f.png
 ffcine comp check story.comp.json      # parse, compile expressions, sample every frame, report
 ffcine comp lower story.comp.json      # templates expanded: the explicit layers, as JSON
-ffcine comp new --template story --media a.mov b.heic c.mov d.heic e.mov f.heic -o story.comp.json
+ffcine comp new --template story -o story.comp.json \
+    --media a.mov --media b.heic --media c.mov --media d.heic --media e.mov --media f.heic
 ```
 
-Built so far: `render`, `still` and `comp check` (steps 2 and 3); `comp lower` and `comp new` come
-with templates (step 7). `render` and `still` take a comp wherever they take a timeline (`still` composites every
+Built: `render`, `still` and `comp check` (steps 2 and 3); `comp lower` and `comp new`
+(step 7). `render` and `still` take a comp wherever they take a timeline (`still` composites every
 layer, where today's still of a timeline draws the top-most clip and the text). It goes through the same
 planner, segment cache, profiles and manifest. A comp has no audio of its own yet
 ([Not yet](#not-yet)); as a clip in a timeline, it uses the timeline's audio tracks.
@@ -261,7 +265,7 @@ impl<T> Track<T> {
   from the layer's `in` (negative from its `out`). A comp layer's clock is not its source
   time, so a speed ramp doesn't warp its animation. The clock also says which
   [variables](#expressions) an expression sees: a comp layer's (`Clock::Layer`) sees all of
-  them. Until the timeline planner lowers through comps (step 7), a timeline effect's expression sees
+  them. Until timeline units are built as comps ([Not yet](#not-yet)), a timeline effect's expression sees
   only its own clock's time: `st` on source-time schemas (`Clock::Source`), `lt` and `dur` on
   text (`Clock::Clip`). Any other name is a compile error, so nothing changes meaning later.
 - Sampling is at the frame's start time, `i / fps`, as reframe and ffmpeg's expressions do.
@@ -793,8 +797,10 @@ render path and the keys only see the lowered layers.
 
 - **`layout`** = `ffcine.comp.layout/1`: `layout` (`split`/`row`, `column`, `1+2`), `gap`,
   `margin`, `radius`, `weights`, `stagger`, `slide`, `enter`, `first_static`, as today, with
-  `Layout::rects` and `enter_offset` moved into the template. The planner calls it for every
-  split `Stack`; a comp file can use it too (`"template": {"layout": {...}, "panels": [...]}`).
+  `Layout::rects` and `enter_offset` moved into the template. The planner's split `Stack`s
+  use the same `Layout::rects` (in `lower.rs`; going through the template is [Not
+  yet](#not-yet)); a
+  comp file can use it too (`"template": {"layout": {...}, "panels": [...]}`).
 - **`story`**: a vertical stack of `tiles` tiles with gutters, each tile a nested comp of its
   items. Items swap with a slide `swap.stagger` apart. There are staggered fade-ins from black,
   a background track, Ken Burns on stills, optional per-item `punch` and `speed`, and a
@@ -830,7 +836,7 @@ What the template lowers to, written out. This is also what one would write by h
   "canvas": {
     "size": [1080, 1920], "fps": "30", "duration": 6.0,
     "background": [ { "t": 0, "v": [0, 0, 0], "interp": "in_out" }, { "t": 1.0, "v": [1, 1, 1] } ],
-    "fade": "1 - clip((t - 5.6) / 0.4, 0, 1)", "fade_colour": "black"
+    "fade": "clip((T - 1 / fps - t) / 0.4, 0, 1)", "fade_colour": "black"
   },
   "vars": { "enter": 0.25, "swap": 2.5, "swap_step": 0.12, "slide": 0.4, "exit": 5.2 },
   "comps": {
@@ -1021,9 +1027,39 @@ Each step is one PR, in dependency order. Each keeps the existing tests green an
    `story` lowered to the worked example's JSON (golden file); a story render whose sampled
    frames (fade-in start, mid-swap, mid-ramp, loop end = black) are checked against expected
    tile contents.
+   **Built.** `ffcine_comp::templates::{layout, story}` (`Layout::rects` and
+   `enter_offset` live in `templates::layout`; assembly re-exports them), expanded when a comp
+   is read; `ffcine comp lower` and `ffcine comp new --template story`; the `ffcine.comp`
+   generator clip ([timeline.md](timeline.md#ffcinecomp)), planned as `Unit::Comp` segments
+   by `assembly::plan_with`. Every segment now renders from an `ffcine_comp::Piece`: the
+   existing units (shot, gap, transitions, split, split dissolve, overlay clips) are lowered to
+   one in `ffcine-assembly`'s `lower.rs` (`Renderer::lower`; split panels placed by
+   `Layout::rects`), a `Unit::Comp` already is one, and `exec` only renders pieces (base as the
+   pass input, layers, overlays), so its per-unit layer code is gone. Keys and `framemd5`s are
+   unchanged. The units are lowered straight to pieces, not written as comp documents and run
+   through `Comp::lower` ([Not yet](#not-yet)). Tests: `crates/ffcine/tests/timeline_parity.rs` (GPU: 16
+   segments covering each unit kind, their keys and `framemd5`s recorded before the move, in
+   `tests/data/timeline_parity.json`), `ffcine-comp`'s template tests (the worked example as
+   golden files `tests/data/story.{comp,lowered}.json`, checked against this page too),
+   `crates/ffcine/tests/story_gpu.rs` (GPU: the sampled story frames) and the planner's
+   `comp_clips_lower_to_comp_segments`.
 
 ## Not yet
 
+- Timeline units built as comps and run through `Comp::lower` (step 7 lowers them straight to
+  `ffcine_comp::Piece`s in `lower.rs`, per the [mapping](#mapping-of-existing-features) in
+  effect but not as comp documents). Blocked on the shot grader: LUT, look, stabilize, reframe
+  and NLE geometry in the `MAIN` hook, and the finish with the transition fade folded in, are
+  not expressible as a layer grade. The parity suite (`timeline_parity.rs`) is the gate: same
+  keys, same `framemd5`s. Until then a timeline effect's expression sees only its own clock's
+  time.
+- `ffcine.comp` clips in a timeline: only on the picture track (on an overlay track or in a
+  split-screen panel they are left out, warned), cut in and out (a transition next to one is
+  a cut, warned), and the comp's fps must be the timeline's.
+- Effects on an `ffcine.comp` clip (grade, transform, blend, fades, the comp as one layer):
+  ignored for now, with one warning per effect ("comp clip effects are not applied yet").
+- The timeline's grain (`ffcine.fx.grain/1` on the top-level stack) on an `ffcine.comp` clip's
+  picture: it is in the segment key but not drawn; the timeline's text is.
 - Per-layer grade, the rest of step 4: an animated `lut_strength` (the LUT-mix hook; a
   constant one is baked as today), `cdl`, per-layer `denoise`, `grain` (and `canvas.grain`) and
   `stabilize` on a layer. Filters `extra` can't parse stay an error in `grade.filters`; the

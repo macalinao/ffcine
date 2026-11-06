@@ -242,6 +242,8 @@ pub const COMP_CHECK: &str = concat!(
         "project   an ffcine.project/1 object or a timeline file whose project grades go",
         "          through; with one, every video, still and comp layer is graded",
         "comps     {name: {canvas, vars, layers}}, nested comps used by name",
+        "template  instead of canvas, vars, comps and layers: {story: {...}} or {layout,",
+        "          panels, size, fps, duration}, written out when read (see comp lower)",
         "layers    bottom first: id, source, in, out, source_in, size [w, h], fit (cover,",
         "          contain, fill, none), content {zoom, zoom_center, crop_x, crop_y, focus, punch,",
         "          push, push_center, pan} (the picture inside the box), crop {left, right, top,",
@@ -284,6 +286,47 @@ pub const COMP_CHECK: &str = concat!(
     examples!(
         "ffcine comp check story.comp.json",
         "ffcine comp check --profile master story.comp.json",
+    ),
+    see!("compositing.md")
+);
+
+pub const COMP_LOWER: &str = concat!(
+    reference!(
+        "Templates (\"template\": {...} in a comp file):",
+        "story     {story: {size, fps, duration, tiles, gutter, radius, background (colour or",
+        "          {from, to, duration}), enter {fade, stagger}, swap {at, stagger, slide,",
+        "          direction}, exit {at, stagger, slide, fade, direction}, ken_burns [from, to],",
+        "          grade, panels: [[item, item?], ...]}}: tiles stacked top to bottom, each a",
+        "          nested comp whose second item slides in over the first at swap.at",
+        "          (swap.stagger later per tile); item = {video: PATH, source_in, punch {at,",
+        "          zoom, duration}, speed [[t, x], ...]} or {still: PATH} (Ken Burns), id, grade",
+        "layout    {layout: ffcine.comp.layout/1 {layout split|row|column|1+2, gap, margin,",
+        "          radius, weights, stagger, slide, enter, first_static}, panels [item, ...],",
+        "          size, fps, duration}: the timeline's split-screen geometry over the backdrop",
+        "          colour (its corner vignette is timeline-only)",
+        "A file without a template prints as it is read (checked the same way).",
+    ),
+    examples!(
+        "ffcine comp lower story.comp.json",
+        "ffcine comp lower story.comp.yaml -o story.lowered.comp.json",
+    ),
+    see!("compositing.md")
+);
+
+pub const COMP_NEW: &str = concat!(
+    reference!(
+        "Story starter:",
+        "Media are dealt round the tiles (tile 1 gets the 1st and (tiles+1)th file, ...), so",
+        "at most two a tile; a tile's second item swaps in. --tiles is at most the number of",
+        "files, and --duration has a floor (2.4 s for 3 tiles with a swap; the error says).",
+        "Stills by extension (png, jpg, jpeg, heic, heif, avif, webp, tif, tiff, exr),",
+        "anything else is a video. Paths are written relative to the output's directory",
+        "(../ when outside it). Edit the result, then comp check, comp lower or render it.",
+    ),
+    examples!(
+        "ffcine comp new --template story -o story.comp.json --media a.mp4 --media b.heic",
+        "ffcine comp new --template story --tiles 2 --duration 8 -o s.comp.json \\",
+        "    --media a.mp4 --media b.mp4 --media c.jpg --media d.jpg",
     ),
     see!("compositing.md")
 );
@@ -374,13 +417,15 @@ pub const RENDER: &str = concat!(
         "st, e.g. \"1 + 0.05*sin(st*4)\" (ffmpeg's functions; docs/compositing.md).",
     ),
     reference!(
-        "Generators (text and colour clips; docs/text.md):",
+        "Generators (text, colour and comp clips; docs/text.md, docs/timeline.md):",
         "ffcine.text    text, style, font, face, size, colour, position, alignment, profiles,",
         "               animation {in, out}: fade, slide, pop, typewriter, wipe, none;",
         "               keyframes {position, scale, opacity, colour}: [{t, v, interp}], or",
         "               expressions over lt and dur",
         "ffcine.title   title sequence or end screen (`ffcine title`)",
         "ffcine.solid   a colour fill",
+        "ffcine.comp    a comp on the picture track: schema ffcine.comp/1 and src (a comp",
+        "               file) or the comp inline; source_range is comp time",
         "HDR output is a `grade --hdr` option; render writes BT.709 SDR (docs/color.md).",
     ),
     examples!(

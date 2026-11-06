@@ -100,8 +100,26 @@ fn plan_file(
     } else {
         Some(assembly::TextLayer::from_timeline(&t, dir).context("text clips")?)
     };
-    let p = assembly::plan(&t, dir, profile, &assembly::FsFingerprinter, text.as_ref())
-        .with_context(|| format!("planning {}", path.display()))?;
+    let fp = &assembly::FsFingerprinter;
+    let p = if assembly::has_comp_clips(&t) {
+        // `ffcine.comp` clips probe their layers' media to lower.
+        let ff = ffcine::backend::Ffmpeg::new()?;
+        let (dims, camera, rate) = (
+            super::comp::dims(&ff),
+            super::comp::camera(&ff),
+            super::comp::rate(&ff),
+        );
+        let media = assembly::CompMedia {
+            fp,
+            dims: &dims,
+            profile: Some(&camera),
+            rate: Some(&rate),
+        };
+        assembly::plan_with(&t, dir, profile, fp, text.as_ref(), Some(&media))
+    } else {
+        assembly::plan(&t, dir, profile, fp, text.as_ref())
+    }
+    .with_context(|| format!("planning {}", path.display()))?;
     for w in &p.warnings {
         eprintln!("warning: {w}");
     }

@@ -81,6 +81,15 @@ pub fn is_comp_file(path: &Path) -> bool {
         || read(path).is_ok_and(|v| is_comp(&v))
 }
 
+/// A comp file's document as written (JSON, or YAML for `.yaml`/`.yml`), templates not
+/// expanded ([`crate::templates::expand`] does that).
+///
+/// # Errors
+/// An unreadable file or bad JSON/YAML.
+pub fn read_document(path: &Path) -> Result<Value> {
+    read(path)
+}
+
 /// A JSON or (by extension) YAML document.
 fn read(path: &Path) -> Result<Value> {
     let text = std::fs::read_to_string(path).map_err(|source| Error::Io {
@@ -662,13 +671,14 @@ impl Comp {
 
     /// Reads a comp document; `dir` resolves relative media paths.
     pub fn from_value(v: &Value, dir: &Path) -> Result<Self> {
-        let m = object(v, "comp")?;
+        let expanded = crate::templates::expand(v)?;
+        let m = object(&expanded, "comp")?;
         Self::schema(m, "schema", false)?;
         check_keys(
             m,
             "comp",
             &["schema", "canvas", "vars", "comps", "layers", "project"],
-            &[("template", "compositing step 7, templates")],
+            &[],
         )?;
         let project = Arc::new(match m.get("project") {
             None => CompProject {
@@ -1045,7 +1055,7 @@ impl Comp {
                         &[
                             ("comps", "comps are named at the top level only"),
                             ("project", "a nested comp uses its parent's project"),
-                            ("template", "compositing step 7, templates"),
+                            ("template", "templates expand at the top level only"),
                         ],
                     )?;
                     let sub = Ctx {

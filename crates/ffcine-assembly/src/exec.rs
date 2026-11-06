@@ -18,17 +18,14 @@ use std::time::{Duration, Instant};
 use std::sync::Arc;
 
 use ffcine_comp::Base;
-use ffcine_filters::Grain;
 use ffcine_render::{
-    Backend, BlendMode, Codec, Crop, Decode, Device, EncoderSettings, Grade, Hook, Image, Layer,
-    LayerSource, Lut, LutStage, LutType, Overlay, ParamTrack, Pipeline, Rational, Size, shaders,
+    Backend, Codec, Decode, Device, EncoderSettings, Grade, Hook, Layer, LayerSource, Lut,
+    LutStage, LutType, Overlay, ParamTrack, Pipeline, Rational, Size, shaders,
 };
 use serde_json::json;
 
-use crate::comp::{self, Finish, Layout, Placement, TransitionKind};
-use crate::plan::{
-    AudioPlan, OverlaySource, Plan, SegLayer, Segment, Shot, Split, TextLayer, Unit, grain_for,
-};
+use crate::comp::Finish;
+use crate::plan::{AudioPlan, Plan, Segment, Shot, TextLayer};
 use crate::recipe::{Fingerprinter as _, Key};
 use ffcine_render::Warp;
 use ffcine_stabilize::{Detection, SourceRange};
@@ -51,7 +48,7 @@ pub enum ExecError {
     Ffmpeg { what: String, log: String },
 }
 
-type Result<T> = std::result::Result<T, ExecError>;
+pub(crate) type Result<T> = std::result::Result<T, ExecError>;
 
 fn io(what: impl Into<String>) -> impl FnOnce(std::io::Error) -> ExecError {
     let what = what.into();
@@ -125,7 +122,7 @@ pub fn rational(rate: f64) -> Rational {
 }
 
 #[allow(clippy::cast_precision_loss)]
-fn secs(frames: i64, rate: f64) -> f64 {
+pub(crate) fn secs(frames: i64, rate: f64) -> f64 {
     frames as f64 / rate
 }
 
@@ -202,7 +199,7 @@ impl Renderer<'_> {
         Ok(d)
     }
 
-    fn event(&self, v: &serde_json::Value, human: impl FnOnce() -> String) {
+    pub(crate) fn event(&self, v: &serde_json::Value, human: impl FnOnce() -> String) {
         match self.progress {
             Progress::Human => eprintln!("{}", human()),
             Progress::Json => println!("{v}"),
@@ -403,16 +400,8 @@ impl Renderer<'_> {
             .decode(self.decode)
     }
 
-    /// Renders one segment to `out` with the profile's encoder: one GPU pass with the unit's
-    /// main picture as the base and everything else (the incoming side of a transition,
-    /// split-screen panels, overlay clips) as layers over it.
-    #[allow(clippy::too_many_lines)]
-    #[allow(
-        clippy::many_single_char_names,
-        clippy::cast_possible_truncation,
-        clippy::cast_precision_loss,
-        clippy::cast_sign_loss
-    )]
+    /// Renders one segment to `out` with the profile's encoder: one GPU pass over the piece the
+    /// segment lowers to (`lower.rs`), its base as the pass input and its layers over it.
     fn segment(
         &self,
         plan: &Plan,
@@ -420,237 +409,25 @@ impl Renderer<'_> {
         mut overlays: Vec<Overlay>,
         out: &Path,
     ) -> Result<()> {
-        let size = plan.profile.size;
-        let (w, h) = (size.width, size.height);
-        let frames = seg.frames;
-        let key = &seg.key;
         let mut temps = Vec::new();
-        let mut layers = Vec::new();
-        let grain = |s: Option<&Shot>| -> Result<Option<Grain>> {
-            let m = s
-                .and_then(|s| s.grain.clone())
-                .and_then(|g| grain_for(g, &plan.profile.name))
-                .or_else(|| plan.grain.clone());
-            m.map(|m| {
-                ffcine_filters::effect::grain(&m).map_err(|msg| ExecError::Grade {
-                    shot: seg.name.clone(),
-                    msg: format!("grain: {msg}"),
-                })
-            })
-            .transpose()
-        };
-        // The denoiser's history and lookahead around the main picture's piece.
-        let mut ctx = (0, 0);
-        let (base, start, mut grade) = match &seg.unit {
-            Unit::Shot(s) => {
-                ctx = s.context();
-                let (input, start) = self.input_ctx(plan, s, ctx, key, "shot", &mut temps)?;
-                let mut g = self.shot_grade(s, plan, size, None, Pic::Main)?;
-                g.grain = grain(Some(s))?;
-                (input, start, g)
-            }
-            Unit::Gap => (
-                self.black(plan, frames, key, &mut temps)?,
-                0.0,
-                identity(size),
-            ),
-            Unit::Transition { a, b, kind } => {
-                let n = frames;
-                let p = |i| comp::progress(i, n);
-                match *kind {
-                    TransitionKind::Dissolve => {
-                        ctx = a.context();
-                        let (input, start) = self.input_ctx(plan, a, ctx, key, "a", &mut temps)?;
-                        let mut g = self.shot_grade(a, plan, size, None, Pic::Main)?;
-                        g.grain = grain(Some(a))?;
-                        let mut bg = self.shot_grade(b, plan, size, None, Pic::Main)?;
-                        bg.grain = g.grain;
-                        bg.hooks
-                            .push(alpha_hook((0..n).map(|i| p(i) as f32).collect(), 0.0));
-                        layers.push(self.video_layer(
-                            plan,
-                            b,
-                            bg,
-                            0,
-                            n,
-                            Vec::new(),
-                            key,
-                            "b",
-                            &mut temps,
-                        )?);
-                        (input, start, g)
-                    }
-                    TransitionKind::Whip(d) => {
-                        let e = |i: i64| comp::smoothstep(p(i));
-                        let (fw, fh) = (f64::from(w), f64::from(h));
-                        let travel = d[0].abs() * fw + d[1].abs() * fh;
-                        let blur: Vec<f32> = (0..n)
-                            .map(|i| {
-                                let pp = p(i);
-                                (travel * 6.0 * pp * (1.0 - pp) / n.max(1) as f64) as f32
-                            })
-                            .collect();
-                        let rects = |sign: f64, off: f64| -> Vec<Crop> {
-                            (0..n)
-                                .map(|i| {
-                                    let k = e(i) - off;
-                                    Crop {
-                                        x: (sign * d[0] * fw * k) as f32,
-                                        y: (sign * d[1] * fh * k) as f32,
-                                        width: w as f32,
-                                        height: h as f32,
-                                    }
-                                })
-                                .collect()
-                        };
-                        for (side, s, off) in [("a", a, 0.0), ("b", b, 1.0)] {
-                            let mut g = self.shot_grade(s, plan, size, None, Pic::Main)?;
-                            g.grain = grain(Some(s))?;
-                            g.hooks.push(Hook {
-                                name: "whip".into(),
-                                source: shaders::motion_blur().into(),
-                                params: vec![("dir_x".into(), d[0]), ("dir_y".into(), d[1])],
-                                tracks: vec![ParamTrack {
-                                    name: "blur".into(),
-                                    values: blur.clone(),
-                                }],
-                            });
-                            layers.push(self.video_layer(
-                                plan,
-                                s,
-                                g,
-                                0,
-                                n,
-                                rects(1.0, off),
-                                key,
-                                side,
-                                &mut temps,
-                            )?);
-                        }
-                        let mut g = identity(size);
-                        g.grain = grain(None)?;
-                        (self.black(plan, frames, key, &mut temps)?, 0.0, g)
-                    }
-                    TransitionKind::Dip(_) | TransitionKind::Flash => {
-                        // Dip and flash: `a` goes out to the colour over the first half, `b`
-                        // comes in from it over the second.
-                        let half = n / 2;
-                        let (out_k, in_k): (Vec<f32>, Vec<f32>) = (0..n)
-                            .map(|i| {
-                                let q = p(i);
-                                (
-                                    ((1.0 - 2.0 * q).clamp(0.0, 1.0)) as f32,
-                                    ((2.0 * q - 1.0).clamp(0.0, 1.0)) as f32,
-                                )
-                            })
-                            .unzip();
-                        let (colour, flash) = match *kind {
-                            TransitionKind::Dip(c) => (c, false),
-                            _ => ([1.0; 3], true),
-                        };
-                        let mix = |k: Vec<f32>| -> Mix {
-                            if flash {
-                                Mix::Lift(k.into_iter().map(|v| (1.0 - v).powi(2)).collect())
-                            } else {
-                                Mix::Fade(k, colour)
-                            }
-                        };
-                        ctx = a.context();
-                        let (input, start) = self.input_ctx(plan, a, ctx, key, "a", &mut temps)?;
-                        let mut g = self.shot_grade(a, plan, size, Some(&mix(out_k)), Pic::Main)?;
-                        g.grain = grain(Some(a))?;
-                        let b2 = b.shifted(half, plan.rate);
-                        let mut bg = self.shot_grade(
-                            &b2,
-                            plan,
-                            size,
-                            Some(&mix(in_k[usize::try_from(half).unwrap_or(0)..].to_vec())),
-                            Pic::Main,
-                        )?;
-                        bg.grain = g.grain;
-                        layers.push(self.video_layer(
-                            plan,
-                            &b2,
-                            bg,
-                            half,
-                            n,
-                            Vec::new(),
-                            key,
-                            "b",
-                            &mut temps,
-                        )?);
-                        (input, start, g)
-                    }
-                }
-            }
-            Unit::Split(sp) => {
-                let g_split = grain(None)?;
-                self.split(plan, sp, frames, key, g_split, &mut layers, &mut temps)?
-            }
-            Unit::SplitDissolve {
-                split,
-                shot,
-                split_out,
-            } => {
-                let g_split = grain(None)?;
-                let (input, start, g) =
-                    self.split(plan, split, frames, key, g_split, &mut layers, &mut temps)?;
-                let mut sg = self.shot_grade(shot, plan, size, None, Pic::Main)?;
-                sg.grain = grain(Some(shot))?;
-                let op = (0..frames)
-                    .map(|i| {
-                        let q = comp::progress(i, frames) as f32;
-                        if *split_out { q } else { 1.0 - q }
-                    })
-                    .collect();
-                sg.hooks.push(alpha_hook(op, 0.0));
-                layers.push(self.video_layer(
-                    plan,
-                    shot,
-                    sg,
-                    0,
-                    frames,
-                    Vec::new(),
-                    key,
-                    "x",
-                    &mut temps,
-                )?);
-                (input, start, g)
-            }
-            Unit::Comp(p) => {
-                let mut ls = p.layers.clone();
-                self.filter_preps(&mut ls)?;
-                self.intra_preps(&mut ls)?;
-                layers.extend(ls);
-                overlays.extend(p.overlays.iter().cloned());
-                match &p.base {
-                    Base::Black => (
-                        self.black(plan, frames, key, &mut temps)?,
-                        0.0,
-                        p.grade.clone(),
-                    ),
-                    Base::Video { input, start } => {
-                        (input.clone(), start.as_secs_f64(), p.grade.clone())
-                    }
-                }
-            }
-        };
-        // Overlay clips (picture-in-picture, stickers), bottom first.
-        for (k, l) in seg.layers.iter().enumerate() {
-            layers.push(self.overlay_layer(plan, l, key, k, &mut temps)?);
-        }
-        grade.size = Some(size);
-        let pipe = self
-            .pipeline(&base, out, start, frames, plan.rate)
-            .context(
-                u64::try_from(ctx.0).unwrap_or(0),
-                u64::try_from(ctx.1).unwrap_or(0),
-            )
-            .grade(grade)
-            .layers(layers)
-            .overlays(overlays)
-            .encoder(plan.profile.encoder.clone());
-        let r = self.run_dv_retry(&pipe, key);
+        let r = self.lower(plan, seg, &mut temps).and_then(|(p, ctx)| {
+            let (base, start) = match &p.base {
+                Base::Black => (self.black(plan, seg.frames, &seg.key, &mut temps)?, 0.0),
+                Base::Video { input, start } => (input.clone(), start.as_secs_f64()),
+            };
+            overlays.extend(p.overlays);
+            let pipe = self
+                .pipeline(&base, out, start, seg.frames, plan.rate)
+                .context(
+                    u64::try_from(ctx.0).unwrap_or(0),
+                    u64::try_from(ctx.1).unwrap_or(0),
+                )
+                .grade(p.grade)
+                .layers(p.layers)
+                .overlays(overlays)
+                .encoder(plan.profile.encoder.clone());
+            self.run_dv_retry(&pipe, &seg.key)
+        });
         for t in temps {
             let _ = std::fs::remove_file(t);
         }
@@ -660,7 +437,7 @@ impl Renderer<'_> {
     /// Runs filter nodes (`docs/compositing.md#libavfilter-escape-hatch`) into lossless
     /// intermediates, cached by the node's key (a whole-clip node's is shared by every piece), and
     /// points their layers at them. Nested comps' layers too.
-    fn filter_preps(&self, layers: &mut [Layer]) -> Result<()> {
+    pub(crate) fn filter_preps(&self, layers: &mut [Layer]) -> Result<()> {
         for l in layers {
             match &l.source {
                 LayerSource::Filtered(p) => {
@@ -768,7 +545,7 @@ impl Renderer<'_> {
     /// Points remapped video layers whose frame map steps back (reverse, boomerang) at an
     /// all-intra lossless (FFV1) intermediate of the span the map covers, so each step back is one
     /// seek to one frame (`docs/compositing.md#time-remapping`). Nested comps' layers too.
-    fn intra_preps(&self, layers: &mut [Layer]) -> Result<()> {
+    pub(crate) fn intra_preps(&self, layers: &mut [Layer]) -> Result<()> {
         for l in layers {
             match &mut l.source {
                 LayerSource::Video {
@@ -808,103 +585,6 @@ impl Renderer<'_> {
             }
         }
         Ok(())
-    }
-
-    /// A split-screen piece: the backdrop as the base, the panels as layers. A panel's first
-    /// shot also covers frames before the split (a transition into it) and its last holds after.
-    #[allow(
-        clippy::too_many_arguments,
-        clippy::many_single_char_names,
-        clippy::cast_possible_truncation,
-        clippy::cast_precision_loss,
-        clippy::cast_sign_loss
-    )]
-    fn split(
-        &self,
-        plan: &Plan,
-        sp: &Split,
-        frames: i64,
-        key: &Key,
-        g_split: Option<Grain>,
-        layers: &mut Vec<Layer>,
-        temps: &mut Vec<PathBuf>,
-    ) -> Result<(PathBuf, f64, Grade)> {
-        let size = plan.profile.size;
-        let (w, h) = (size.width, size.height);
-        let lay = Layout::parse(&sp.layout);
-        let rects = lay.rects(sp.panels.len(), w, h);
-        let radius = lay.radius_px(h);
-        for (i, (parts, r)) in sp.panels.iter().zip(&rects).enumerate() {
-            for part in parts {
-                let Some(shot) = &part.shot else { continue };
-                let from = part.from.max(sp.at) - sp.at;
-                let to = (part.from + part.frames).min(sp.at + frames) - sp.at;
-                if to <= from {
-                    continue;
-                }
-                let s = shot
-                    .shifted(from + sp.at - part.from, plan.rate)
-                    .with_frames(to - from);
-                let (pw, ph) = (r.w.round().max(2.0) as u32, r.h.round().max(2.0) as u32);
-                let pr: Vec<Crop> = (from..to)
-                    .map(|j| {
-                        let t = secs(sp.at + j, plan.rate);
-                        let [ox, oy] = lay.enter_offset(i, t, w, h);
-                        Crop {
-                            x: (r.x + ox) as f32,
-                            y: (r.y + oy) as f32,
-                            width: r.w as f32,
-                            height: r.h as f32,
-                        }
-                    })
-                    .collect();
-                let fin = sp
-                    .finish
-                    .tracks(sp.at + from, to - from, sp.total, plan.rate);
-                let mut g = self.shot_grade(
-                    &s,
-                    plan,
-                    Size {
-                        width: pw,
-                        height: ph,
-                    },
-                    Some(&Mix::Both(fin, sp.finish.fade_colour)),
-                    Pic::Panel,
-                )?;
-                g.grain = g_split;
-                if radius > 0.0 {
-                    g.hooks.push(alpha_hook(vec![1.0], radius));
-                }
-                layers.push(self.video_layer(
-                    plan,
-                    &s,
-                    g,
-                    from,
-                    to,
-                    pr,
-                    key,
-                    &format!("p{i}"),
-                    temps,
-                )?);
-            }
-        }
-        let mut g = identity(size);
-        g.hooks.push(Hook {
-            name: "backdrop".into(),
-            source: shaders::background().into(),
-            params: vec![
-                ("bg_r".into(), 22.0 / 255.0),
-                ("bg_g".into(), 20.0 / 255.0),
-                ("bg_b".into(), 18.0 / 255.0),
-                ("vignette".into(), 0.35),
-            ],
-            tracks: Vec::new(),
-        });
-        if let Some(hk) = finish_hook(&sp.finish, sp.at, frames, sp.total, plan.rate, None) {
-            g.hooks.push(hk);
-        }
-        g.grain = g_split;
-        Ok((self.black(plan, frames, key, temps)?, 0.0, g))
     }
 
     /// Runs `p`; if it fails, retries once with Dolby Vision RPUs stripped from every source
@@ -1040,7 +720,7 @@ impl Renderer<'_> {
 
     /// A shot's source for the GPU pass: its media at its start, or, with a speed change, a
     /// freeze or a temporal blend, a lossless retimed intermediate (ffmpeg on NVDEC/NVENC) from 0.
-    fn input(
+    pub(crate) fn input(
         &self,
         plan: &Plan,
         s: &Shot,
@@ -1054,7 +734,7 @@ impl Renderer<'_> {
     /// [`Renderer::input`] with `ctx` (before, after) frames of the clip around the piece for
     /// the denoiser ([`Pipeline::context`]): a retimed intermediate holds them too.
     #[allow(clippy::too_many_lines, clippy::many_single_char_names)]
-    fn input_ctx(
+    pub(crate) fn input_ctx(
         &self,
         plan: &Plan,
         s: &Shot,
@@ -1165,7 +845,7 @@ impl Renderer<'_> {
     /// A shot's grade at `size`: the grader's (LUT, look, sharpen), its geometry as `pic`
     /// (reframe, stabilizer, and on the main picture the NLE crop and transform), then its finish
     /// with a transition's `mix` folded in.
-    fn shot_grade(
+    pub(crate) fn shot_grade(
         &self,
         s: &Shot,
         plan: &Plan,
@@ -1203,140 +883,8 @@ impl Renderer<'_> {
         Ok(g)
     }
 
-    /// A video layer of `s` over segment frames `from..to`.
-    #[allow(clippy::too_many_arguments)]
-    fn video_layer(
-        &self,
-        plan: &Plan,
-        s: &Shot,
-        grade: Grade,
-        from: i64,
-        to: i64,
-        rects: Vec<Crop>,
-        key: &Key,
-        tag: &str,
-        temps: &mut Vec<PathBuf>,
-    ) -> Result<Layer> {
-        let (input, start) = self.input(plan, s, key, tag, temps)?;
-        Ok(Layer {
-            source: LayerSource::Video {
-                input,
-                start: Duration::from_secs_f64(start.max(0.0)),
-                map: None,
-            },
-            grade,
-            from,
-            to,
-            rects,
-            rotation: Vec::new(),
-            blend: BlendMode::Normal,
-        })
-    }
-
-    /// An overlay clip's layer: placed and faded per frame from its transform and blend.
-    #[allow(
-        clippy::many_single_char_names,
-        clippy::cast_possible_truncation,
-        clippy::cast_precision_loss,
-        clippy::cast_sign_loss
-    )]
-    fn overlay_layer(
-        &self,
-        plan: &Plan,
-        l: &SegLayer,
-        key: &Key,
-        k: usize,
-        temps: &mut Vec<PathBuf>,
-    ) -> Result<Layer> {
-        let (w, h) = (plan.profile.size.width, plan.profile.size.height);
-        let mut warns = Vec::new();
-        let place = Placement::parse(&l.clip.transform, &l.clip.blend, &mut |m| warns.push(m));
-        for m in warns {
-            self.event(&json!({"event": "warning", "msg": m}), || {
-                format!("warning: {}: {m}", l.clip.name)
-            });
-        }
-        let (source, sw, sh, shot) = match &l.clip.source {
-            OverlaySource::Image { path, .. } => {
-                let img = image::open(path)
-                    .map_err(|e| ExecError::Grade {
-                        shot: l.clip.name.clone(),
-                        msg: format!("{}: {e}", path.display()),
-                    })?
-                    .to_rgba8();
-                let (iw, ih) = img.dimensions();
-                (
-                    LayerSource::Image(Arc::new(Image {
-                        width: iw,
-                        height: ih,
-                        data: img.into_raw(),
-                    })),
-                    iw,
-                    ih,
-                    None,
-                )
-            }
-            OverlaySource::Video(_) => {
-                let s = l.shot(plan.rate).unwrap_or_else(|| unreachable!());
-                let (iw, ih) = self.dims(&s.media)?;
-                let (input, start) = self.input(plan, &s, key, &format!("ov{k}"), temps)?;
-                (
-                    LayerSource::Video {
-                        input,
-                        start: Duration::from_secs_f64(start.max(0.0)),
-                        map: None,
-                    },
-                    iw,
-                    ih,
-                    Some(s),
-                )
-            }
-        };
-        let n = l.to - l.from;
-        let t = |j: i64| l.clip.source_start + secs(l.clip_at + j, plan.rate);
-        let rects: Vec<comp::Rect> = (0..n)
-            .map(|j| place.rect(t(j), f64::from(sw), f64::from(sh), w, h))
-            .collect();
-        let tw = rects.iter().map(|r| r.w).fold(1.0, f64::max).ceil();
-        let th = rects.iter().map(|r| r.h).fold(1.0, f64::max).ceil();
-        let size = Size {
-            width: tw as u32,
-            height: th as u32,
-        };
-        let opacity: Vec<f32> = (0..n).map(|j| place.opacity(t(j)) as f32).collect();
-        let radius = place.radius * f64::from(h) * tw / rects.first().map_or(tw, |r| r.w.max(1.0));
-        let mut grade = match &shot {
-            Some(s) => self.shot_grade(s, plan, size, None, Pic::Overlay)?,
-            None => Grade {
-                dither: None,
-                peak_detect: false,
-                size: Some(size),
-                ..Grade::default()
-            },
-        };
-        grade.dither = None;
-        grade.hooks.push(alpha_hook(opacity, radius));
-        Ok(Layer {
-            source,
-            grade,
-            from: l.from,
-            to: l.to,
-            rects: rects
-                .into_iter()
-                .map(|r| Crop {
-                    x: r.x as f32,
-                    y: r.y as f32,
-                    width: r.w as f32,
-                    height: r.h as f32,
-                })
-                .collect(),
-            rotation: (0..n).map(|j| place.rotation(t(j)) as f32).collect(),
-            blend: place.mode,
-        })
-    }
-
     /// A video file's picture size.
-    fn dims(&self, path: &Path) -> Result<(u32, u32)> {
+    pub(crate) fn dims(&self, path: &Path) -> Result<(u32, u32)> {
         let info = self.backend.probe(path)?;
         info.video()
             .map(|(_, v)| (v.width, v.height))
@@ -1545,7 +1093,7 @@ impl Renderer<'_> {
 }
 
 /// A transition's contribution to a side's finish.
-enum Mix {
+pub(crate) enum Mix {
     /// Per-frame fade towards the colour (1 = the picture).
     Fade(Vec<f32>, [f64; 3]),
     /// Per-frame lift towards white.
@@ -1556,7 +1104,7 @@ enum Mix {
 
 /// Which picture a shot's grade is for: what its geometry takes ([`Renderer::geometry`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Pic {
+pub(crate) enum Pic {
     /// The main picture (or a transition's side): reframe, stabilizer, NLE crop and transform.
     Main,
     /// A split-screen panel: reframe (its `focus`) and stabilizer, in the panel.
@@ -1566,7 +1114,7 @@ enum Pic {
 }
 
 /// No grade but the output size (gaps, backdrops).
-fn identity(size: Size) -> Grade {
+pub(crate) fn identity(size: Size) -> Grade {
     Grade {
         size: Some(size),
         ..Grade::default()
@@ -1574,7 +1122,7 @@ fn identity(size: Size) -> Grade {
 }
 
 /// [`shaders::alpha`] with per-frame `opacity` and a fixed corner `radius` in layer pixels.
-fn alpha_hook(opacity: Vec<f32>, radius: f64) -> Hook {
+pub(crate) fn alpha_hook(opacity: Vec<f32>, radius: f64) -> Hook {
     Hook {
         name: "alpha".into(),
         source: shaders::alpha().into(),
@@ -1589,7 +1137,7 @@ fn alpha_hook(opacity: Vec<f32>, radius: f64) -> Hook {
 /// [`shaders::finish`] for frames `at..at + n` of a clip `len` frames long, with a transition's
 /// `mix` folded in; `None` when it would do nothing.
 #[allow(clippy::many_single_char_names)]
-fn finish_hook(
+pub(crate) fn finish_hook(
     f: &Finish,
     at: i64,
     n: i64,
