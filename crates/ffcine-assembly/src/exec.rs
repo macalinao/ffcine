@@ -2,7 +2,7 @@
 //! the audio, and muxes the master.
 //!
 //! Cache layout (`<cache>/`): `seg/<key>.mp4` (one per segment), `audio/<key>-aac<bitrate>.m4a`
-//! (the mix, encoded), `tmp/` (intermediates). Every entry is written to a `.partial` file and
+//! (the mix, encoded), `tmp/` (intermediates). Every entry is written to a `.partial-<pid>` file and
 //! renamed when complete, so a killed render resumes: the next run reuses what finished. Nothing is pruned, and old masters are never touched.
 //!
 //! Shots go through the GPU [`Pipeline`] (decode, grade, scale, encode). The audio is
@@ -234,8 +234,12 @@ impl Renderer<'_> {
             return Ok(false);
         }
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("mkv");
-        let partial = path.with_extension(format!("partial.{ext}"));
-        make(&partial)?;
+        // Per process, so two renders making the same file don't write one partial.
+        let partial = path.with_extension(format!("partial-{}.{ext}", std::process::id()));
+        if let Err(e) = make(&partial) {
+            let _ = std::fs::remove_file(&partial);
+            return Err(e);
+        }
         std::fs::rename(&partial, path).map_err(io(format!("renaming {}", partial.display())))?;
         Ok(true)
     }
@@ -666,6 +670,8 @@ impl Renderer<'_> {
                     let frames = map.iter().copied().max().unwrap_or(0) + 1;
                     let at = start.as_secs_f64();
                     let id = json!({
+                        // The prep's format: change it when the ffmpeg arguments below change.
+                        "prep": INTRA_PREP,
                         "intra": crate::recipe::FsFingerprinter.fingerprint(input),
                         "start": at,
                         "frames": frames,
@@ -674,28 +680,7 @@ impl Renderer<'_> {
                         .dir("prep")?
                         .join(format!("{}.intra.mkv", Key::of(&id)));
                     Self::atomic(&prep, |out| {
-                        let mut v: Vec<OsString> = args(&["-ss", &at.to_string(), "-i"]).collect();
-                        v.push(input.clone().into());
-                        v.extend(args(&[
-                            "-map",
-                            "0:v:0",
-                            "-frames:v",
-                            &frames.to_string(),
-                            "-fps_mode",
-                            "passthrough",
-                            // FFV1: lossless in any pixel format, every frame a keyframe.
-                            "-c:v",
-                            "ffv1",
-                            "-level",
-                            "3",
-                            "-g",
-                            "1",
-                            "-slices",
-                            "16",
-                            "-an",
-                        ]));
-                        v.push(out.into());
-                        self.ffmpeg("all-intra prep", &v)
+                        self.ffmpeg("all-intra prep", &intra_prep_args(input, at, frames, out))
                     })?;
                     *input = prep;
                     *start = Duration::ZERO;
@@ -1567,6 +1552,38 @@ fn read_manifest_key(path: &Path) -> Option<Key> {
     Some(Key(v.get("master")?.as_str()?.to_owned()))
 }
 
+/// The all-intra prep's format, in its cache key ([`Renderer::intra_preps`]).
+const INTRA_PREP: &str = "ffv1-l3-g1";
+
+/// ffmpeg arguments for an all-intra lossless (FFV1) copy of `frames` frames of `input` from
+/// `at` s into `out`. The pixels stay as stored (`-noautorotate`: no transpose on the CPU) and the
+/// display matrix, colour tags, bit depth and HDR metadata are carried over, so the decoder
+/// turns and tags the prep as it does the source.
+fn intra_prep_args(input: &Path, at: f64, frames: i64, out: &Path) -> Vec<OsString> {
+    let mut v: Vec<OsString> = args(&["-ss", &at.to_string(), "-noautorotate", "-i"]).collect();
+    v.push(input.into());
+    v.extend(args(&[
+        "-map",
+        "0:v:0",
+        "-frames:v",
+        &frames.to_string(),
+        "-fps_mode",
+        "passthrough",
+        // FFV1: lossless in any pixel format, every frame a keyframe.
+        "-c:v",
+        "ffv1",
+        "-level",
+        "3",
+        "-g",
+        "1",
+        "-slices",
+        "16",
+        "-an",
+    ]));
+    v.push(out.into());
+    v
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1675,6 +1692,100 @@ mod tests {
             );
             assert_eq!(piece, whole[a..b], "piece {from}+{n}");
         }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// `ffprobe` of `p`'s first video stream: size, pixel format, colour tags, rotation.
+    fn probe(p: &Path) -> String {
+        let out = Command::new("ffprobe")
+            .args(["-v", "error", "-select_streams", "v:0", "-show_entries"])
+            .args([
+                "stream=width,height,pix_fmt,color_range,color_space,color_transfer,\
+                 color_primaries:stream_side_data=rotation,max_content,max_luminance",
+                "-of",
+                "compact",
+            ])
+            .arg(p)
+            .output()
+            .expect("ffprobe on PATH");
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    }
+
+    #[test]
+    #[ignore = "needs ffmpeg"]
+    fn intra_prep_keeps_pixels_rotation_and_colour() {
+        let d = std::env::temp_dir().join(format!("ffcine-intra-{}", std::process::id()));
+        std::fs::create_dir_all(&d).expect("temp dir");
+        let (hdr, src, prep) = (d.join("hdr.mkv"), d.join("rot.mkv"), d.join("prep.mkv"));
+        let s = |p: &Path| p.to_str().expect("utf-8").to_owned();
+        // A 10-bit PQ / BT.2020 source with HDR10 metadata and a 90° display matrix.
+        ffmpeg(&[
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=s=320x180:r=30:d=1",
+            "-vf",
+            "format=yuv420p10le,setparams=color_primaries=bt2020:color_trc=smpte2084:\
+             colorspace=bt2020nc:range=tv",
+            "-c:v",
+            "libx265",
+            "-x265-params",
+            "log-level=none:keyint=15:hdr10=1:max-cll=1000,400:\
+             master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1)",
+            &s(&hdr),
+        ]);
+        ffmpeg(&[
+            "-display_rotation",
+            "90",
+            "-i",
+            &s(&hdr),
+            "-c",
+            "copy",
+            &s(&src),
+        ]);
+        let at = 10.0 / 30.0;
+        let mut argv = vec![OsString::from("-v"), "error".into(), "-y".into()];
+        argv.extend(intra_prep_args(&src, at, 12, &prep));
+        let st = Command::new("ffmpeg").args(&argv).status().expect("ffmpeg");
+        assert!(st.success());
+        let (was, got) = (probe(&src), probe(&prep));
+        for want in [
+            "width=320",
+            "height=180",
+            "pix_fmt=yuv420p10le",
+            "color_range=tv",
+            "color_space=bt2020nc",
+            "color_transfer=smpte2084",
+            "color_primaries=bt2020",
+            "rotation=90",
+        ] {
+            assert!(was.contains(want), "source {want}: {was}");
+            assert!(got.contains(want), "prep {want}: {got}");
+        }
+        // HEVC carries HDR10 metadata per frame (SEI); the prep has it on the stream.
+        assert!(
+            got.contains("max_content=1000"),
+            "prep HDR10 metadata: {got}"
+        );
+        // The stored (unrotated) pixels of frames 10..22, bit for bit.
+        let md5 = |p: &Path, ss: Option<f64>, n: &str| -> Vec<String> {
+            let mut argv: Vec<String> = Vec::new();
+            if let Some(secs) = ss {
+                argv.extend(["-ss".into(), secs.to_string()]);
+            }
+            argv.extend(["-noautorotate", "-i"].map(String::from));
+            argv.push(s(p));
+            argv.extend(["-frames:v", n, "-f", "framemd5", "-"].map(String::from));
+            let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+            String::from_utf8_lossy(&ffmpeg(&refs))
+                .lines()
+                .filter(|l| !l.starts_with('#'))
+                .map(|l| l.rsplit(',').next().unwrap_or("").trim().to_owned())
+                .collect()
+        };
+        let want = md5(&src, Some(at), "12");
+        assert_eq!(want.len(), 12);
+        assert_eq!(md5(&prep, None, "12"), want);
         let _ = std::fs::remove_dir_all(&d);
     }
 

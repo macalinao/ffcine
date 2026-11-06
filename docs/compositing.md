@@ -151,7 +151,7 @@ naming the parameter (`ffcine_comp::limits`):
 | `transform.position`, `anchor`, `radius`, `mask.rect`, `mask.feather` | finite, at most 1e9 either way |
 | `transform.rotation` | finite, at most 1e6 degrees either way |
 | `time.speed` (constants and keys when read, every sampled value when lowered) | finite, at most 100 either way |
-| `time.source`, `time.freeze` | 0 to 3600 s (`source` finite, at most 3600 either way when sampled) |
+| `time.source`, `time.freeze` | 0 to 3600 s (`source` checked at every sampled frame) |
 | `content.zoom`, `punch.zoom`, `push`, and `zoom` with `crop` together | at most 1e4 |
 | a `still`'s decoded size | at most 16384 px a side and 2^28 (~268M) px in all |
 | layer `id` | a string, unique in the comp |
@@ -432,9 +432,10 @@ is rejected, so no existing file changes meaning. In a timeline effect, `t` is t
   non-decreasing map (speed ≥ 0, freezes, ramps, timelapses) decodes forward and repeats or
   drops frames: NVDEC, no intermediate, frames stay in VRAM. A map that goes backwards
   (reverse, boomerang) reads an **all-intra lossless intermediate** of the source span it
-  covers (FFV1, every frame a keyframe, in the source's pixel format, so no conversion; cached
-  under `<cache>/prep/` by source fingerprint and span), where each backward step is one seek
-  to one frame. The decoder keeps a window of the last 4 uploaded frames, so short steps back
+  covers (FFV1, every frame a keyframe, in the source's pixel format, so no conversion; the
+  stored pixels as they are, the display matrix, colour tags and HDR10 metadata carried over,
+  so the decoder turns and tags it as it does the source; cached under `<cache>/prep/` by its
+  format, source fingerprint and span), where each backward step is one seek to one frame. The decoder keeps a window of the last 4 uploaded frames, so short steps back
   and repeats need no seek; a jump forward of more than 4 s seeks.
 - **Existing schemas are sugar**: `LinearTimeWarp` is `speed`, `FreezeFrame` is `freeze`, and
   `ffcine.time.ramp/1` `points [[u, speed]]` over `source_duration` is speed keys at

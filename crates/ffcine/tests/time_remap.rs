@@ -4,7 +4,8 @@
 //!
 //! - the frame maps a comp lowers for a speed, keyed speeds and a source expression pick the
 //!   source frames `setpts` + `fps` do, read back from a source whose frames carry their index;
-//! - a reversed layer renders the frames of the source run through ffmpeg's `reverse`;
+//! - a reversed layer renders the frames of the source run through ffmpeg's `reverse`, also when
+//!   the source has a display matrix (the prep keeps it, so the decoder turns both alike);
 //! - a ramped layer rendered in two pieces equals the one-piece render.
 
 #![allow(
@@ -258,6 +259,60 @@ fn reverse_matches_ffmpeg_reverse() {
         })
         .count();
     assert_eq!(preps, 1, "one all-intra prep");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+#[ignore = "needs a Vulkan GPU, NVENC and ffmpeg"]
+fn reverse_of_a_rotated_source_matches_ffmpeg_reverse() {
+    let d = dir("rotated");
+    let src = source(&d);
+    let s = |p: &Path| p.to_str().expect("utf-8").to_owned();
+    let rot = d.join("rot.mp4");
+    ffmpeg(&[
+        "-display_rotation",
+        "90",
+        "-i",
+        &s(&src),
+        "-c",
+        "copy",
+        &s(&rot),
+    ]);
+    // ffmpeg's reverse of the stored pixels, the matrix kept.
+    let rev = d.join("rev.mkv");
+    ffmpeg(&[
+        "-noautorotate",
+        "-i",
+        &s(&rot),
+        "-vf",
+        "reverse",
+        "-c:v",
+        "ffv1",
+        &s(&rev),
+    ]);
+    let layer = |p: &Path, time: Value, at: f64| {
+        comp(
+            30,
+            60,
+            &json!({ "source": { "video": s(p) }, "source_in": at, "time": time }),
+        )
+    };
+    // The reversed layer reads the prep (stored pixels and the matrix); the decoder turns it
+    // as it turns the source itself, so it shows the source upright, reversed.
+    let a = render(
+        &layer(&rot, json!({ "reverse": true }), 59.0 / 30.0),
+        &[0..60],
+        &d,
+        "reversed",
+    );
+    let b = render(
+        &layer(&rev, json!({ "speed": 1 }), 0.0),
+        &[0..60],
+        &d,
+        "want",
+    );
+    assert_eq!(a.len(), 60);
+    assert_eq!(a, b, "reversed rotated layer vs ffmpeg reverse");
     let _ = std::fs::remove_dir_all(&d);
 }
 
