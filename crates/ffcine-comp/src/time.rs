@@ -281,7 +281,7 @@ pub(crate) fn source_times(
                             .try_eval(Clock::Layer, &Frame { b, vars: &vars })
                             .map_err(|e| err(path, e.to_string()))?
                             .ok_or_else(|| err(path, "no keys"))?;
-                        if v.is_finite() && v.abs() <= limits::DURATION {
+                        if (0.0..=limits::DURATION).contains(&v) {
                             Ok(v)
                         } else {
                             Err(err(

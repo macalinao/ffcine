@@ -1137,4 +1137,10 @@ fn time_remap_speeds_are_bounded_while_evaluated() {
         .expect_err("too far")
         .to_string();
     assert!(e.contains("a source time is"), "{e}");
+    // Negative source times are rejected too, as the message says.
+    let e = try_comp(json!([{ "source": { "video": "a.mov" }, "time": { "source": "t - 0.5" } }]))
+        .and_then(|c| c.lower(0..30, OUT, &Fake).map(|_| ()))
+        .expect_err("negative")
+        .to_string();
+    assert!(e.contains("a source time is 0 to 3600 s"), "{e}");
 }

@@ -268,7 +268,8 @@ pub const COMP_CHECK: &str = concat!(
         "duration, in, out, source_in 0..3600 s; ≤ 64 layers (≤ 16 video), nested comps'",
         "included; comps nest ≤ 4 deep, at the parent's fps; unique string ids;",
         "layer size ≤ 65536 px; a layer's texture at its largest scale ≤ 16384 px a side;",
-        "rotation within ±1e6 degrees; time speed within ±100. The canvas fade covers the composite, every blend mode.",
+        "rotation within ±1e6 degrees; time speed within ±100, time source 0..3600 s.",
+        "The canvas fade covers the composite, every blend mode.",
     ),
     examples!(
         "ffcine comp check story.comp.json",
