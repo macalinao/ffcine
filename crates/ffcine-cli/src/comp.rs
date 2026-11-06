@@ -237,7 +237,7 @@ pub(crate) fn run(cmd: CompCmd, ff: &backend::Ffmpeg) -> anyhow::Result<()> {
             let text = serde_json::to_string_pretty(&lower(&comp)?)? + "\n";
             match output {
                 Some(o) => {
-                    std::fs::write(&o, text).with_context(|| format!("writing {}", o.display()))?
+                    std::fs::write(&o, text).with_context(|| format!("writing {}", o.display()))?;
                 }
                 None => print!("{text}"),
             }
