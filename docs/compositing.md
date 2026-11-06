@@ -541,22 +541,27 @@ For anything ffcine has no native primitive for, a layer gets a raw libavfilter 
 - **Where it runs**: in the layer's **prep**, the retime step's place, after the time map and
   before the GPU pass, into a lossless intermediate the layer then decodes. So the graph sees
   the layer's frames at the canvas rate: the same frames, in order, that the layer will show.
-  `hw: "cpu"` (default) decodes to software frames, runs the graph and uploads; `hw: "cuda"`
-  keeps NVDEC frames in VRAM for graphs of `*_cuda` filters; `hw: "vulkan"` derives Vulkan for
-  `*_vulkan` filters (`nlmeans_vulkan`, `blend_vulkan`). ffcine doesn't guess the mode from the
-  graph. The graph must output one video stream at the input rate with the same frame count,
-  and the frames are re-tagged with the source's colour tags unless the graph sets them
-  (`setparams`).
-- **Per comp output**: `canvas.filter` runs the same way over the composited canvas. The
-  segment renders lossless, the graph runs, then the profile's encoder. That costs one extra
-  lossless encode per segment, so use it only when it's needed.
+  The prep is two `ffmpeg` processes: one decodes the source (rotated as the layer shows it)
+  to YUV4MPEG in its own pixel format, or the nearest one YUV4MPEG carries (RGB sources are
+  converted to Rec.709 full-range YUV first); ffcine feeds its frames in frame-map order
+  (repeats, reverse, freezes) to the second, which runs the graph and writes FFV1. `hw: "cpu"`
+  (default) runs the graph on software frames; `hw: "cuda"` uploads them to CUDA for graphs of
+  `*_cuda` filters and `hw: "vulkan"` to Vulkan for `*_vulkan` filters (`avgblur_vulkan`,
+  `nlmeans_vulkan`), downloading after. ffcine doesn't guess the mode from the graph. A graph
+  of one chain is spliced in as is; one of several chains (`;`) names its input `[in]` and
+  its output `[out]`. The graph must output one video stream at the input rate with the same
+  frame count (checked after the run), and the frames are tagged with the source's colour tags
+  (`setparams` ahead of the graph), which the graph may change (its own `setparams`).
+- **Per comp output** ([Not yet](#not-yet)): `canvas.filter` would run the same way over the
+  composited canvas. The segment renders lossless, the graph runs, then the profile's encoder.
+  That costs one extra lossless encode per segment, so use it only when it's needed.
 - **Time**: the graph is fed frames whose PTS is the frame's time on the node's clock:
   `clock: "layer"` (default) uses `lt`, `clock: "comp"` uses `t`. A piece starting 3 s into the
   layer starts at PTS 3 s, not 0, so `t`-based options (`eq=eval=frame:brightness='0.1*sin(t)'`,
   `drawtext` timing) render the same split or unsplit. `layer` is the default because moving the
   layer on the timeline then changes nothing: the key needs no position. libavfilter's `n` (a
-  filter's own frame counter) can't be offset. ffcine lints expressions that use `n` and tells
-  you to use `t*FRAME_RATE` or `whole_clip`.
+  filter's own frame counter) can't be offset: an option that reads `n` (or `N`) is an error
+  unless the node is `whole_clip`, telling you to use `t*FRAME_RATE` or `whole_clip`.
 - **State**: a graph is stateful if any filter in it reads other frames. `ffcine-render` keeps
   a table of known filters and their reach in frames, under its own `FILTER_TABLE_REVISION`:
 
@@ -584,8 +589,8 @@ For anything ffcine has no native primitive for, a layer gets a raw libavfilter 
 - **Expressions need none of this**: they are pure functions of time and frame, so a piece
   samples its own frames and gets the values a whole render would.
 - **Key**: the node's recipe is the graph text verbatim, `hw`, `clock`, the resolved
-  `preroll`/`postroll`/`whole_clip`, `FILTER_TABLE_REVISION`, the ffmpeg build (`av_version_info`
-  plus the libavfilter version), and its inputs: the source fingerprint and the frame-map slice
+  `preroll`/`postroll`/`whole_clip`, `FILTER_TABLE_REVISION` (stateful nodes only), the ffmpeg
+  build (the first line of `ffmpeg -version` plus its libavfilter version), and its inputs: the source fingerprint and the frame-map slice
   it reads, including pre-roll and post-roll. For a whole-clip node that is the whole layer's
   map; with `clock: "comp"` it also includes the layer's `in`. It goes into the layer's recipe,
   so the segment key changes when any of these do. `RENDER_REVISION` is bumped when ffcine
@@ -613,6 +618,19 @@ For anything ffcine has no native primitive for, a layer gets a raw libavfilter 
 
 GPU/ffmpeg tests (`--ignored`): a `t`-dependent `eq` and a `tmix=frames=5` graph rendered as
 one segment and as three give identical `framemd5`s; a `whole_clip` `deflicker` too.
+
+**Built** (step 6): `filter` on video layers. `ffcine_render::filter_node` has the node, the
+table and the `n` lint; `ffcine-comp` lowers a filtered layer to a `Prep` (the frames to feed,
+their PTS, which outputs to keep, and the key) and its source recipe to `{"filter": {node,
+frames kept}, "show": [...]}`; `Renderer` runs the preps (`filter_prep.rs`) into
+`cache/prep/<key>.filter.mkv` before the intra preps, and the layer then plays that file. A
+piece's intermediate holds just its frames (rolls dropped by a `trim` after the graph); a
+`whole_clip` node's holds the whole layer, so every piece shares one file. A filtered layer is
+never promoted to the base. Layers without `filter` and timelines keep their keys and pixels
+(`RENDER_REVISION` stays 8). The cache tests are `ffcine-comp`'s `filter_tests` and
+`ffcine-assembly`'s `ffmpeg_build_keys_filter_nodes_only`; the split tests (plus `hw: cuda`
+and `hw: vulkan` graphs) are `crates/ffcine/tests/filter_node.rs`. `canvas.filter`, filters on
+stills and nested comps, and the rest are [Not yet](#not-yet).
 
 ## Rendering
 
@@ -945,7 +963,8 @@ Each step is one PR, in dependency order. Each keeps the existing tests green an
    bounds) and `crates/ffcine/tests/time_remap.rs` (the maps against `setpts` + `fps` on a
    source whose frames carry their index, 8 cases; reverse against ffmpeg's `reverse` by
    `framemd5`; a ramp split in two pieces against one, by `framemd5`).
-6. **libavfilter node**: `filter` on layers and `canvas.filter` in the prep (CPU, CUDA,
+6. **libavfilter node** (**Built** for video layers, [what is built](#libavfilter-escape-hatch);
+   `canvas.filter` is [Not yet](#not-yet)): `filter` on layers and `canvas.filter` in the prep (CPU, CUDA,
    Vulkan), the PTS clock, the statefulness table and `FILTER_TABLE_REVISION`, pre-roll,
    post-roll, whole clip, and the `n` lint.
    *Tests*: the [cache invalidation tests](#libavfilter-escape-hatch) listed above, and split
@@ -964,8 +983,8 @@ Each step is one PR, in dependency order. Each keeps the existing tests green an
 
 - Per-layer grade, the rest of step 4: an animated `lut_strength` (the LUT-mix hook; a
   constant one is baked as today), `cdl`, per-layer `denoise`, `grain` (and `canvas.grain`) and
-  `stabilize` on a layer; filters `extra` can't parse wait for the
-  [escape hatch](#libavfilter-escape-hatch) (step 6) and are an error until then.
+  `stabilize` on a layer. Filters `extra` can't parse stay an error in `grade.filters`; the
+  error points to the layer's [`filter`](#libavfilter-escape-hatch).
 - `colorlevels` in a timeline clip's `extra` (layers only for now; it needs a `RENDER_REVISION`
   bump, since timeline keys hash the `extra` strings).
 
@@ -992,6 +1011,13 @@ Each step is one PR, in dependency order. Each keeps the existing tests green an
   each capped in size but not in total, so many large nested comps in one piece can run out of
   VRAM rather than fail in `comp check`.
 - Text rotation and keyframes that need a new layout (as in [text.md](text.md#not-yet)).
+- `canvas.filter`: a lossless segment render, the graph, then the profile's encoder; it is
+  rejected for now.
+- `filter` on still and nested comp layers (an error): stills have no frames to feed, and a
+  nested comp would need its scene rendered to a file first.
+- Through the filter node's YUV4MPEG pipe, HDR10 static metadata (mastering display, content
+  light level) is dropped, alpha deeper than 8 bits is carried as 8-bit `yuva444p`, and a frame
+  map that steps backwards (reverse) holds its frames in memory (up to 4 GiB, else an error).
 - Keeping libavfilter context across segments for `canvas.filter` (it gets pre-roll from the
   composited canvas only if that is rendered, so stateful output graphs are whole-comp).
 - Running the prep graphs in-process through the libav backend instead of the `ffmpeg` CLI (as
