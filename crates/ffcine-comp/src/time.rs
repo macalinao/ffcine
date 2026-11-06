@@ -321,14 +321,15 @@ pub(crate) fn source_times(
 
 /// The source frame a layer frame shows, from its source times at the frame (`s`) and half
 /// a frame later (`mid`), on a source of `rate` fps and `frames` frames. Moving forward, it is
-/// the `fps` filter's pick (`round=near`): the last source frame whose remapped time rounds to
-/// this frame or earlier, i.e. the last one before `mid` (a tie counts as before, as ffmpeg's
-/// truncating `setpts` makes it). Holding or going back, the nearest frame to `s`.
+/// the `fps` filter's pick (`round=near`, half away from zero): the last source frame whose
+/// remapped time rounds to this frame or earlier, i.e. the last one strictly before `mid` (a
+/// frame exactly on `mid` rounds to the next one). Holding or going back, the nearest frame
+/// to `s`. Clamped to the source.
 #[must_use]
 #[allow(clippy::cast_possible_truncation)]
 pub fn pick(s: f64, mid: f64, rate: f64, frames: u64) -> i64 {
     let k = if mid > s + 1e-12 {
-        (rate * mid + 1e-9).floor()
+        (rate * mid - 1e-9).ceil() - 1.0
     } else {
         (rate * s).round()
     };

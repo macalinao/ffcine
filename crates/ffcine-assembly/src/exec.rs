@@ -653,7 +653,7 @@ impl Renderer<'_> {
     }
 
     /// Points remapped video layers whose frame map steps back (reverse, boomerang) at an
-    /// all-intra lossless intermediate of the span the map covers, so each step back is one
+    /// all-intra lossless (FFV1) intermediate of the span the map covers, so each step back is one
     /// seek to one frame (`docs/compositing.md#time-remapping`). Nested comps' layers too.
     fn intra_preps(&self, layers: &mut [Layer]) -> Result<()> {
         for l in layers {
@@ -674,16 +674,7 @@ impl Renderer<'_> {
                         .dir("prep")?
                         .join(format!("{}.intra.mkv", Key::of(&id)));
                     Self::atomic(&prep, |out| {
-                        let mut v: Vec<OsString> = args(&[
-                            "-hwaccel",
-                            "cuda",
-                            "-hwaccel_output_format",
-                            "cuda",
-                            "-ss",
-                            &at.to_string(),
-                            "-i",
-                        ])
-                        .collect();
+                        let mut v: Vec<OsString> = args(&["-ss", &at.to_string(), "-i"]).collect();
                         v.push(input.clone().into());
                         v.extend(args(&[
                             "-map",
@@ -692,14 +683,16 @@ impl Renderer<'_> {
                             &frames.to_string(),
                             "-fps_mode",
                             "passthrough",
-                            "-vf",
-                            "scale_cuda=format=p010le",
+                            // FFV1: lossless in any pixel format, every frame a keyframe.
                             "-c:v",
-                            "hevc_nvenc",
-                            "-tune",
-                            "lossless",
+                            "ffv1",
+                            "-level",
+                            "3",
                             "-g",
                             "1",
+                            "-slices",
+                            "16",
+                            "-an",
                         ]));
                         v.push(out.into());
                         self.ffmpeg("all-intra prep", &v)
@@ -880,6 +873,8 @@ impl Renderer<'_> {
             Base::Black => (self.black_at(rate, piece.frames, &key, &mut temps)?, 0.0),
             Base::Video { input, start } => (input.clone(), start.as_secs_f64()),
         };
+        let mut layers = piece.layers.clone();
+        self.intra_preps(&mut layers)?;
         let mut grade = piece.grade.clone();
         if let Some(c) = output {
             grade.output = c;
@@ -887,7 +882,7 @@ impl Renderer<'_> {
         let pipe = self
             .pipeline(&base, out, start, piece.frames, rate)
             .grade(grade)
-            .layers(piece.layers.clone())
+            .layers(layers)
             .overlays(piece.overlays.clone())
             .encoder(encoder);
         let r = self.run_dv_retry(&pipe, &key);
