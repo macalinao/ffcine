@@ -61,6 +61,27 @@ impl Lut {
         Ok(lut)
     }
 
+    /// This LUT mixed with identity by `strength` (0..1, `lut_strength`): each lattice entry
+    /// moved from its identity value (in the LUT's domain) towards its own by `strength`.
+    #[must_use]
+    pub fn mixed(mut self, strength: f32) -> Self {
+        let s = strength.clamp(0.0, 1.0);
+        if s >= 1.0 {
+            return self;
+        }
+        let id = Self::identity(self.size);
+        let span: Vec<f32> = (0..3)
+            .map(|c| self.domain_max[c] - self.domain_min[c])
+            .collect();
+        for (v, i) in self.data.iter_mut().zip(&id.data) {
+            for c in 0..3 {
+                let ident = self.domain_min[c] + i[c] * span[c];
+                v[c] = ident + s * (v[c] - ident);
+            }
+        }
+        self
+    }
+
     /// The identity LUT of the given size.
     pub fn identity(size: usize) -> Self {
         #[allow(clippy::cast_precision_loss)]

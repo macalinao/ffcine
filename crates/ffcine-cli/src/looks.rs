@@ -1,22 +1,18 @@
 //! `ffcine looks`: every shot × grade variant as a full-res still through one warm GPU pipeline,
 //! plus a labelled contact sheet per shot for posting in chat. Also the timeline grade -> GPU
-//! [`Grade`] mapping `still` uses.
+//! [`grade_for`] mapping `still` uses.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
 use bpaf::Bpaf;
 use ffcine::delivery;
-use ffcine::shaders::{self, LookParams};
 use ffcine::text::{Align, TextStyle, Typesetter};
 use ffcine::timeline::{
     Clip, ClipGrade, Effect, GradeParams, HasMetadata, Project, SourceKind, Timeline,
 };
-use ffcine::{
-    Backend, Device, EncoderSettings, Grade, Hook, Lut, LutStage, LutType, Pipeline, Size,
-};
+use ffcine::{Backend, Device, EncoderSettings, Pipeline, Size};
 use image::{ImageEncoder as _, Rgb, RgbImage};
 use serde_json::{Map, Value};
 
@@ -40,97 +36,7 @@ pub fn clip_grade(clip: &Clip) -> (Option<ClipGrade>, SourceKind) {
     (cg, kind)
 }
 
-/// Loaded LUTs by path and strength.
-#[derive(Default)]
-pub struct Luts(HashMap<(PathBuf, u32), Lut>);
-
-impl Luts {
-    /// The LUT at `path` mixed with identity by `strength` (`lut_strength`).
-    fn get(&mut self, path: &Path, strength: f64) -> anyhow::Result<Lut> {
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let key = (path.to_owned(), (strength.clamp(0.0, 1.0) * 1000.0) as u32);
-        if let Some(l) = self.0.get(&key) {
-            return Ok(l.clone());
-        }
-        let mut lut =
-            Lut::from_cube_file(path).with_context(|| format!("LUT {}", path.display()))?;
-        if strength < 1.0 {
-            #[allow(clippy::cast_possible_truncation)]
-            let s = strength.clamp(0.0, 1.0) as f32;
-            let id = Lut::identity(lut.size);
-            let span: Vec<f32> = (0..3)
-                .map(|c| lut.domain_max[c] - lut.domain_min[c])
-                .collect();
-            for (v, i) in lut.data.iter_mut().zip(&id.data) {
-                for c in 0..3 {
-                    let ident = lut.domain_min[c] + i[c] * span[c];
-                    v[c] = ident + s * (v[c] - ident);
-                }
-            }
-        }
-        self.0.insert(key, lut.clone());
-        Ok(lut)
-    }
-}
-
-/// The GPU grade for resolved `params`: `rgb_gain` ahead of the LUT (alias or path, relative to
-/// `dir`, mixed by `lut_strength`), the post-LUT look hook (warmth, tint, contrast, gamma, lift,
-/// gain, saturation), `extra` filters as hooks ([`ffcine::extra`]), plus `sharpen`. Returns what
-/// isn't applied as warnings.
-#[allow(clippy::cast_possible_truncation)]
-pub fn grade_for(
-    project: &Project,
-    dir: &Path,
-    g: &GradeParams,
-    luts: &mut Luts,
-) -> anyhow::Result<(Grade, Vec<String>)> {
-    let lut = project
-        .lut_path(g.lut.as_deref())
-        .map(|p| luts.get(&dir.join(p), g.lut_strength.unwrap_or(1.0)))
-        .transpose()?
-        .map(|lut| LutStage {
-            lut,
-            kind: LutType::Normalized,
-        });
-    let f = |v: Option<f64>, d: f32| v.map_or(d, |v| v as f32);
-    let look = LookParams {
-        exposure: f(g.exposure, 0.0),
-        warmth: f(g.warmth, 0.0),
-        tint: f(g.tint, 0.0),
-        contrast: f(g.contrast, 0.0),
-        gamma: f(g.gamma, 1.0),
-        lift: f(g.lift, 0.0),
-        gain: f(g.gain, 1.0),
-        saturation: f(g.saturation, 1.0),
-    };
-    let mut skipped = Vec::new();
-    if g.denoise.is_some_and(|v| v != 0.0) {
-        skipped.push("denoise not applied yet".to_owned());
-    }
-    let mut hooks = if look.is_identity() {
-        Vec::new()
-    } else {
-        vec![Hook {
-            name: "look".into(),
-            source: shaders::look().to_owned(),
-            params: look.params(),
-            tracks: Vec::new(),
-        }]
-    };
-    let (extra, warn) = ffcine::extra::hooks(g.extra.as_deref().unwrap_or_default());
-    hooks.extend(extra);
-    skipped.extend(warn);
-    Ok((
-        Grade {
-            lut,
-            rgb_gain: g.rgb_gain.map(|v| v.map(|c| c as f32)),
-            hooks,
-            sharpen: f(g.sharpen, 0.0),
-            ..Grade::default()
-        },
-        skipped,
-    ))
-}
+pub use ffcine::hooks::grade::{Luts, grade_for};
 
 #[derive(Debug, Clone, Bpaf)]
 #[allow(clippy::doc_markdown)]
@@ -584,46 +490,5 @@ mod tests {
         let v = parse_variant("/l/teal.cube", &p).expect("v");
         assert_eq!(v.lut.as_deref(), Some("/l/teal.cube"));
         assert!(parse_variant("nope", &p).is_err());
-    }
-
-    #[test]
-    fn grade_maps_the_look() {
-        let p = Project::default();
-        let g = GradeParams {
-            warmth: Some(0.02),
-            exposure: Some(0.3),
-            ..GradeParams::default()
-        };
-        let (grade, skipped) =
-            grade_for(&p, Path::new("."), &g, &mut Luts::default()).expect("grade");
-        assert_eq!(grade.hooks.len(), 1);
-        assert!(
-            grade.hooks[0]
-                .params
-                .contains(&("exposure".to_owned(), f64::from(0.3_f32)))
-        );
-        assert_eq!(skipped, Vec::<String>::new());
-        let (grade, _) = grade_for(
-            &p,
-            Path::new("."),
-            &GradeParams::default(),
-            &mut Luts::default(),
-        )
-        .expect("grade");
-        assert_eq!(grade.hooks, []);
-        assert_eq!(grade.rgb_gain, None);
-        // rgb_gain goes to the GPU grade; extra filters follow the look as hooks.
-        let g = GradeParams {
-            warmth: Some(0.02),
-            rgb_gain: Some([1.1, 1.0, 0.9]),
-            extra: Some(vec!["eq=saturation=1.2,hqdn3d".into()]),
-            ..GradeParams::default()
-        };
-        let (grade, skipped) =
-            grade_for(&p, Path::new("."), &g, &mut Luts::default()).expect("grade");
-        assert_eq!(grade.rgb_gain, Some([1.1, 1.0, 0.9]));
-        let names: Vec<_> = grade.hooks.iter().map(|h| h.name.as_str()).collect();
-        assert_eq!(names, ["look", "extra eq"]);
-        assert_eq!(skipped, ["extra filter hqdn3d not supported"]);
     }
 }

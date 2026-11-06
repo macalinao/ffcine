@@ -53,6 +53,13 @@ pub(crate) fn dims(ff: &dyn Backend) -> impl Fn(&Path) -> ffcine::Result<(u32, u
     }
 }
 
+/// A layer source's camera profile, for `camera: auto` in a layer's grade.
+pub(crate) fn camera(
+    ff: &dyn Backend,
+) -> impl Fn(&Path) -> ffcine::Result<ffcine::camera::Profile> + '_ {
+    move |p: &Path| Ok(ffcine::camera::Profile::detect_file(&ff.probe(p)?))
+}
+
 /// The `name` profile at the comp's canvas aspect.
 pub(crate) fn profile(c: &Comp, name: &str) -> anyhow::Result<assembly::Profile> {
     let [w, h] = c.canvas.size;
@@ -68,16 +75,19 @@ pub(crate) fn plan(
     let c = load(path)?;
     let p = profile(&c, name)?;
     let dims = dims(ff);
+    let camera = camera(ff);
     let media = assembly::CompMedia {
         fp: &assembly::FsFingerprinter,
         dims: &dims,
+        profile: Some(&camera),
     };
     let plan = assembly::plan_comp(&c, &p, &media)
         .with_context(|| format!("planning {}", path.display()))?;
     Ok((c, plan))
 }
 
-/// A renderer for comps (no grader or stabilizer: comp layers have no grade yet).
+/// A renderer for comps (no grader or stabilizer: layer grades are lowered into each layer's
+/// own [`ffcine::Grade`]).
 pub(crate) fn renderer(
     ff: &backend::Ffmpeg,
     cache: PathBuf,

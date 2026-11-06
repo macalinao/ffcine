@@ -1,11 +1,11 @@
 # Compositing and keyframes (design)
 
-Status: design. Steps 1 to 3 of the [phased plan](#phased-plan) (param tracks and expressions,
-`ffcine_core::anim`; the compositor core, `ffcine-comp`; media layers) are built; the rest is
-not. It turns what assembly already composites (split-screens, picture-in-picture,
-transitions, stills, text) into one general model: a **composition** of ordered **layers**
-whose parameters are **tracks**. Anything one would write today as a
-hand-made ffmpeg filter graph should be expressible in ffcine itself, and layouts and
+Status: design. Steps 1 to 4 of the [phased plan](#phased-plan) (param tracks and expressions,
+`ffcine_core::anim`; the compositor core, `ffcine-comp`; media layers; per-layer grade) are
+built, step 4 in part; the rest is not. It turns what assembly already composites
+(split-screens, picture-in-picture, transitions, stills, text) into one general model: a
+**composition** of ordered **layers** whose parameters are **tracks**. Anything one would write
+today as a hand-made ffmpeg filter graph should be expressible in ffcine itself, and layouts and
 templates are sugar that lowers to it.
 
 The yardstick is a 9:16 story: a 1080x1920 canvas, three 1080x632 tiles with 12 px gutters, mixed
@@ -448,7 +448,7 @@ Each media layer has a `grade`: any `GradeParams` field (`look`, `camera`, `lut`
 `lut_strength`, `rgb_gain`, `warmth` ... `saturation`, `exposure`, `sharpen`, `denoise`), plus
 `cdl` (`ffcine.color.cdl/1`), `filters`, `shaders` (`ffcine.fx.shader/1` entries), `grain`,
 `stabilize`. It is resolved with the timeline's layering (project grade <- look <- source-kind
-rule <- layer). The grade is built by the same `looks::grade_for` path as a shot
+rule <- layer). The grade is built by the same `ffcine_hooks::grade::grade_for` path as a shot
 (`Renderer::grader`). So:
 
 - **Camera transforms are automatic per source**: `camera: auto` (the default) probes each layer's
@@ -471,6 +471,43 @@ rule <- layer). The grade is built by the same `looks::grade_for` path as a shot
 - **Order** inside the layer's pass is today's: source LUT (camera + grade merged), geometry,
   scaler, tone/gamut map, `PREOUTPUT` look, `filters`, `shaders`, sharpen, finish (`fade`), then
   alpha at `OUTPUT`.
+
+What is built (step 4, in part): a layer's `grade` takes `look`, `camera`, `lut`,
+`lut_strength` (a constant), `rgb_gain`, `sharpen`, the look params `exposure`, `warmth`,
+`tint`, `contrast`, `gamma`, `lift`, `gain`, `saturation` (each a constant or a track),
+`filters` and `shaders` (`{"shader": name or path, "params": {name: track}}`). It is built by
+`ffcine_hooks::grade::grade_for`, the function a timeline shot's grade comes from, so a layer
+with a shot's grade gets the shot's LUT, `rgb_gain`, look hook, `extra` hooks and sharpen.
+
+- **The project** is the comp's `project`: an inline `ffcine.project/1` object (LUT and shader
+  paths relative to the comp file) or a timeline file's path, whose `metadata.ffcine.project` is
+  borrowed (paths relative to the timeline). A nested comp uses its parent's. With a `project`,
+  every video, still and comp layer is graded (as if it had `grade: {}`); without one, only the
+  layers that have a `grade`, against the default project. An ungraded layer lowers and keys
+  exactly as before.
+- **Source kind**: `camera` comes from the layer, then its look, then the project's grade;
+  `auto` (the default) probes a video or still (`Profile::detect_file`). A log profile resolves
+  the grade as `SourceKind::Log`, anything else (stills, nested comps, Rec.709 and HDR video) as
+  `SourceKind::Display`, so the light rule applies to display-referred layers as it does to
+  timeline clips. A video with a log profile gets its camera LUT ahead of the grade LUT, as
+  `ffcine grade --camera` does (deband for D-Log, Rec.709 input tags), unless the camera is
+  `auto` and the grade already has a LUT (a project's log LUT is that transform). `camera` on a
+  still or comp layer is an error. A project's `denoise` is not applied to layers.
+- **Animated look params** are resolved per frame through the same layering (so the light
+  rule scales them too) and become the look hook's `ParamTrack`s.
+- **Filters** run strictly: a filter or option `extra` can't run on the GPU is an error at
+  `layers[i].grade.filters[j]` (never a warning). In the object form, numbers may be tracks;
+  each frame's options are built into the filter's hook, which must keep the same shader so
+  only its `//!PARAM`s move. `colorlevels` (`rimin`, `rimax`, `romin`, `romax` and the `g`, `b`
+  ones, as ffmpeg's) is layer-only for now: a timeline clip's `extra` still skips it with a
+  warning, as before, since timeline keys hash the `extra` strings and applying it there would
+  change pixels under unchanged keys.
+- **Shaders** load as `ffcine.fx.shader/1` does (project alias, vendored, external, path); each
+  param must be a `//!PARAM` of the shader, in its bounds.
+- **Keys**: a graded layer's recipe adds `layer_grade`: the profile, the camera and grade LUTs
+  by content hash (so editing a `.cube` re-renders), the input tags, `rgb_gain`, `sharpen`,
+  deband, and each hook's shader source by hash; the hooks' names and sampled params are in the
+  layer's `grade` key already.
 
 Cost per layer, on top of the layer's own pass at its texture size:
 
@@ -866,7 +903,13 @@ Each step is one PR, in dependency order. Each keeps the existing tests green an
 4. **Per-layer grade**: `grade` resolved through `Project` layering, `camera: auto` per
    source, animated look params as `ParamTrack`s, `filters` (string and object form with
    tracks, plus `colorlevels`), `shaders`, the animated `lut_strength` hook, per-layer denoise,
-   grain and stabilize.
+   grain and stabilize. **Built, in part** ([what is built](#per-layer-grade-and-filters)): the
+   grade through `Project` layering and `grade_for`, the comp's `project` (inline or a
+   timeline's), `camera: auto` per source, animated look params, `filters` (strict, both forms,
+   `colorlevels`), `shaders` and keys with LUTs by content. The animated `lut_strength` hook,
+   CDL, per-layer denoise, grain and stabilize are [Not yet](#not-yet). Timelines and
+   ungraded comps plan and render as before (`RENDER_REVISION` stays 8). GPU tests:
+   `crates/ffcine/tests/layer_grade_gpu.rs`.
    *Tests*: a layer with the same grade as a shot renders the same pixels as the shot does
    today; the animated LUT-mix hook at constant strength matches the baked LUT within LUT
    rounding; the `colorlevels` hook against ffmpeg's CPU filter (PSNR, as the other `extra`
@@ -894,6 +937,13 @@ Each step is one PR, in dependency order. Each keeps the existing tests green an
    tile contents.
 
 ## Not yet
+
+- Per-layer grade, the rest of step 4: an animated `lut_strength` (the LUT-mix hook; a
+  constant one is baked as today), `cdl`, per-layer `denoise`, `grain` (and `canvas.grain`) and
+  `stabilize` on a layer; filters `extra` can't parse wait for the
+  [escape hatch](#libavfilter-escape-hatch) (step 6) and are an error until then.
+- `colorlevels` in a timeline clip's `extra` (layers only for now; it needs a `RENDER_REVISION`
+  bump, since timeline keys hash the `extra` strings).
 
 - **Track mattes** (alpha or luma of another layer), and referencing another layer's
   parameters from an expression.

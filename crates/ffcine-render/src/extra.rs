@@ -5,10 +5,13 @@
 //!
 //! Supported: `eq` (contrast, brightness, saturation, gamma, `gamma_r/g/b`, `gamma_weight`), `hue`
 //! (h, s, H, b), `colorbalance` (rs..bh, pl), `curves` (preset, master/red/green/blue/all point
-//! lists, natural spline), `unsharp` (luma and chroma sizes and amounts) and `vignette` (angle).
+//! lists, natural spline), `unsharp` (luma and chroma sizes and amounts), `vignette` (angle) and
+//! `colorlevels` (per-channel input and output black and white points).
 //! `eq`, `hue` and `unsharp` work on BT.601 limited-range YUV code values, as ffmpeg's
-//! auto-inserted conversion from RGB gives them; `vignette` scales RGB. Anything else is
-//! reported, not applied.
+//! auto-inserted conversion from RGB gives them; `vignette` and `colorlevels` work on RGB.
+//! [`hooks`] reports anything else and doesn't apply it; [`strict_hooks`] and [`filter_hook`]
+//! (comp layers' `filters`) refuse it. `colorlevels` is layer-only for now: [`hooks`] (timeline
+//! `extra`, whose cache keys predate it) still skips it.
 
 use crate::Hook;
 
@@ -206,6 +209,11 @@ pub fn eval(s: &str) -> Option<f64> {
     (p.i == p.s.len() && v.is_finite()).then_some(v)
 }
 
+/// Filters only [`strict_hooks`] and [`filter_hook`] apply: [`hooks`] skips them as before they
+/// were supported, since timeline cache keys hash the `extra` strings and applying them there
+/// would change pixels under unchanged keys (that needs a `RENDER_REVISION` bump).
+const LAYER_ONLY: &[&str] = &["colorlevels"];
+
 /// The hooks for a grade's `extra` filter strings, in order, and what isn't applied.
 pub fn hooks(extra: &[String]) -> (Vec<Hook>, Vec<String>) {
     let mut hooks = Vec::new();
@@ -214,6 +222,10 @@ pub fn hooks(extra: &[String]) -> (Vec<Hook>, Vec<String>) {
         match parse(chain) {
             Ok(fs) => {
                 for f in fs {
+                    if LAYER_ONLY.contains(&f.name.as_str()) {
+                        skipped.push(format!("extra filter {} not supported", f.name));
+                        continue;
+                    }
                     match hook(&f) {
                         Ok((h, warn)) => {
                             hooks.extend(h);
@@ -227,6 +239,27 @@ pub fn hooks(extra: &[String]) -> (Vec<Hook>, Vec<String>) {
         }
     }
     (hooks, skipped)
+}
+
+/// The hooks for filter chains, in order; an error for anything [`hooks`] would skip or warn
+/// about (comp layers' `filters`: never silently dropped).
+pub fn strict_hooks(chains: &[String]) -> Result<Vec<Hook>, String> {
+    let mut out = Vec::new();
+    for chain in chains {
+        for f in parse(chain).map_err(|e| format!("filter {e}"))? {
+            out.push(filter_hook(&f)?);
+        }
+    }
+    Ok(out)
+}
+
+/// One filter's hook; an error if it isn't supported, or any of its options isn't.
+pub fn filter_hook(f: &Filter) -> Result<Hook, String> {
+    let (h, warn) = hook(f)?;
+    if let Some(w) = warn.into_iter().next() {
+        return Err(w);
+    }
+    h.ok_or_else(|| format!("filter {}: not applied", f.name))
 }
 
 /// Options of each supported filter, in ffmpeg's (positional) order, with aliases.
@@ -270,6 +303,25 @@ const UNSHARP: &[&[&str]] = &[
     &["chroma_amount", "ca"],
 ];
 const VIGNETTE: &[&[&str]] = &[&["angle", "a"]];
+const COLORLEVELS: &[&[&str]] = &[
+    &["rimin"],
+    &["gimin"],
+    &["bimin"],
+    &["aimin"],
+    &["rimax"],
+    &["gimax"],
+    &["bimax"],
+    &["aimax"],
+    &["romin"],
+    &["gomin"],
+    &["bomin"],
+    &["aomin"],
+    &["romax"],
+    &["gomax"],
+    &["bomax"],
+    &["aomax"],
+    &["preserve"],
+];
 
 /// Numeric option `i` of `opts` with default `d`; an error if it isn't a constant.
 fn num(f: &Filter, opts: &[&[&str]], i: usize, d: f64) -> Result<f64, String> {
@@ -283,6 +335,8 @@ fn num(f: &Filter, opts: &[&[&str]], i: usize, d: f64) -> Result<f64, String> {
     })
 }
 
+// One arm per filter: a table in code.
+#[allow(clippy::too_many_lines)]
 fn hook(f: &Filter) -> Result<(Option<Hook>, Vec<String>), String> {
     let opts = match f.name.as_str() {
         "eq" => EQ,
@@ -291,6 +345,7 @@ fn hook(f: &Filter) -> Result<(Option<Hook>, Vec<String>), String> {
         "curves" => CURVES,
         "unsharp" => UNSHARP,
         "vignette" => VIGNETTE,
+        "colorlevels" => COLORLEVELS,
         n => return Err(format!("extra filter {n} not supported")),
     };
     let mut warn = Vec::new();
@@ -371,6 +426,40 @@ fn hook(f: &Filter) -> Result<(Option<Hook>, Vec<String>), String> {
             vignette().to_owned(),
             vec![("angle", n(0, std::f64::consts::PI / 5.0)?)],
         ),
+        "colorlevels" => {
+            // ffmpeg's defaults; negative input points are its per-frame auto levels.
+            let mut p = Vec::new();
+            for (i, (k, d)) in [("imin", 0.0), ("imax", 1.0), ("omin", 0.0), ("omax", 1.0)]
+                .into_iter()
+                .enumerate()
+            {
+                for (c, ch) in ["r", "g", "b"].into_iter().enumerate() {
+                    let v = n(4 * i + c, d)?;
+                    if i < 2 && v < 0.0 {
+                        return Err(format!(
+                            "extra filter colorlevels: {ch}{k}={v} (auto levels) is not supported"
+                        ));
+                    }
+                    p.push((format!("{ch}{k}"), v));
+                }
+                if (n(4 * i + 3, d)? - d).abs() > 0.0 {
+                    warn.push(format!(
+                        "extra filter colorlevels: option a{k} not supported (alpha)"
+                    ));
+                }
+            }
+            if f.get(opts[16], Some(16))
+                .is_some_and(|v| v != "0" && v != "none")
+            {
+                warn.push("extra filter colorlevels: option preserve not supported".into());
+            }
+            Hook {
+                name: "extra colorlevels".into(),
+                source: colorlevels().to_owned(),
+                params: p,
+                tracks: Vec::new(),
+            }
+        }
         _ => unreachable!("checked above"),
     };
     Ok((Some(h), warn))
@@ -617,6 +706,61 @@ vec4 hook() {
     float d = length(HOOKED_pos * HOOKED_size - h) / length(h);
     float k = d > 1.0 ? 0.0 : cos(angle * d);
     c.rgb *= k * k * k * k;
+    return c;
+}
+"
+}
+
+/// ffmpeg's `colorlevels` on RGB: per channel `(v − imin) / (imax − imin) · (omax − omin) +
+/// omin`, clamped to 0..1.
+pub fn colorlevels() -> &'static str {
+    r"//!PARAM rimin
+//!TYPE float
+0.0
+//!PARAM gimin
+//!TYPE float
+0.0
+//!PARAM bimin
+//!TYPE float
+0.0
+//!PARAM rimax
+//!TYPE float
+1.0
+//!PARAM gimax
+//!TYPE float
+1.0
+//!PARAM bimax
+//!TYPE float
+1.0
+//!PARAM romin
+//!TYPE float
+0.0
+//!PARAM gomin
+//!TYPE float
+0.0
+//!PARAM bomin
+//!TYPE float
+0.0
+//!PARAM romax
+//!TYPE float
+1.0
+//!PARAM gomax
+//!TYPE float
+1.0
+//!PARAM bomax
+//!TYPE float
+1.0
+//!HOOK PREOUTPUT
+//!BIND HOOKED
+//!DESC ffcine extra colorlevels
+vec4 hook() {
+    vec4 c = HOOKED_texOff(vec2(0.0));
+    vec3 imin = vec3(rimin, gimin, bimin);
+    vec3 imax = vec3(rimax, gimax, bimax);
+    vec3 omin = vec3(romin, gomin, bomin);
+    vec3 omax = vec3(romax, gomax, bomax);
+    vec3 k = (omax - omin) / max(imax - imin, vec3(1e-6));
+    c.rgb = clamp((clamp(c.rgb, 0.0, 1.0) - imin) * k + omin, 0.0, 1.0);
     return c;
 }
 "
@@ -963,6 +1107,60 @@ mod tests {
                 "extra filter \"a;b\": only a linear chain is supported",
             ]
         );
+    }
+
+    #[test]
+    fn colorlevels_params() {
+        let h =
+            strict_hooks(&["colorlevels=rimin=0.1:gimin=0.05:romax=0.9:bimax=0.8".into()]).unwrap();
+        assert_eq!(h.len(), 1);
+        assert_eq!(param(&h[0], "rimin"), 0.1);
+        assert_eq!(param(&h[0], "gimin"), 0.05);
+        assert_eq!(param(&h[0], "bimin"), 0.0);
+        assert_eq!(param(&h[0], "bimax"), 0.8);
+        assert_eq!(param(&h[0], "romax"), 0.9);
+        assert_eq!(param(&h[0], "gomax"), 1.0);
+        for (k, _) in &h[0].params {
+            assert!(h[0].source.contains(&format!("//!PARAM {k}\n")), "{k}");
+        }
+        // Positional: rimin, gimin, bimin, aimin, rimax ...
+        let h = strict_hooks(&["colorlevels=0.2:0:0:0:0.9".into()]).unwrap();
+        assert_eq!(param(&h[0], "rimin"), 0.2);
+        assert_eq!(param(&h[0], "rimax"), 0.9);
+        for bad in [
+            "colorlevels=rimin=-1",
+            "colorlevels=aomax=0.5",
+            "colorlevels=preserve=lum",
+        ] {
+            assert!(strict_hooks(&[bad.into()]).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn timeline_extra_skips_colorlevels() {
+        let (h, warn) = hooks(&["eq=contrast=1.1,colorlevels=rimin=0.1".into()]);
+        assert_eq!(h.len(), 1);
+        assert_eq!(h[0].name, "extra eq");
+        assert_eq!(warn, ["extra filter colorlevels not supported"]);
+        assert_eq!(
+            strict_hooks(&["colorlevels=rimin=0.1".into()])
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn strict_refuses_what_hooks_skip() {
+        assert!(strict_hooks(&["eq=contrast=1.1".into()]).is_ok());
+        for bad in [
+            "hqdn3d=4",
+            "eq=contrast=1.1:eval=frame",
+            "hue=h=t*10",
+            "a;b",
+        ] {
+            assert!(strict_hooks(&[bad.into()]).is_err(), "{bad}");
+        }
     }
 
     #[test]

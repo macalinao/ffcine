@@ -8,17 +8,25 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use ffcine_core::Result;
 use ffcine_core::anim::{Animatable, Clock, Env, Track};
+use ffcine_core::camera::{self, CameraLut, Profile, ProfileChoice};
+use ffcine_core::{Lut, LutType, Result};
+use ffcine_hooks::ShaderEffect;
+use ffcine_hooks::grade::{Luts, grade_for, look_params};
+use ffcine_render::extra::{Filter, filter_hook, strict_hooks};
 use ffcine_render::{
-    BlendMode, Crop, Grade, Hook, Image, Layer, LayerSource, Overlay, ParamTrack, Scene, Size,
-    shaders,
+    BlendMode, Crop, Deband, Grade, Hook, Image, Layer, LayerSource, LutStage, Overlay, ParamTrack,
+    Scene, Size, shaders,
 };
 use ffcine_text::{TextClip, TextLayer};
+use ffcine_timeline::{ClipGrade, SourceKind};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::model::{Comp, CompLayer, CropSpec, Fit, MaskShape, Scale, Source, err, limits};
+use crate::model::{
+    Comp, CompLayer, CropSpec, FilterOpt, FilterSpec, Fit, LayerGrade, MaskShape, Scale, Source,
+    err, limits,
+};
 
 /// What lowering needs to know about media files.
 pub trait Media {
@@ -26,6 +34,14 @@ pub trait Media {
     fn dims(&self, path: &Path) -> Result<(u32, u32)>;
     /// The file's identity in keys (a fingerprint: path, size, modification time).
     fn identity(&self, path: &Path) -> Value;
+    /// A video's or still's camera profile for `camera: auto` ([`Profile::detect_file`]).
+    fn profile(&self, _path: &Path) -> Result<Profile> {
+        Ok(Profile::Rec709)
+    }
+    /// `profile`'s camera LUT (`None` for display-referred profiles).
+    fn camera_lut(&self, profile: Profile) -> Result<Option<CameraLut>> {
+        profile.camera_lut(&camera::lut_dirs())
+    }
 }
 
 /// The pass's input.
@@ -145,6 +161,46 @@ fn grade_json(g: &Grade) -> Value {
             "tracks": h.tracks.iter().map(|t| json!([t.name, digest(&t.values)])).collect::<Vec<_>>(),
         })).collect::<Vec<_>>(),
     })
+}
+
+/// A digest of `bytes`, hex.
+fn sha(bytes: impl IntoIterator<Item = impl AsRef<[u8]>>) -> String {
+    let mut h = Sha256::new();
+    for b in bytes {
+        h.update(b.as_ref());
+    }
+    h.finalize()[..16].iter().fold(String::new(), |mut s, b| {
+        let _ = write!(s, "{b:02x}");
+        s
+    })
+}
+
+/// A LUT in keys: its contents, not its file's identity.
+fn lut_digest(l: &Lut) -> String {
+    let head = [
+        u32::try_from(l.size)
+            .unwrap_or(u32::MAX)
+            .to_le_bytes()
+            .to_vec(),
+        l.domain_min
+            .iter()
+            .chain(&l.domain_max)
+            .flat_map(|v| v.to_bits().to_le_bytes())
+            .collect(),
+    ];
+    sha(head.into_iter().chain(
+        l.data
+            .iter()
+            .map(|p| p.iter().flat_map(|v| v.to_bits().to_le_bytes()).collect()),
+    ))
+}
+
+/// A layer's resolved grade (without hooks) and its hooks, plus what keys need beyond
+/// [`grade_json`].
+struct Graded {
+    grade: Grade,
+    hooks: Vec<Hook>,
+    recipe: Value,
 }
 
 /// A solid layer's picture: one white pixel, coloured by [`shaders::solid`].
@@ -462,6 +518,249 @@ impl Comp {
         self.lower_in(range, out, media, true)
     }
 
+    /// Layer `l`'s grade over visible frames `vis`
+    /// (`docs/compositing.md#per-layer-grade-and-filters`): `grade`, or `{}` when the comp has
+    /// a `project`, resolved like a timeline clip's and built by [`grade_for`]. `None`: ungraded.
+    #[allow(
+        clippy::too_many_lines,
+        clippy::many_single_char_names,
+        clippy::cast_possible_truncation
+    )]
+    fn layer_grade(
+        &self,
+        l: &CompLayer,
+        path: &str,
+        vis: &Range<i64>,
+        env: &Env,
+        media: &dyn Media,
+    ) -> Result<Option<Graded>> {
+        let cp = &*self.project;
+        let empty = LayerGrade::default();
+        let lg = match (&l.grade, &l.source) {
+            (_, Source::Solid(_) | Source::Text { .. }) => return Ok(None),
+            (Some(g), _) => g,
+            (None, _) if cp.given => &empty,
+            (None, _) => return Ok(None),
+        };
+        let gp = format!("{path}.grade");
+        let at = |k: &str| format!("{gp}.{k}");
+        let gerr = |e: &dyn std::fmt::Display| err(&gp, e.to_string());
+        let resolve = |c: &ClipGrade, kind| {
+            cp.project
+                .resolve_grade(Some(c), kind)
+                .map_err(|e| gerr(&e))
+        };
+        // The camera: the layer's, the look's, then the project's; `auto` probes the source.
+        let merged = resolve(&lg.params, SourceKind::Display)?;
+        let choice = match merged.camera.as_deref() {
+            None => ProfileChoice::Auto,
+            Some(c) => c
+                .parse::<ProfileChoice>()
+                .map_err(|e| err(at("camera"), e.to_string()))?,
+        };
+        let profile = match (&l.source, choice) {
+            (Source::Video(_), ProfileChoice::Fixed(p)) => p,
+            (Source::Video(p) | Source::Still(p), ProfileChoice::Auto) => media.profile(p)?,
+            // A still with a project camera, or a comp: display-referred.
+            _ => Profile::Rec709,
+        };
+        let log = !matches!(profile, Profile::Rec709 | Profile::Hdr);
+        let kind = if log {
+            SourceKind::Log
+        } else {
+            SourceKind::Display
+        };
+        let mut params = resolve(&lg.params, kind)?;
+        // Per-layer denoise is not built yet: a project's is the main picture's only.
+        params.denoise = None;
+        let (mut g, warn) =
+            grade_for(&cp.project, &cp.dir, &params, &mut Luts::default()).map_err(|e| gerr(&e))?;
+        if let Some(w) = warn.first() {
+            return Err(err(&gp, w));
+        }
+        // The camera LUT, as `ffcine grade --camera`: ahead of the grade LUT; with `auto` only
+        // when the grade has no LUT of its own (a project's log LUT is the camera transform).
+        if matches!(l.source, Source::Video(_))
+            && log
+            && (matches!(choice, ProfileChoice::Fixed(_))
+                || cp.project.lut_path(params.lut.as_deref()).is_none())
+            && let Some(cam) = media.camera_lut(profile)?
+        {
+            if profile.as_str().starts_with("dlog") {
+                g.deband.get_or_insert_with(Deband::default);
+            }
+            g.input_color.primaries.get_or_insert(cam.primaries);
+            g.input_color.transfer.get_or_insert(cam.transfer);
+            g.input_lut = Some(LutStage {
+                lut: cam.lut,
+                kind: LutType::Normalized,
+            });
+        }
+        let mut hooks = std::mem::take(&mut g.hooks);
+
+        // Animated look params: resolved per frame (so the light rule still scales them).
+        if !lg.tracks.is_empty() {
+            let mut cols: Vec<(&str, Vec<f64>)> = Vec::new();
+            for (k, t) in &lg.tracks {
+                let v = sample(t, &at(k), vis.clone(), env)?;
+                finite(&at(k), &v)?;
+                if *k == "gamma"
+                    && let Some(x) = v.iter().find(|x| **x < 0.01)
+                {
+                    return Err(err(at(k), format!("{x}: at least 0.01")));
+                }
+                cols.push((k, v));
+            }
+            let n = cols[0].1.len();
+            let mut frames: Vec<Vec<(String, f64)>> = Vec::with_capacity(n);
+            for j in 0..n {
+                let mut c = lg.params.clone();
+                for (k, v) in &cols {
+                    let x = Some(v[j]);
+                    let p = &mut c.params;
+                    match *k {
+                        "exposure" => p.exposure = x,
+                        "warmth" => p.warmth = x,
+                        "tint" => p.tint = x,
+                        "contrast" => p.contrast = x,
+                        "gamma" => p.gamma = x,
+                        "lift" => p.lift = x,
+                        "gain" => p.gain = x,
+                        "saturation" => p.saturation = x,
+                        _ => unreachable!("not a look param: {k}"),
+                    }
+                }
+                frames.push(look_params(&resolve(&c, kind)?).params());
+            }
+            let mut h = hook("look", shaders::look());
+            for (i, (name, _)) in frames[0].iter().enumerate() {
+                param(&mut h, name, f32s(frames.iter().map(|f| f[i].1)));
+            }
+            match hooks.first_mut() {
+                Some(first) if first.name == "look" => *first = h,
+                _ => hooks.insert(0, h),
+            }
+        }
+
+        // `filters`, after the resolved grade's `extra`.
+        for (fi, f) in lg.filters.iter().enumerate() {
+            let fp = at(&format!("filters[{fi}]"));
+            match f {
+                FilterSpec::Chain(c) => {
+                    hooks.extend(strict_hooks(std::slice::from_ref(c)).map_err(|e| err(&fp, e))?);
+                }
+                FilterSpec::Object { name, opts } => {
+                    let fp = format!("{fp}.{name}");
+                    let mut cols = Vec::new();
+                    for (k, o) in opts {
+                        cols.push(match o {
+                            FilterOpt::Num(t) => {
+                                let v = sample(t, &format!("{fp}.{k}"), vis.clone(), env)?;
+                                finite(&format!("{fp}.{k}"), &v)?;
+                                Err(v)
+                            }
+                            FilterOpt::Text(s) => Ok(s.clone()),
+                        });
+                    }
+                    let moving = cols.iter().any(
+                        |c| matches!(c, Err(v) if v.iter().any(|x| x.to_bits() != v[0].to_bits())),
+                    );
+                    let n = if moving { vis.end - vis.start } else { 1 };
+                    let mut per = Vec::new();
+                    for j in 0..usize::try_from(n).unwrap_or(0) {
+                        let f = Filter {
+                            name: name.clone(),
+                            args: opts
+                                .iter()
+                                .zip(&cols)
+                                .map(|((k, _), c)| {
+                                    (
+                                        Some(k.clone()),
+                                        match c {
+                                            Ok(s) => s.clone(),
+                                            Err(v) => format!("{}", v[j]),
+                                        },
+                                    )
+                                })
+                                .collect(),
+                        };
+                        per.push(filter_hook(&f).map_err(|e| err(&fp, e))?);
+                    }
+                    let first = &per[0];
+                    if per.iter().any(|h| {
+                        h.source != first.source
+                            || h.params.len() != first.params.len()
+                            || h.params.iter().zip(&first.params).any(|(a, b)| a.0 != b.0)
+                    }) {
+                        return Err(err(
+                            &fp,
+                            "an animated option changes the filter's shader (only its numbers can \
+                             move)",
+                        ));
+                    }
+                    let mut h = hook(&first.name, &first.source);
+                    for (i, (pn, _)) in first.params.iter().enumerate() {
+                        param(&mut h, pn, f32s(per.iter().map(|x| x.params[i].1)));
+                    }
+                    hooks.push(h);
+                }
+            }
+        }
+
+        // `shaders`, as `ffcine.fx.shader/1`.
+        for (si, sh) in lg.shaders.iter().enumerate() {
+            let sp = at(&format!("shaders[{si}]"));
+            let (name, source) = ShaderEffect {
+                shader: sh.shader.clone(),
+                params: Vec::new(),
+            }
+            .load(&cp.project, &cp.dir)
+            .map_err(|e| err(&sp, e.to_string()))?;
+            let info = ffcine_hooks::parse(&source).map_err(|e| err(&sp, e.to_string()))?;
+            let mut h = hook(&name, &source);
+            for (k, t) in &sh.params {
+                let pp = format!("{sp}.params.{k}");
+                let p = info.param(k).ok_or_else(|| {
+                    err(
+                        &pp,
+                        format!(
+                            "not a //!PARAM of {} (has: {})",
+                            sh.shader,
+                            info.params
+                                .iter()
+                                .map(|p| p.name.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                    )
+                })?;
+                let v = sample(t, &pp, vis.clone(), env)?
+                    .into_iter()
+                    .map(|x| p.check(x))
+                    .collect::<Result<Vec<_>>>()
+                    .map_err(|e| err(&pp, e.to_string()))?;
+                param(&mut h, k, f32s(v));
+            }
+            hooks.push(h);
+        }
+
+        let recipe = json!({
+            "profile": profile.as_str(),
+            "input_lut": g.input_lut.as_ref().map(|s| lut_digest(&s.lut)),
+            "input_color": format!("{:?}", g.input_color),
+            "lut": g.lut.as_ref().map(|s| lut_digest(&s.lut)),
+            "rgb_gain": g.rgb_gain,
+            "sharpen": g.sharpen,
+            "deband": g.deband.is_some(),
+            "shaders": hooks.iter().map(|h| sha([&h.source])).collect::<Vec<_>>(),
+        });
+        Ok(Some(Graded {
+            grade: g,
+            hooks,
+            recipe,
+        }))
+    }
+
     /// [`Self::lower`]; `top` is false for a nested comp (no base promotion: its layers go into
     /// a [`Scene`]).
     #[allow(
@@ -697,8 +996,12 @@ impl Comp {
                 opacity,
             };
 
-            // Hooks: the solid colour, the layer's fade, then alpha.
-            let mut hooks = Vec::new();
+            // Hooks: the solid colour or the layer's grade, the layer's fade, then alpha.
+            let graded = self.layer_grade(l, &path, &vis, &env, media)?;
+            let (layer_grade, mut hooks, graded_recipe) = match graded {
+                Some(g) => (g.grade, g.hooks, Some(g.recipe)),
+                None => (Grade::default(), Vec::new(), None),
+            };
             if let Some(c) = &solid {
                 let mut h = hook("solid", shaders::solid());
                 for (n, name) in ["solid_r", "solid_g", "solid_b"].into_iter().enumerate() {
@@ -860,17 +1163,21 @@ impl Comp {
                 let LayerSource::Video { input, start } = src else {
                     unreachable!()
                 };
-                recipes.push(json!({
+                let mut r = json!({
                     "base": media.identity(&input),
                     "start": start.as_secs_f64(),
-                }));
+                });
+                if let Some(g) = &graded_recipe {
+                    r["layer_grade"] = g.clone();
+                }
+                recipes.push(r);
                 base = Base::Video { input, start };
                 base_grade = Some(Grade {
                     size: Some(out),
                     crop,
                     crops,
                     hooks,
-                    ..Grade::default()
+                    ..layer_grade
                 });
                 continue;
             }
@@ -885,7 +1192,7 @@ impl Comp {
                 dither: None,
                 peak_detect: false,
                 hooks,
-                ..Grade::default()
+                ..layer_grade
             };
             let rotation = if s.rotation.iter().all(|r| *r == 0.0) {
                 Vec::new()
@@ -901,7 +1208,7 @@ impl Comp {
                 rotation,
                 blend: l.blend,
             };
-            recipes.push(json!({
+            let mut r = json!({
                 "source": match &layer.source {
                     LayerSource::Video { input, start } => json!({"video": media.identity(input), "start": start.as_secs_f64()}),
                     LayerSource::Image(_) => json!("solid"),
@@ -914,7 +1221,11 @@ impl Comp {
                 "rotation": digest(&layer.rotation),
                 "blend": layer.blend.as_str(),
                 "grade": grade_recipe(&layer.grade),
-            }));
+            });
+            if let Some(g) = graded_recipe {
+                r["layer_grade"] = g;
+            }
+            recipes.push(r);
             layers.push(layer);
             shown.push(i);
         }

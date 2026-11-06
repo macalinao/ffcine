@@ -15,6 +15,7 @@
 //!
 //! Our own filters (denoise, grain) are compute passes in `ffcine-filters` instead.
 
+pub mod grade;
 pub mod parse;
 pub mod shader;
 

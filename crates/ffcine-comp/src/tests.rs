@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::path::Path;
 
 use ffcine_core::Result;
@@ -62,8 +63,8 @@ fn reads_and_rejects() {
             "compositing step 6",
         ),
         (
-            json!([{ "source": { "video": "a.mov" }, "grade": {} }]),
-            "compositing step 4",
+            json!([{ "source": { "video": "a.mov" }, "grade": { "denoise": 1 } }]),
+            "layers[0].grade.denoise: not supported yet (per-layer denoise",
         ),
         (
             json!([{ "source": { "video": "a.mov" }, "time": { "speed": 2 } }]),
@@ -519,7 +520,7 @@ fn limits_are_checked_before_rendering() {
     );
     // Later steps' keys name the step; framing needs a picture.
     for (k, want) in [
-        ("grade", "compositing step 4"),
+        ("grade", "only video, still and comp"),
         ("time", "compositing step 5"),
         ("content", "only video, still and comp"),
         ("crop", "only video, still and comp"),
@@ -776,4 +777,228 @@ fn huge_stills_are_refused() {
         e.contains("layers[0].source.still") && e.contains("at most 16384"),
         "{e}"
     );
+}
+
+/// A fresh directory for files a test writes.
+fn scratch(name: &str) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("ffcine-comp-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).expect("scratch dir");
+    d
+}
+
+/// A 2-point `.cube`, red scaled by `r`.
+fn write_cube(path: &Path, r: f64) {
+    let mut s = String::from("LUT_3D_SIZE 2\n");
+    for b in [0.0, 1.0] {
+        for g in [0.0, 1.0] {
+            for x in [0.0, 1.0] {
+                let _ = writeln!(s, "{} {g} {b}", x * r);
+            }
+        }
+    }
+    std::fs::write(path, s).expect("write cube");
+}
+
+fn hook_names(l: &ffcine_render::Layer) -> Vec<&str> {
+    l.grade.hooks.iter().map(|h| h.name.as_str()).collect()
+}
+
+#[test]
+fn layer_grades_lower_to_hooks() {
+    let video = |grade: Value| json!([{ "source": { "video": "a.mov" }, "size": [540, 960], "grade": grade }]);
+    // Ungraded layers keep their keys (no `layer_grade`), and a grade is keyed.
+    let plain = lowered(json!([{ "source": { "video": "a.mov" }, "size": [540, 960] }]));
+    assert!(!plain.recipe.to_string().contains("layer_grade"));
+    let g = lowered(video(json!({ "warmth": 0.02, "rgb_gain": [1.1, 1, 0.9] })));
+    assert_eq!(hook_names(&g.layers[0]), ["look"]);
+    assert_eq!(g.layers[0].grade.rgb_gain, Some([1.1, 1.0, 0.9]));
+    assert!(g.recipe.to_string().contains("layer_grade"));
+    assert_ne!(
+        g.recipe,
+        lowered(video(json!({ "warmth": 0.03, "rgb_gain": [1.1, 1, 0.9] }))).recipe
+    );
+    // An identity grade adds no hook, but the layer's fade and alpha still come after it.
+    let id = lowered(json!([{ "source": { "video": "a.mov" }, "size": [540, 960],
+        "grade": { "warmth": 0.02 }, "fade": 0.5, "transform": { "opacity": 0.5 } }]));
+    assert_eq!(hook_names(&id.layers[0]), ["look", "fade", "alpha"]);
+
+    // Animated look params become tracks; the constant ones stay params.
+    let a = lowered(video(json!({ "contrast": 0.1,
+        "warmth": [{ "t": 0, "v": 0 }, { "t": 6, "v": 0.1 }] })));
+    let look = &a.layers[0].grade.hooks[0];
+    assert_eq!(look.name, "look");
+    assert_eq!(look.tracks.len(), 1);
+    assert_eq!(look.tracks[0].name, "warmth");
+    assert_eq!(look.tracks[0].values.len(), 180);
+    assert!(
+        look.params
+            .contains(&("contrast".into(), f64::from(0.1_f32)))
+    );
+
+    // Filters: chains (strict) and the object form, whose numbers may move.
+    let f = lowered(video(json!({ "filters": ["eq=contrast=1.1",
+        { "colorlevels": { "rimin": 0.05, "rimax": [{ "t": 0, "v": 1 }, { "t": 6, "v": 0.9 }] } }] })));
+    assert_eq!(hook_names(&f.layers[0]), ["extra eq", "extra colorlevels"]);
+    let levels = &f.layers[0].grade.hooks[1];
+    assert!(levels.tracks.iter().any(|t| t.name == "rimax"));
+    assert!(
+        levels
+            .params
+            .iter()
+            .any(|(k, v)| k == "rimin" && (v - 0.05).abs() < 1e-6)
+    );
+    for (grade, want) in [
+        (
+            json!({ "filters": ["hqdn3d"] }),
+            "layers[0].grade.filters[0]",
+        ),
+        (
+            json!({ "filters": [{ "eq": { "bogus": 1 } }] }),
+            "layers[0].grade.filters[0]",
+        ),
+        (
+            json!({ "lut_strength": [{ "t": 0, "v": 0 }] }),
+            "animated lut_strength",
+        ),
+        (json!({ "camera": "nope" }), "layers[0].grade.camera"),
+        (json!({ "cdl": {} }), "per-layer CDL"),
+    ] {
+        let e = try_comp(video(grade.clone()))
+            .and_then(|c| c.lower(0..30, OUT, &Fake))
+            .expect_err(&grade.to_string())
+            .to_string();
+        assert!(e.contains(want), "{grade}: {e}");
+    }
+    // Only pictures are graded; a camera is for video.
+    for (layers, want) in [
+        (
+            json!([{ "source": { "solid": "white" }, "grade": {} }]),
+            "only video, still and comp",
+        ),
+        (
+            json!([{ "source": { "still": "a.png" }, "grade": { "camera": "dlog" } }]),
+            "video layers only",
+        ),
+    ] {
+        let e = try_comp(layers).expect_err("rejected").to_string();
+        assert!(e.contains(want), "{e}");
+    }
+}
+
+/// Clips are D-Log, stills display-referred.
+struct Camera;
+
+impl Media for Camera {
+    fn dims(&self, _: &Path) -> Result<(u32, u32)> {
+        Ok((1920, 1080))
+    }
+    fn identity(&self, path: &Path) -> Value {
+        json!(path)
+    }
+    fn profile(&self, path: &Path) -> Result<ffcine_core::camera::Profile> {
+        Ok(if path.extension().is_some_and(|e| e == "mov") {
+            ffcine_core::camera::Profile::DjiDlog
+        } else {
+            ffcine_core::camera::Profile::Rec709
+        })
+    }
+    fn camera_lut(
+        &self,
+        p: ffcine_core::camera::Profile,
+    ) -> Result<Option<ffcine_core::camera::CameraLut>> {
+        p.camera_lut(&[])
+    }
+}
+
+#[test]
+fn camera_auto_picks_each_sources_profile() {
+    let c = comp(json!([
+        { "source": { "video": "a.mov" }, "size": [540, 960], "grade": {} },
+        { "source": { "still": "b.heic" }, "size": [540, 960], "grade": {} },
+    ]));
+    let p = c.lower(0..30, OUT, &Camera).expect("lower");
+    let (log, still) = (&p.layers[0].grade, &p.layers[1].grade);
+    assert!(log.input_lut.is_some() && log.deband.is_some());
+    assert!(log.input_color.transfer.is_some());
+    assert!(still.input_lut.is_none() && still.deband.is_none());
+    let r = p.recipe.to_string();
+    assert!(
+        r.contains(r#""profile":"dlog""#) && r.contains(r#""profile":"rec709""#),
+        "{r}"
+    );
+    // Without a grade (and no project) nothing is applied.
+    let c = comp(json!([{ "source": { "video": "a.mov" }, "size": [540, 960] }]));
+    let p = c.lower(0..30, OUT, &Camera).expect("lower");
+    assert!(p.layers[0].grade.input_lut.is_none());
+}
+
+#[test]
+#[allow(clippy::many_single_char_names)]
+fn projects_and_luts_resolve_and_key() {
+    let dir = scratch("luts");
+    write_cube(&dir.join("a.cube"), 1.0);
+    let doc = |project: Value, layers: Value| {
+        let mut d = json!({
+            "schema": "ffcine.comp/1",
+            "canvas": { "size": [1080, 1920], "fps": 30, "duration": 2 },
+            "layers": layers,
+        });
+        if !project.is_null() {
+            d["project"] = project;
+        }
+        Comp::from_value(&d, &dir)
+    };
+    let layers = json!([
+        { "source": { "video": "a.mov" }, "size": [540, 960], "grade": { "lut": "base" } },
+        { "source": { "solid": "white" }, "size": [100, 100] },
+    ]);
+    // An inline project grades every picture layer (solids aren't), its LUT aliases resolve
+    // against the comp's directory, and the key follows the LUT's contents. (A display-referred
+    // source drops the project's own LUT under the light rule, as a timeline clip does; the
+    // layer's `lut` overrides that.)
+    let project = json!({ "grade": { "warmth": 0.05, "lut": "base" },
+        "luts": { "base": "a.cube" } });
+    let key = || {
+        let c = doc(project.clone(), layers.clone()).expect("comp");
+        let p = c.lower(0..30, OUT, &Fake).expect("lower");
+        assert_eq!(hook_names(&p.layers[0]), ["look"]);
+        assert!(p.layers[0].grade.lut.is_some());
+        assert_eq!(hook_names(&p.layers[1]), ["solid"]);
+        p.recipe
+    };
+    let a = key();
+    write_cube(&dir.join("a.cube"), 0.5);
+    assert_ne!(a, key(), "a LUT edit changes the key");
+    // A nested comp shares it, and can't name its own.
+    let nested = json!([{ "source": { "comp": { "layers": [
+        { "source": { "video": "a.mov" } }] } }, "size": [540, 960] }]);
+    let c = doc(project.clone(), nested).expect("comp");
+    let p = c.lower(0..30, OUT, &Fake).expect("lower");
+    let LayerSource::Scene(s) = &p.layers[0].source else {
+        panic!("not a scene");
+    };
+    assert_eq!(hook_names(&s.layers[0]), ["look"]);
+    let e = doc(
+        project.clone(),
+        json!([{ "source": { "comp": { "project": {}, "layers": [] } } }]),
+    )
+    .expect_err("nested project")
+    .to_string();
+    assert!(e.contains("parent's project"), "{e}");
+    // A timeline's project, borrowed.
+    let mut t = ffcine_timeline::Timeline::new("t");
+    let mut pr = ffcine_timeline::Project::default();
+    pr.grade.saturation = Some(1.2);
+    t.set_project(&pr).expect("set project");
+    t.to_file(dir.join("t.otio")).expect("write timeline");
+    let plain = json!([{ "source": { "video": "a.mov" }, "size": [540, 960] }]);
+    let c = doc(json!("t.otio"), plain.clone()).expect("comp");
+    let p = c.lower(0..30, OUT, &Fake).expect("lower");
+    assert_eq!(hook_names(&p.layers[0]), ["look"]);
+    let e = doc(json!("missing.otio"), plain)
+        .expect_err("missing")
+        .to_string();
+    assert!(e.starts_with("project") || e.contains("project"), "{e}");
+    let _ = std::fs::remove_dir_all(&dir);
 }
