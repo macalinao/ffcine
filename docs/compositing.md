@@ -2,7 +2,7 @@
 
 Status: design. Steps 1 to 7 of the [phased plan](#phased-plan) (param tracks and expressions,
 `ffcine_core::anim`; the compositor core, `ffcine-comp`; media layers; per-layer grade; time
-remapping; the libavfilter node; templates and comp clips) are built, steps 4, 6 and 7 in part
+remapping; the libavfilter node; templates and comp clips) are built, steps 4 and 6 in part
 ([Not yet](#not-yet)). It turns what assembly already composites
 (split-screens, picture-in-picture, transitions, stills, text) into one general model: a
 **composition** of ordered **layers** whose parameters are **tracks**. Anything one would write
@@ -262,7 +262,7 @@ impl<T> Track<T> {
   from the layer's `in` (negative from its `out`). A comp layer's clock is not its source
   time, so a speed ramp doesn't warp its animation. The clock also says which
   [variables](#expressions) an expression sees: a comp layer's (`Clock::Layer`) sees all of
-  them. Until the timeline planner lowers through comps (step 7), a timeline effect's expression sees
+  them. Until timeline units are built as comps ([Not yet](#not-yet)), a timeline effect's expression sees
   only its own clock's time: `st` on source-time schemas (`Clock::Source`), `lt` and `dur` on
   text (`Clock::Clip`). Any other name is a compile error, so nothing changes meaning later.
 - Sampling is at the frame's start time, `i / fps`, as reframe and ffmpeg's expressions do.
@@ -1024,7 +1024,7 @@ Each step is one PR, in dependency order. Each keeps the existing tests green an
    `story` lowered to the worked example's JSON (golden file); a story render whose sampled
    frames (fade-in start, mid-swap, mid-ramp, loop end = black) are checked against expected
    tile contents.
-   **Built, in part.** `ffcine_comp::templates::{layout, story}` (`Layout::rects` and
+   **Built.** `ffcine_comp::templates::{layout, story}` (`Layout::rects` and
    `enter_offset` live in `templates::layout`; assembly re-exports them), expanded when a comp
    is read; `ffcine comp lower` and `ffcine comp new --template story`; the `ffcine.comp`
    generator clip ([timeline.md](timeline.md#ffcinecomp)), planned as `Unit::Comp` segments
@@ -1043,14 +1043,13 @@ Each step is one PR, in dependency order. Each keeps the existing tests green an
 
 ## Not yet
 
-- The rest of step 7: the existing timeline units lower to `ffcine_comp::Piece`s
-  (`lower.rs`), not to comp documents run through `Comp::lower` per the
-  [mapping](#mapping-of-existing-features). A shot's grade comes from the renderer's grader
-  (LUT, look, stabilizer, reframe and NLE geometry in the `MAIN` hook, the finish with a
-  transition's fade folded in), which a comp layer's `grade` can't express yet, so going
-  through `Comp::lower` would change the hooks each pass runs and with them the pixels.
-  The parity suite (`timeline_parity.rs`) is the gate: same keys, same `framemd5`s. Until
-  then a timeline effect's expression sees only its own clock's time.
+- Timeline units built as comps and run through `Comp::lower` (step 7 lowers them straight to
+  `ffcine_comp::Piece`s in `lower.rs`, per the [mapping](#mapping-of-existing-features) in
+  effect but not as comp documents). Blocked on the shot grader: LUT, look, stabilize, reframe
+  and NLE geometry in the `MAIN` hook, and the finish with the transition fade folded in, are
+  not expressible as a layer grade. The parity suite (`timeline_parity.rs`) is the gate: same
+  keys, same `framemd5`s. Until then a timeline effect's expression sees only its own clock's
+  time.
 - `ffcine.comp` clips in a timeline: only on the picture track (on an overlay track or in a
   split-screen panel they are left out, warned), cut in and out (a transition next to one is
   a cut, warned), and the comp's fps must be the timeline's.
