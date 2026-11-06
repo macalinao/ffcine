@@ -266,9 +266,11 @@ pub fn expand(s: &Map<String, Value>) -> Result<Value> {
     };
     canvas.insert("background".into(), background);
     if let Some(f) = exit.as_ref().and_then(|e| e.fade) {
+        // Down to 0 on the last frame (T - 1 / fps), so the loop's last frame is black like
+        // its first.
         canvas.insert(
             "fade".into(),
-            format!("1 - clip((t - {}) / {}, 0, 1)", num(duration - f), num(f)).into(),
+            format!("clip((T - 1 / fps - t) / {}, 0, 1)", num(f)).into(),
         );
         canvas.insert("fade_colour".into(), "black".into());
     }

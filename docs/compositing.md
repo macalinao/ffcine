@@ -830,7 +830,7 @@ What the template lowers to, written out. This is also what one would write by h
   "canvas": {
     "size": [1080, 1920], "fps": "30", "duration": 6.0,
     "background": [ { "t": 0, "v": [0, 0, 0], "interp": "in_out" }, { "t": 1.0, "v": [1, 1, 1] } ],
-    "fade": "1 - clip((t - 5.6) / 0.4, 0, 1)", "fade_colour": "black"
+    "fade": "clip((T - 1 / fps - t) / 0.4, 0, 1)", "fade_colour": "black"
   },
   "vars": { "enter": 0.25, "swap": 2.5, "swap_step": 0.12, "slide": 0.4, "exit": 5.2 },
   "comps": {
