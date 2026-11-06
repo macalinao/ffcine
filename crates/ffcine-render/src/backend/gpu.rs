@@ -446,6 +446,12 @@ impl Gpu {
                         decode_still(path, dec_device, &self.devices.vulkan, &l.grade)?;
                     (LayerSrc::Still { frame, tagged }, lw, lh)
                 }
+                LayerSource::Filtered(_) => {
+                    return Err(crate::Error::Invalid {
+                        what: "layer source",
+                        value: "a filter node that wasn't prepared (run its prep first)".into(),
+                    });
+                }
                 LayerSource::Scene(sc) => {
                     let (sw, sh) = (sc.size.width, sc.size.height);
                     let grade = Grade {

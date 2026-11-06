@@ -84,6 +84,11 @@ pub trait Fingerprinter {
     fn fingerprint(&self, path: &Path) -> Fingerprint;
     /// SHA-256 of a small file's bytes (LUTs, shaders), `None` if unreadable.
     fn content_hash(&self, path: &Path) -> Option<String>;
+    /// The ffmpeg build that runs filter nodes (`ffmpeg -version`'s version line and its
+    /// libavfilter version), in every filter node's key.
+    fn ffmpeg_build(&self) -> String {
+        String::from("unknown")
+    }
 }
 
 /// Fingerprints from the filesystem.
@@ -107,6 +112,37 @@ impl Fingerprinter for FsFingerprinter {
     fn content_hash(&self, path: &Path) -> Option<String> {
         let bytes = std::fs::read(path).ok()?;
         Some(Key::of(&Value::String(format!("{:x}", Sha256::digest(&bytes)))).0)
+    }
+
+    /// Of `$FFMPEG` (default `ffmpeg` on the `PATH`, as the renderer runs it), asked once.
+    fn ffmpeg_build(&self) -> String {
+        static BUILD: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        BUILD
+            .get_or_init(|| {
+                let ffmpeg = std::env::var_os("FFMPEG").unwrap_or_else(|| "ffmpeg".into());
+                std::process::Command::new(ffmpeg)
+                    .args(["-hide_banner", "-version"])
+                    .output()
+                    .ok()
+                    .filter(|o| o.status.success())
+                    .map_or_else(
+                        || String::from("unavailable"),
+                        |o| {
+                            let out = String::from_utf8_lossy(&o.stdout);
+                            let mut lines = out.lines();
+                            let first = lines.next().unwrap_or("").trim().to_owned();
+                            let lavfi = out
+                                .lines()
+                                .find(|l| l.trim_start().starts_with("libavfilter"))
+                                .unwrap_or("")
+                                .split_whitespace()
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                            format!("{first}; {lavfi}")
+                        },
+                    )
+            })
+            .clone()
     }
 }
 

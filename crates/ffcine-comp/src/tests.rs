@@ -63,7 +63,7 @@ fn reads_and_rejects() {
         ),
         (
             json!([{ "source": { "video": "a.mov" }, "filter": {} }]),
-            "compositing step 6",
+            "layers[0].filter.graph: missing",
         ),
         (
             json!([{ "source": { "video": "a.mov" }, "grade": { "denoise": 1 } }]),

@@ -59,6 +59,11 @@ pub enum LayerSource {
     Still(PathBuf),
     /// A nested composition rendered in the same pass into its own texture.
     Scene(Arc<Scene>),
+    /// A video through a libavfilter graph (`docs/compositing.md#libavfilter-escape-hatch`):
+    /// the renderer runs the [`Prep`](crate::filter_node::Prep) into a lossless intermediate and
+    /// replaces this with a [`Video`](Self::Video) of it before the pipeline runs (a backend
+    /// refuses it unprepared).
+    Filtered(Arc<crate::filter_node::Prep>),
 }
 
 /// A composition drawn into a layer's source texture: its `grade` (the background hook, `size`

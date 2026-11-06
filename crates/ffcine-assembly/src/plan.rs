@@ -702,6 +702,9 @@ impl ffcine_comp::Media for CompMedia<'_> {
     fn identity(&self, path: &Path) -> Value {
         serde_json::to_value(self.fp.fingerprint(path)).unwrap_or(Value::Null)
     }
+    fn ffmpeg_build(&self) -> String {
+        self.fp.ffmpeg_build()
+    }
     fn profile(&self, path: &Path) -> ffcine_core::Result<ffcine_core::camera::Profile> {
         self.profile
             .map_or(Ok(ffcine_core::camera::Profile::Rec709), |f| f(path))

@@ -14,6 +14,7 @@ use ffcine_core::{Lut, LutType, Result};
 use ffcine_hooks::ShaderEffect;
 use ffcine_hooks::grade::{Luts, grade_for, look_params};
 use ffcine_render::extra::{Filter, filter_hook, strict_hooks};
+use ffcine_render::filter_node::{Clock as FClock, FILTER_TABLE_REVISION, Node, Prep, Reach};
 use ffcine_render::{
     BlendMode, Crop, Deband, Grade, Hook, Image, Layer, LayerSource, LutStage, Overlay, ParamTrack,
     Scene, Size, shaders,
@@ -24,8 +25,8 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::model::{
-    Comp, CompLayer, CropSpec, FilterOpt, FilterSpec, Fit, LayerGrade, MaskShape, Scale, Source,
-    err, limits,
+    Comp, CompLayer, CropSpec, FILTER_HINT, FilterOpt, FilterSpec, Fit, LayerGrade, MaskShape,
+    Scale, Source, err, limits,
 };
 use crate::time;
 
@@ -45,6 +46,10 @@ pub trait Media {
             path.display().to_string(),
             "the frame rate is unknown (needed for a time remap)",
         ))
+    }
+    /// The ffmpeg build that runs filter nodes (in their keys).
+    fn ffmpeg_build(&self) -> String {
+        String::from("unknown")
     }
     /// `profile`'s camera LUT (`None` for display-referred profiles).
     fn camera_lut(&self, profile: Profile) -> Result<Option<CameraLut>> {
@@ -543,6 +548,111 @@ impl Comp {
         self.lower_in(range, out, media, true)
     }
 
+    /// A filtered video layer's prep over its visible frames `vis` of `span`, and its key: the
+    /// node's recipe (`docs/compositing.md#libavfilter-escape-hatch`) and the frames shown.
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    fn filter_prep(
+        &self,
+        l: &CompLayer,
+        p: &Path,
+        node: &Node,
+        reach: Reach,
+        span: &Range<i64>,
+        vis: &Range<i64>,
+        env: &Env<'_>,
+        path: &str,
+        media: &dyn Media,
+    ) -> Result<(Prep, Value)> {
+        let at = |k: &str| format!("{path}.{k}");
+        let (rate, n) = media.video_rate(p)?;
+        if !(rate.is_finite() && rate > 0.0 && n > 0) {
+            return Err(err(
+                at("filter"),
+                format!("{}: no frames or frame rate to filter", p.display()),
+            ));
+        }
+        // The frames fed: the piece's, with pre-roll and post-roll inside the layer, or the
+        // whole layer.
+        let ext = if reach.whole_clip {
+            span.clone()
+        } else {
+            (vis.start - i64::from(reach.preroll)).max(span.start)
+                ..(vis.end + i64::from(reach.postroll)).min(span.end)
+        };
+        let fps = self.canvas.fps;
+        let picks: Vec<i64> = match &l.time {
+            Some(t) => time::source_times(t, env, ext.clone(), &at("time"))?
+                .into_iter()
+                .map(|(s, mid)| time::pick(s, mid, rate, n))
+                .collect(),
+            None => ext
+                .clone()
+                .map(|f| {
+                    let s = l.source_in + f as f64 / fps - l.in_;
+                    time::pick(s, s + 0.5 / fps, rate, n)
+                })
+                .collect(),
+        };
+        let lo = picks.iter().copied().min().unwrap_or(0);
+        let pts = match node.clock {
+            FClock::Layer => ext.start - span.start,
+            FClock::Comp => ext.start,
+        };
+        let shown = (vis.start - ext.start) as usize..(vis.end - ext.start) as usize;
+        let (store, show) = if reach.whole_clip {
+            (0..picks.len(), shown)
+        } else {
+            (shown.clone(), 0..shown.len())
+        };
+        let mut rec = json!({
+            "graph": node.graph,
+            "hw": node.hw.as_str(),
+            "clock": node.clock.as_str(),
+            "preroll": reach.preroll,
+            "postroll": reach.postroll,
+            "whole_clip": reach.whole_clip,
+            "timing": if node.free_timing { "free" } else { "keep" },
+            "ffmpeg": media.ffmpeg_build(),
+            "video": media.identity(p),
+            "map": map_digest(&picks),
+            "pts": pts,
+        });
+        if reach.stateful() {
+            rec["table"] = json!(FILTER_TABLE_REVISION);
+        }
+        if node.clock == FClock::Comp {
+            rec["in"] = json!(l.in_);
+        }
+        let id = json!({"node": rec, "store": [store.start, store.end]});
+        let key = Sha256::digest(id.to_string().as_bytes())[..16].iter().fold(
+            String::new(),
+            |mut s, b| {
+                let _ = write!(s, "{b:02x}");
+                s
+            },
+        );
+        let prep = Prep {
+            graph: node.graph.clone(),
+            hw: node.hw,
+            free_timing: node.free_timing,
+            input: p.to_owned(),
+            // Half a frame early: the decoder keeps the first frame at or after it.
+            start: Duration::from_secs_f64(((lo as f64 - 0.5) / rate).max(0.0)),
+            map: picks.iter().map(|k| k - lo).collect(),
+            rate: fps,
+            pts,
+            store: store.clone(),
+            show: show.clone(),
+            key,
+        };
+        Ok((prep, json!({"filter": id, "show": [show.start, show.end]})))
+    }
+
     /// Layer `l`'s grade over visible frames `vis`
     /// (`docs/compositing.md#per-layer-grade-and-filters`): `grade`, or `{}` when the comp has
     /// a `project`, resolved like a timeline clip's and built by [`grade_for`]. `None`: ungraded.
@@ -672,7 +782,10 @@ impl Comp {
             let fp = at(&format!("filters[{fi}]"));
             match f {
                 FilterSpec::Chain(c) => {
-                    hooks.extend(strict_hooks(std::slice::from_ref(c)).map_err(|e| err(&fp, e))?);
+                    hooks.extend(
+                        strict_hooks(std::slice::from_ref(c))
+                            .map_err(|e| err(&fp, format!("{e} {FILTER_HINT}")))?,
+                    );
                 }
                 FilterSpec::Object { name, opts } => {
                     let fp = format!("{fp}.{name}");
@@ -709,7 +822,9 @@ impl Comp {
                                 })
                                 .collect(),
                         };
-                        per.push(filter_hook(&f).map_err(|e| err(&fp, e))?);
+                        per.push(
+                            filter_hook(&f).map_err(|e| err(&fp, format!("{e} {FILTER_HINT}")))?,
+                        );
                     }
                     let first = &per[0];
                     if per.iter().any(|h| {
@@ -1109,6 +1224,12 @@ impl Comp {
             let mut scene = None;
             let mut remap = None;
             let src = match (&l.source, &solid) {
+                (Source::Video(p), _) if let Some((node, reach)) = &l.filter => {
+                    let (prep, r) =
+                        self.filter_prep(l, p, node, *reach, &span, &vis, &env, &path, media)?;
+                    remap = Some(r);
+                    LayerSource::Filtered(Arc::new(prep))
+                }
                 (Source::Video(p), _) if let Some(t) = &l.time => {
                     let (rate, n) = media.video_rate(p)?;
                     if !(rate.is_finite() && rate > 0.0 && n > 0) {
@@ -1205,6 +1326,7 @@ impl Comp {
                 && i == 0
                 && matches!(l.source, Source::Video(_))
                 && l.time.is_none()
+                && l.filter.is_none()
                 && l.blend == BlendMode::Normal
                 && vis == range
                 && !has_mask
@@ -1267,6 +1389,7 @@ impl Comp {
                     LayerSource::Image(_) => json!("solid"),
                     LayerSource::Still(p) => json!({"still": media.identity(p)}),
                     LayerSource::Scene(_) => scene.take().unwrap_or_default(),
+                    LayerSource::Filtered(_) => remap.take().unwrap_or_default(),
                 },
                 "from": layer.from,
                 "to": layer.to,
