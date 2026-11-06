@@ -117,8 +117,8 @@ fn transition(frames: f64, meta: Option<Value>) -> Item {
     Item::Transition(t)
 }
 
-fn kind(k: &str) -> Option<Value> {
-    Some(json!({"schema": "ffcine.transition/1", "kind": k}))
+fn kind(k: &str) -> Value {
+    json!({"schema": "ffcine.transition/1", "kind": k})
 }
 
 fn gap(frames: f64) -> Item {
@@ -140,7 +140,7 @@ fn split(panels: &[&Path], frames: f64, layout: &Value) -> Item {
 }
 
 /// The timeline (in `d`, whose media it makes) and its directory.
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::many_single_char_names)]
 fn timeline(d: &Path) -> Timeline {
     let a = source(d, "a", "testsrc2=");
     let b = source(d, "b", "smptebars=");
@@ -176,11 +176,11 @@ fn timeline(d: &Path) -> Timeline {
         ),
         transition(12.0, None),
         clip(&b, 10.0, 36.0, Vec::new()),
-        transition(10.0, kind("dip")),
+        transition(10.0, Some(kind("dip"))),
         clip(&c, 0.0, 36.0, Vec::new()),
-        transition(10.0, kind("flash")),
+        transition(10.0, Some(kind("flash"))),
         clip(&e, 0.0, 36.0, Vec::new()),
-        transition(8.0, kind("whip")),
+        transition(8.0, Some(kind("whip"))),
         clip(&a, 40.0, 30.0, Vec::new()),
         gap(12.0),
         clip(&b, 0.0, 30.0, Vec::new()),

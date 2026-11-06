@@ -1,5 +1,5 @@
-//! Comps (`ffcine.comp/1`, docs/compositing.md): `ffcine comp check`, and the comp side of
-//! `ffcine render` and `ffcine still`.
+//! Comps (`ffcine.comp/1`, docs/compositing.md): `ffcine comp check`, `comp lower`, `comp new`,
+//! and the comp side of `ffcine render` and `ffcine still`.
 
 use std::path::{Path, PathBuf};
 
@@ -30,6 +30,94 @@ pub(crate) enum CompCmd {
         #[bpaf(positional("COMP"))]
         comp: PathBuf,
     },
+    /// Print a comp with its template written out: explicit canvas, vars, comps and layers.
+    ///
+    /// The result is an ordinary comp (JSON), the same one `render` and `check` read, so it can
+    /// be edited by hand and rendered instead. It is checked first (expressions compiled,
+    /// sources and limits validated; media not probed).
+    #[bpaf(command, footer(crate::help::COMP_LOWER))]
+    Lower {
+        /// Write it here instead of stdout.
+        #[bpaf(short('o'), long("output"), argument("FILE"))]
+        output: Option<PathBuf>,
+        /// Comp file (.comp.json or .comp.yaml).
+        #[bpaf(positional("COMP"))]
+        comp: PathBuf,
+    },
+    /// Write a new comp file from a template and a list of media.
+    #[bpaf(command, footer(crate::help::COMP_NEW))]
+    New {
+        /// Template: story.
+        #[bpaf(argument("NAME"))]
+        template: String,
+        /// Tiles (story).
+        #[bpaf(argument("N"), fallback(3), display_fallback)]
+        tiles: usize,
+        /// Length in seconds.
+        #[bpaf(argument("S"), fallback(6.0), display_fallback)]
+        duration: f64,
+        /// A picture (video or still); repeat it, in order.
+        #[bpaf(argument("FILE"), some("at least one --media FILE"))]
+        media: Vec<PathBuf>,
+        /// The comp file to write (.comp.json); refuses to overwrite one.
+        #[bpaf(short('o'), long("output"), argument("FILE"))]
+        output: PathBuf,
+    },
+}
+
+/// `comp lower`: the document with its template expanded, checked as a comp.
+fn lower(path: &Path) -> anyhow::Result<serde_json::Value> {
+    let ctx = || format!("reading {}", path.display());
+    let doc = ffcine::comp::read_document(path).with_context(ctx)?;
+    let out = ffcine::comp::templates::expand(&doc).with_context(ctx)?;
+    Comp::from_value(&out, path.parent().unwrap_or(Path::new("."))).with_context(ctx)?;
+    Ok(out)
+}
+
+/// `p` as written in a comp file at `dir`: relative to `dir` when it lies under it.
+fn relative(p: &Path, dir: &Path) -> anyhow::Result<String> {
+    let cwd = std::env::current_dir()?;
+    let abs = |p: &Path| {
+        if p.is_absolute() {
+            p.to_owned()
+        } else {
+            cwd.join(p)
+        }
+    };
+    let (p, dir) = (abs(p), abs(dir));
+    let rel = p.strip_prefix(&dir).map_or(p.as_path(), |r| r);
+    rel.to_str()
+        .map(str::to_owned)
+        .ok_or_else(|| anyhow::anyhow!("{}: not UTF-8", p.display()))
+}
+
+fn new(
+    template: &str,
+    tiles: usize,
+    duration: f64,
+    media: &[PathBuf],
+    out: &Path,
+) -> anyhow::Result<()> {
+    if template != "story" {
+        anyhow::bail!("unknown template {template:?} for comp new (story)");
+    }
+    if out.exists() {
+        anyhow::bail!("{} exists; not overwriting it", out.display());
+    }
+    let dir = out
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let media = media
+        .iter()
+        .map(|p| relative(p, dir))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let doc = ffcine::comp::templates::story::starter(&media, tiles, duration)?;
+    Comp::from_value(&doc, dir).context("checking the new comp")?;
+    std::fs::write(out, serde_json::to_string_pretty(&doc)? + "\n")
+        .with_context(|| format!("writing {}", out.display()))?;
+    println!("wrote {}", out.display());
+    Ok(())
 }
 
 /// Whether `path` holds a comp (`"schema": "ffcine.comp/N"`) rather than a timeline.
@@ -145,6 +233,22 @@ pub(crate) fn renderer(
 #[allow(clippy::cast_precision_loss)]
 pub(crate) fn run(cmd: CompCmd, ff: &backend::Ffmpeg) -> anyhow::Result<()> {
     match cmd {
+        CompCmd::Lower { output, comp } => {
+            let text = serde_json::to_string_pretty(&lower(&comp)?)? + "\n";
+            match output {
+                Some(o) => {
+                    std::fs::write(&o, text).with_context(|| format!("writing {}", o.display()))?
+                }
+                None => print!("{text}"),
+            }
+        }
+        CompCmd::New {
+            template,
+            tiles,
+            duration,
+            media,
+            output,
+        } => new(&template, tiles, duration, &media, &output)?,
         CompCmd::Check { profile, comp } => {
             let (c, plan) = plan(&comp, &profile, ff)?;
             let cv = &c.canvas;
