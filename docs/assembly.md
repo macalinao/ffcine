@@ -48,7 +48,8 @@ is ever pruned, and old masters stay where they are.
    (`TextLayer::fingerprint`) and the overlay clips over it, so a caption or logo edit
    re-renders only the seconds under it. Overlay clips are the non-text clips of the other video
    tracks (`PiP N` from `edit.yaml`), bottom track first. Audio tracks become one mix.
-2. **Segments** (`exec`). A unit missing from `<cache>/seg/<key>.mp4` renders in one GPU
+2. **Segments** (`lower.rs`, `exec`). Each unit is lowered to an `ffcine_comp::Piece` (a base,
+   its grade, layers over it), as a comp's pieces are. A unit missing from `<cache>/seg/<key>.mp4` renders in one GPU
    `Pipeline` pass (decode, denoise, stabilize warp, reframe crop, LUT, look hook, finish, scale to the profile size, sharpen, grain,
    layers, text overlays, NVENC). MP4 keeps exact `1001/24000` timestamps; MKV's millisecond ones
    made frame durations alternate between 41 and 42 ms:

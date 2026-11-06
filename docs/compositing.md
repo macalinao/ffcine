@@ -28,7 +28,7 @@ What exists and is reused (read before changing anything):
 | `shaders::{alpha, finish, background, look, motion_blur}` | `shaders.rs` | opacity/radius, fades, canvas background, grade, whip |
 | `extra` parser (`eq`, `hue`, `colorbalance`, `curves`, `unsharp`, `vignette` as hooks) | `extra.rs` | per-layer filters on the GPU |
 | `ffcine_reframe::{Keyed, Interp}`, `ffcine_text::anim::{Ease, Keys}`, `ffcine_audio::schema::Interp` | three keyframe implementations | merged into one in [Param tracks](#param-tracks) |
-| `comp::{Placement, Layout, Finish}`, `plan::{Unit, Shot, Split, SegLayer, Ramp}`, `exec::Renderer::{split, overlay_layer, input_ctx}` | `ffcine-assembly` | what the existing features lower through |
+| `comp::{Placement, Layout, Finish}`, `plan::{Unit, Shot, Split, SegLayer, Ramp}`, `exec::Renderer::input_ctx`, `lower.rs` (`Renderer::{lower, split, overlay_layer}`) | `ffcine-assembly` | what the existing features lower through |
 | `TileGrid` (HEIF grids, `clap`, `irot`) | `backend/tiles.rs` | HEIC stills |
 | retime prep (NVDEC, `setpts`/`fps`, lossless NVENC) | `exec::Renderer::input_ctx` | time remapping |
 | segment keys, `RENDER_REVISION` (8) | `recipe.rs`, `plan.rs` | caching of comps |
@@ -795,7 +795,8 @@ render path and the keys only see the lowered layers.
 - **`layout`** = `ffcine.comp.layout/1`: `layout` (`split`/`row`, `column`, `1+2`), `gap`,
   `margin`, `radius`, `weights`, `stagger`, `slide`, `enter`, `first_static`, as today, with
   `Layout::rects` and `enter_offset` moved into the template. The planner's split `Stack`s
-  use the same `Layout::rects` (lowering them through the template is [Not yet](#not-yet)); a
+  use the same `Layout::rects` (in `lower.rs`; going through the template is [Not
+  yet](#not-yet)); a
   comp file can use it too (`"template": {"layout": {...}, "panels": [...]}`).
 - **`story`**: a vertical stack of `tiles` tiles with gutters, each tile a nested comp of its
   items. Items swap with a slide `swap.stagger` apart. There are staggered fade-ins from black,
@@ -1027,9 +1028,13 @@ Each step is one PR, in dependency order. Each keeps the existing tests green an
    `enter_offset` live in `templates::layout`; assembly re-exports them), expanded when a comp
    is read; `ffcine comp lower` and `ffcine comp new --template story`; the `ffcine.comp`
    generator clip ([timeline.md](timeline.md#ffcinecomp)), planned as `Unit::Comp` segments
-   by `assembly::plan_with`. The planner still builds the existing units (shot, gap,
-   transitions, split, split dissolve, overlay clips) as before, and `exec` keeps their layer
-   code ([Not yet](#not-yet)). Tests: `crates/ffcine/tests/timeline_parity.rs` (GPU: 16
+   by `assembly::plan_with`. Every segment now renders from an `ffcine_comp::Piece`: the
+   existing units (shot, gap, transitions, split, split dissolve, overlay clips) are lowered to
+   one in `ffcine-assembly`'s `lower.rs` (`Renderer::lower`; split panels placed by
+   `Layout::rects`), a `Unit::Comp` already is one, and `exec` only renders pieces (base as the
+   pass input, layers, overlays), so its per-unit layer code is gone. Keys and `framemd5`s are
+   unchanged. The units are lowered straight to pieces, not written as comp documents and run
+   through `Comp::lower` ([Not yet](#not-yet)). Tests: `crates/ffcine/tests/timeline_parity.rs` (GPU: 16
    segments covering each unit kind, their keys and `framemd5`s recorded before the move, in
    `tests/data/timeline_parity.json`), `ffcine-comp`'s template tests (the worked example as
    golden files `tests/data/story.{comp,lowered}.json`, checked against this page too),
@@ -1038,9 +1043,12 @@ Each step is one PR, in dependency order. Each keeps the existing tests green an
 
 ## Not yet
 
-- The rest of step 7: lowering the existing timeline units (shot, gap, dissolve, dip, flash,
-  whip, split, split dissolve, overlay clips) through `ffcine-comp` per the
-  [mapping](#mapping-of-existing-features), and removing `exec`'s hand-built layers for them.
+- The rest of step 7: the existing timeline units lower to `ffcine_comp::Piece`s
+  (`lower.rs`), not to comp documents run through `Comp::lower` per the
+  [mapping](#mapping-of-existing-features). A shot's grade comes from the renderer's grader
+  (LUT, look, stabilizer, reframe and NLE geometry in the `MAIN` hook, the finish with a
+  transition's fade folded in), which a comp layer's `grade` can't express yet, so going
+  through `Comp::lower` would change the hooks each pass runs and with them the pixels.
   The parity suite (`timeline_parity.rs`) is the gate: same keys, same `framemd5`s. Until
   then a timeline effect's expression sees only its own clock's time.
 - `ffcine.comp` clips in a timeline: only on the picture track (on an overlay track or in a
