@@ -519,14 +519,38 @@ fn ms(s: f64) -> f64 {
     (s.max(0.0) * 1000.0).round() / 1000.0
 }
 
+/// The shortest `duration` (seconds, rounded up to 0.1) [`starter`] takes for `tiles` tiles: the
+/// staggered entrance ends before the exit starts (0.8 s before the end) and, with a swap (at
+/// 40% of the duration), the swap starts after the entrance and ends before the exit.
+#[must_use]
+pub fn starter_min_duration(tiles: usize, swaps: bool) -> f64 {
+    #[allow(clippy::cast_precision_loss)] // a handful of tiles
+    let n = tiles.saturating_sub(1) as f64;
+    let enter_end = 0.25 * n + 0.4;
+    let mut min = enter_end + 0.8;
+    if swaps {
+        min = min.max(enter_end / 0.4).max((0.12 * n + 0.4 + 0.8) / 0.6);
+    }
+    (min * 10.0 - 1e-6).ceil() / 10.0
+}
+
 /// A story comp document to start from (`ffcine comp new --template story`): the worked
 /// example's parameters with `media` dealt round `tiles` tiles, the first round first, so a
 /// tile's second item swaps in. Paths are written as given.
 ///
 /// # Errors
-/// No media, no tiles, or more than two items a tile.
+/// No media, no tiles, more tiles than media, more than two items a tile, or a `duration` too
+/// short for the entrance, swap and exit ([`starter_min_duration`]).
 pub fn starter(media: &[String], tiles: usize, duration: f64) -> Result<Value> {
-    let tiles = tiles.min(media.len());
+    if tiles > media.len() {
+        return Err(err(
+            "tiles",
+            format!(
+                "{tiles} tiles for {} files: each tile needs one",
+                media.len()
+            ),
+        ));
+    }
     if tiles == 0 {
         return Err(err(
             "media",
@@ -542,6 +566,17 @@ pub fn starter(media: &[String], tiles: usize, duration: f64) -> Result<Value> {
             ),
         ));
     }
+    let swaps = media.len() > tiles;
+    let min = starter_min_duration(tiles, swaps);
+    if duration.is_nan() || duration < min {
+        return Err(err(
+            "duration",
+            format!(
+                "{duration} s is too short for {tiles} tiles{}: at least {min} s",
+                if swaps { " with a swap" } else { "" }
+            ),
+        ));
+    }
     let item = |p: &String| {
         let still = std::path::Path::new(p)
             .extension()
@@ -552,7 +587,6 @@ pub fn starter(media: &[String], tiles: usize, duration: f64) -> Result<Value> {
     let panels: Vec<Value> = (0..tiles)
         .map(|i| Value::Array(media.iter().skip(i).step_by(tiles).map(item).collect()))
         .collect();
-    let swaps = media.len() > tiles;
     let mut s = json!({
         "size": [1080, 1920], "fps": "30", "duration": duration,
         "tiles": tiles, "gutter": 12, "radius": 24,

@@ -194,8 +194,10 @@ The render size a profile plans for a canvas is at most 16384 px a side.
 ```
 
 `parameters` is either `src` (a file) or the comp inline. `source_range.start_time` is comp time,
-so trimming works like any clip. The clip's effects (`ffcine.color.grade/1`,
-`ffcine.geo.transform/1`, `ffcine.comp.blend/1`, fades) apply to the comp as one layer. Other
+so trimming works like any clip (a start before the comp's frame 0 is an error). The clip's
+effects (`ffcine.color.grade/1`, `ffcine.geo.transform/1`, `ffcine.comp.blend/1`, fades) are
+meant to apply to the comp as one layer; they are not applied yet (each is warned, [Not
+yet](#not-yet)), and neither is the timeline's grain. Other
 OTIO readers see a generator clip of the right length. The comp is not spread over OTIO tracks
 and Stacks: OTIO has no per-layer keyframes, other tools couldn't render our effects anyway, and
 deeply nested Stacks would be unreadable.
@@ -213,7 +215,8 @@ ffcine render --profile master -o story-4k.mp4 story.comp.json
 ffcine still story.comp.json --at 2.6 -o f.png
 ffcine comp check story.comp.json      # parse, compile expressions, sample every frame, report
 ffcine comp lower story.comp.json      # templates expanded: the explicit layers, as JSON
-ffcine comp new --template story --media a.mov b.heic c.mov d.heic e.mov f.heic -o story.comp.json
+ffcine comp new --template story -o story.comp.json \
+    --media a.mov --media b.heic --media c.mov --media d.heic --media e.mov --media f.heic
 ```
 
 Built: `render`, `still` and `comp check` (steps 2 and 3); `comp lower` and `comp new`
@@ -1053,6 +1056,10 @@ Each step is one PR, in dependency order. Each keeps the existing tests green an
 - `ffcine.comp` clips in a timeline: only on the picture track (on an overlay track or in a
   split-screen panel they are left out, warned), cut in and out (a transition next to one is
   a cut, warned), and the comp's fps must be the timeline's.
+- Effects on an `ffcine.comp` clip (grade, transform, blend, fades, the comp as one layer):
+  ignored for now, with one warning per effect ("comp clip effects are not applied yet").
+- The timeline's grain (`ffcine.fx.grain/1` on the top-level stack) on an `ffcine.comp` clip's
+  picture: it is in the segment key but not drawn; the timeline's text is.
 - Per-layer grade, the rest of step 4: an animated `lut_strength` (the LUT-mix hook; a
   constant one is baked as today), `cdl`, per-layer `denoise`, `grain` (and `canvas.grain`) and
   `stabilize` on a layer. Filters `extra` can't parse stay an error in `grade.filters`; the

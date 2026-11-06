@@ -317,10 +317,11 @@ pub const COMP_NEW: &str = concat!(
     reference!(
         "Story starter:",
         "Media are dealt round the tiles (tile 1 gets the 1st and (tiles+1)th file, ...), so",
-        "at most two a tile; a tile's second item swaps in. Stills by extension (png, jpg,",
-        "heic, heif, avif, webp, tif, exr), anything else is a video. Paths are written",
-        "relative to the output's directory when they're under it. Edit the result, then",
-        "comp check, comp lower or render it.",
+        "at most two a tile; a tile's second item swaps in. --tiles is at most the number of",
+        "files, and --duration has a floor (2.4 s for 3 tiles with a swap; the error says).",
+        "Stills by extension (png, jpg, jpeg, heic, heif, avif, webp, tif, tiff, exr),",
+        "anything else is a video. Paths are written relative to the output's directory",
+        "(../ when outside it). Edit the result, then comp check, comp lower or render it.",
     ),
     examples!(
         "ffcine comp new --template story -o story.comp.json --media a.mp4 --media b.heic",

@@ -1070,8 +1070,13 @@ impl Planner<'_> {
         }
         let comp = match params.get("src") {
             Some(Value::String(src)) => {
-                if params.len() > 2 {
-                    return Err(bad("`src` or an inline comp, not both".into()));
+                if let Some(k) = params
+                    .keys()
+                    .find(|k| !matches!(k.as_str(), "schema" | "src"))
+                {
+                    return Err(bad(format!(
+                        "`{k}` beside `src`: give `src` or an inline comp, not both"
+                    )));
                 }
                 ffcine_comp::Comp::from_file(&self.base_dir.join(src))
             }
@@ -1095,7 +1100,7 @@ impl Planner<'_> {
             )));
         }
         let Some(media) = self.media else {
-            return Err(bad("comp clips need probed media (plan_with)".into()));
+            return Err(bad("comp clips need probed media".into()));
         };
         let (from, frames) = match &c.source_range {
             Some(r) => (
@@ -1104,6 +1109,24 @@ impl Planner<'_> {
             ),
             None => (0, comp.frames()),
         };
+        if from < 0 {
+            return Err(bad(format!(
+                "source_range starts at comp frame {from}; it can't be before the comp's start"
+            )));
+        }
+        for e in &c.effects {
+            let schema = match e {
+                Effect::Effect(g) => g.ffcine_schema().map_or_else(
+                    || g.effect_name.clone(),
+                    |(name, major)| format!("{name}/{major}"),
+                ),
+                other => other.effect_name().unwrap_or("unnamed effect").to_owned(),
+            };
+            self.warn(format!(
+                "comp clip {:?}: comp clip effects are not applied yet: {schema}",
+                c.name
+            ));
+        }
         let mut pieces = Vec::new();
         for r in comp.pieces() {
             let (a, b) = (r.start.max(from), r.end.min(from + frames));
@@ -1970,7 +1993,50 @@ mod tests {
         bad["canvas"]["size"] = json!([1080, 1920]);
         assert!(err(&bad, Some(&media)).contains("aspect"));
         let both = json!({"schema": "ffcine.comp/1", "src": "a.comp.json", "layers": []});
-        assert!(err(&both, Some(&media)).contains("not both"));
+        assert!(err(&both, Some(&media)).contains("`layers` beside `src`"));
+    }
+
+    #[test]
+    fn comp_clip_effects_warn_and_a_negative_start_is_an_error() {
+        let inline = json!({
+            "schema": "ffcine.comp/1",
+            "canvas": { "size": [1920, 1080], "fps": "24000/1001", "duration": 2.0 },
+            "layers": [{ "source": { "solid": "white" } }],
+        });
+        let dims = |_: &Path| Ok((1920, 1080));
+        let media = CompMedia {
+            fp: &Fake,
+            dims: &dims,
+            profile: None,
+            rate: None,
+        };
+        let with = |t: &Timeline| {
+            plan_with(
+                t,
+                Path::new("/proj"),
+                &Profile::preview(),
+                &Fake,
+                None,
+                Some(&media),
+            )
+        };
+        let early = timeline(vec![comp_clip("c", &inline, -6.0, 24.0)], vec![]);
+        let msg = with(&early).expect_err("a negative start").to_string();
+        assert!(msg.contains("before the comp's start"), "{msg}");
+
+        // Effects on a comp clip aren't applied yet: one warning per effect.
+        let fx = with_fx(
+            with_fx(
+                comp_clip("c", &inline, 0.0, 24.0),
+                effect("ffcine.comp.blend/1", json!({"opacity": 0.5})),
+            ),
+            effect("ffcine.geo.transform/1", json!({"scale": 0.5})),
+        );
+        let planned = with(&timeline(vec![fx], vec![])).expect("plan");
+        for schema in ["ffcine.comp.blend/1", "ffcine.geo.transform/1"] {
+            let w = format!("comp clip \"c\": comp clip effects are not applied yet: {schema}");
+            assert!(planned.warnings.contains(&w), "{:?}", planned.warnings);
+        }
     }
 
     fn timeline(video: Vec<Item>, audio: Vec<Item>) -> Timeline {

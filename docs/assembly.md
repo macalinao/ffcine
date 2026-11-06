@@ -167,7 +167,8 @@ and each piece is a segment (`Unit::Comp`) whose key is the profile, the rate, t
 the piece's lowered values: source fingerprints and start times, rects and rotations, and every
 hook value, as `f32` digests. Equivalent rewrites (keys to an expression) keep their keys, and an
 edit after a cut re-renders only the pieces whose values changed. The same comp as a clip in a
-timeline keys its pieces the same way (with the timeline's text and grain), so two clips showing
+timeline keys its pieces the same way (with the timeline's text and grain settings; the text is
+drawn on it, the grain not yet: [compositing.md](compositing.md#not-yet)), so two clips showing
 the same comp frames share segments. A template (`"template": {"story": {...}}`) is expanded when
 the comp is read, so only its lowered layers reach the key.
 

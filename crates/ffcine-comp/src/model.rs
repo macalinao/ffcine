@@ -81,7 +81,6 @@ pub fn is_comp_file(path: &Path) -> bool {
         || read(path).is_ok_and(|v| is_comp(&v))
 }
 
-/// A JSON or (by extension) YAML document.
 /// A comp file's document as written (JSON, or YAML for `.yaml`/`.yml`), templates not
 /// expanded ([`crate::templates::expand`] does that).
 ///
@@ -91,6 +90,7 @@ pub fn read_document(path: &Path) -> Result<Value> {
     read(path)
 }
 
+/// A JSON or (by extension) YAML document.
 fn read(path: &Path) -> Result<Value> {
     let text = std::fs::read_to_string(path).map_err(|source| Error::Io {
         path: path.to_owned(),

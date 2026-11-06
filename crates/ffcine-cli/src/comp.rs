@@ -1,7 +1,8 @@
 //! Comps (`ffcine.comp/1`, docs/compositing.md): `ffcine comp check`, `comp lower`, `comp new`,
 //! and the comp side of `ffcine render` and `ffcine still`.
 
-use std::path::{Path, PathBuf};
+use std::io::Write as _;
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::Context as _;
 use bpaf::Bpaf;
@@ -50,9 +51,9 @@ pub(crate) enum CompCmd {
         /// Template: story.
         #[bpaf(argument("NAME"))]
         template: String,
-        /// Tiles (story).
-        #[bpaf(argument("N"), fallback(3), display_fallback)]
-        tiles: usize,
+        /// Tiles (story; default 3, or one a file with fewer); at most one a file.
+        #[bpaf(argument("N"))]
+        tiles: Option<usize>,
         /// Length in seconds.
         #[bpaf(argument("S"), fallback(6.0), display_fallback)]
         duration: f64,
@@ -74,35 +75,56 @@ fn lower(path: &Path) -> anyhow::Result<serde_json::Value> {
     Ok(out)
 }
 
-/// `p` as written in a comp file at `dir`: relative to `dir` when it lies under it.
+/// `p` as written in a comp file at `dir`: relative to `dir` (with `../` when it lies outside
+/// it), or absolute when there is no relative path (another drive).
 fn relative(p: &Path, dir: &Path) -> anyhow::Result<String> {
     let cwd = std::env::current_dir()?;
-    let abs = |p: &Path| {
-        if p.is_absolute() {
-            p.to_owned()
-        } else {
-            cwd.join(p)
-        }
+    let (p, dir) = (normalize(&cwd.join(p)), normalize(&cwd.join(dir)));
+    let (mut pc, mut dc) = (p.components().peekable(), dir.components().peekable());
+    while let (Some(a), Some(b)) = (pc.peek(), dc.peek())
+        && a == b
+    {
+        pc.next();
+        dc.next();
+    }
+    let shared = p.components().count() - pc.clone().count();
+    let rel: PathBuf = if shared == 0 {
+        p.clone()
+    } else {
+        dc.map(|_| Component::ParentDir).chain(pc).collect()
     };
-    let (p, dir) = (abs(p), abs(dir));
-    let rel = p.strip_prefix(&dir).map_or(p.as_path(), |r| r);
     rel.to_str()
         .map(str::to_owned)
         .ok_or_else(|| anyhow::anyhow!("{}: not UTF-8", p.display()))
 }
 
+/// `p` with `.` dropped and `..` taken off the path before it, without touching the
+/// filesystem.
+fn normalize(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir
+                if matches!(out.components().next_back(), Some(Component::Normal(_))) =>
+            {
+                out.pop();
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 fn new(
     template: &str,
-    tiles: usize,
+    tiles: Option<usize>,
     duration: f64,
     media: &[PathBuf],
     out: &Path,
 ) -> anyhow::Result<()> {
     if template != "story" {
         anyhow::bail!("unknown template {template:?} for comp new (story)");
-    }
-    if out.exists() {
-        anyhow::bail!("{} exists; not overwriting it", out.display());
     }
     let dir = out
         .parent()
@@ -112,9 +134,20 @@ fn new(
         .iter()
         .map(|p| relative(p, dir))
         .collect::<anyhow::Result<Vec<_>>>()?;
+    let tiles = tiles.unwrap_or(media.len().min(3));
     let doc = ffcine::comp::templates::story::starter(&media, tiles, duration)?;
     Comp::from_value(&doc, dir).context("checking the new comp")?;
-    std::fs::write(out, serde_json::to_string_pretty(&doc)? + "\n")
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(out)
+        .map_err(|e| match e.kind() {
+            std::io::ErrorKind::AlreadyExists => {
+                anyhow::anyhow!("{} exists; not overwriting it", out.display())
+            }
+            _ => anyhow::Error::new(e).context(format!("writing {}", out.display())),
+        })?;
+    f.write_all((serde_json::to_string_pretty(&doc)? + "\n").as_bytes())
         .with_context(|| format!("writing {}", out.display()))?;
     println!("wrote {}", out.display());
     Ok(())
@@ -321,4 +354,20 @@ pub(crate) fn run(cmd: CompCmd, ff: &backend::Ffmpeg) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn media_paths_are_relative_to_the_output() {
+        let rel = |p: &str, d: &str| relative(Path::new(p), Path::new(d)).expect("utf-8");
+        assert_eq!(rel("/a/b/c.mp4", "/a/b"), "c.mp4");
+        assert_eq!(rel("/a/b/c.mp4", "/a/out"), "../b/c.mp4");
+        assert_eq!(rel("/a/b/c.mp4", "/x/y"), "../../a/b/c.mp4");
+        assert_eq!(rel("/a/./b/../c.mp4", "/a/d/."), "../c.mp4");
+        assert_eq!(rel("c.mp4", "."), "c.mp4");
+        assert_eq!(rel("c.mp4", "out"), "../c.mp4");
+    }
 }

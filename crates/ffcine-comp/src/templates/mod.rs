@@ -285,6 +285,16 @@ mod tests {
         assert!(two["template"]["story"].get("swap").is_none());
         assert!(super::story::starter(&media, 1, 6.0).is_err());
         assert!(super::story::starter(&[], 3, 6.0).is_err());
+        // More tiles than media, or too short: errors naming the field.
+        let e = super::story::starter(&media[..2], 3, 6.0).expect_err("tiles");
+        assert!(e.to_string().contains("3 tiles for 2 files"), "{e}");
+        assert!((super::story::starter_min_duration(3, true) - 2.4).abs() < 1e-9);
+        assert!((super::story::starter_min_duration(3, false) - 1.7).abs() < 1e-9);
+        let e = super::story::starter(&media, 3, 2.0).expect_err("duration");
+        assert!(e.to_string().contains("at least 2.4 s"), "{e}");
+        let short = super::story::starter(&media, 3, 2.4).expect("the shortest");
+        Comp::from_value(&short, Path::new("media")).expect("a valid comp");
+        assert!(super::story::starter(&media, 3, f64::NAN).is_err());
     }
 
     #[test]
