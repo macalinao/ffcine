@@ -36,6 +36,10 @@ is ever pruned, and old masters stay where they are.
      pictures slide the way of `direction`, motion-blurred by their speed);
    - one per **split-screen** (`Stack` with more than one child, `ffcine.comp.layout/1`): every
      panel, each flattened to its own shots and holds;
+   - one per piece of an **`ffcine.comp` clip** ([timeline.md](timeline.md#ffcinecomp)), the
+     comp's pieces over the clip's source range (`Unit::Comp`, keyed as below). It needs the
+     layers' media probed: `plan_with` takes them (`ffcine render`/`diff` do when the timeline
+     has one), and `plan` refuses such a timeline;
    - one per run of **gap**: black.
 
    Shots, split-screens and gaps are cut at every `ffcine.text` in and out point
@@ -161,7 +165,10 @@ the same cache: `plan_comp` cuts it into pieces at layer in/out points (none und
 and each piece is a segment (`Unit::Comp`) whose key is the profile, the rate, the frame count and
 the piece's lowered values: source fingerprints and start times, rects and rotations, and every
 hook value, as `f32` digests. Equivalent rewrites (keys to an expression) keep their keys, and an
-edit after a cut re-renders only the pieces whose values changed.
+edit after a cut re-renders only the pieces whose values changed. The same comp as a clip in a
+timeline keys its pieces the same way (with the timeline's text and grain), so two clips showing
+the same comp frames share segments. A template (`"template": {"story": {...}}`) is expanded when
+the comp is read, so only its lowered layers reach the key.
 
 ## Per-clip filters
 

@@ -416,13 +416,15 @@ pub const RENDER: &str = concat!(
         "st, e.g. \"1 + 0.05*sin(st*4)\" (ffmpeg's functions; docs/compositing.md).",
     ),
     reference!(
-        "Generators (text and colour clips; docs/text.md):",
+        "Generators (text, colour and comp clips; docs/text.md, docs/timeline.md):",
         "ffcine.text    text, style, font, face, size, colour, position, alignment, profiles,",
         "               animation {in, out}: fade, slide, pop, typewriter, wipe, none;",
         "               keyframes {position, scale, opacity, colour}: [{t, v, interp}], or",
         "               expressions over lt and dur",
         "ffcine.title   title sequence or end screen (`ffcine title`)",
         "ffcine.solid   a colour fill",
+        "ffcine.comp    a comp on the picture track: schema ffcine.comp/1 and src (a comp",
+        "               file) or the comp inline; source_range is comp time",
         "HDR output is a `grade --hdr` option; render writes BT.709 SDR (docs/color.md).",
     ),
     examples!(

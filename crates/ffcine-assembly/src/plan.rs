@@ -1085,6 +1085,15 @@ impl Planner<'_> {
                 comp.canvas.fps, self.rate
             )));
         }
+        let [cw, ch] = comp.canvas.size;
+        let out = self.profile.size;
+        let aspect = |w: u32, h: u32| f64::from(w) / f64::from(h);
+        if (aspect(cw, ch) / aspect(out.width, out.height) - 1.0).abs() > 0.01 {
+            return Err(bad(format!(
+                "canvas {cw}x{ch} isn't the output's aspect ({}x{}); it would stretch",
+                out.width, out.height
+            )));
+        }
         let Some(media) = self.media else {
             return Err(bad("comp clips need probed media (plan_with)".into()));
         };
@@ -1957,6 +1966,9 @@ mod tests {
         let mut bad = inline.clone();
         bad["canvas"]["fps"] = json!(30);
         assert!(err(&bad, Some(&media)).contains("fps"));
+        let mut bad = inline.clone();
+        bad["canvas"]["size"] = json!([1080, 1920]);
+        assert!(err(&bad, Some(&media)).contains("aspect"));
         let both = json!({"schema": "ffcine.comp/1", "src": "a.comp.json", "layers": []});
         assert!(err(&both, Some(&media)).contains("not both"));
     }

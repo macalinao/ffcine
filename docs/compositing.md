@@ -1,8 +1,9 @@
 # Compositing and keyframes (design)
 
-Status: design. Steps 1 to 4 of the [phased plan](#phased-plan) (param tracks and expressions,
-`ffcine_core::anim`; the compositor core, `ffcine-comp`; media layers; per-layer grade) are
-built, step 4 in part; the rest is not. It turns what assembly already composites
+Status: design. Steps 1 to 7 of the [phased plan](#phased-plan) (param tracks and expressions,
+`ffcine_core::anim`; the compositor core, `ffcine-comp`; media layers; per-layer grade; time
+remapping; the libavfilter node; templates and comp clips) are built, steps 4, 6 and 7 in part
+([Not yet](#not-yet)). It turns what assembly already composites
 (split-screens, picture-in-picture, transitions, stills, text) into one general model: a
 **composition** of ordered **layers** whose parameters are **tracks**. Anything one would write
 today as a hand-made ffmpeg filter graph should be expressible in ffcine itself, and layouts and
@@ -215,8 +216,8 @@ ffcine comp lower story.comp.json      # templates expanded: the explicit layers
 ffcine comp new --template story --media a.mov b.heic c.mov d.heic e.mov f.heic -o story.comp.json
 ```
 
-Built so far: `render`, `still` and `comp check` (steps 2 and 3); `comp lower` and `comp new` come
-with templates (step 7). `render` and `still` take a comp wherever they take a timeline (`still` composites every
+Built: `render`, `still` and `comp check` (steps 2 and 3); `comp lower` and `comp new`
+(step 7). `render` and `still` take a comp wherever they take a timeline (`still` composites every
 layer, where today's still of a timeline draws the top-most clip and the text). It goes through the same
 planner, segment cache, profiles and manifest. A comp has no audio of its own yet
 ([Not yet](#not-yet)); as a clip in a timeline, it uses the timeline's audio tracks.
@@ -793,8 +794,9 @@ render path and the keys only see the lowered layers.
 
 - **`layout`** = `ffcine.comp.layout/1`: `layout` (`split`/`row`, `column`, `1+2`), `gap`,
   `margin`, `radius`, `weights`, `stagger`, `slide`, `enter`, `first_static`, as today, with
-  `Layout::rects` and `enter_offset` moved into the template. The planner calls it for every
-  split `Stack`; a comp file can use it too (`"template": {"layout": {...}, "panels": [...]}`).
+  `Layout::rects` and `enter_offset` moved into the template. The planner's split `Stack`s
+  use the same `Layout::rects` (lowering them through the template is [Not yet](#not-yet)); a
+  comp file can use it too (`"template": {"layout": {...}, "panels": [...]}`).
 - **`story`**: a vertical stack of `tiles` tiles with gutters, each tile a nested comp of its
   items. Items swap with a slide `swap.stagger` apart. There are staggered fade-ins from black,
   a background track, Ken Burns on stills, optional per-item `punch` and `speed`, and a
@@ -1021,9 +1023,29 @@ Each step is one PR, in dependency order. Each keeps the existing tests green an
    `story` lowered to the worked example's JSON (golden file); a story render whose sampled
    frames (fade-in start, mid-swap, mid-ramp, loop end = black) are checked against expected
    tile contents.
+   **Built, in part.** `ffcine_comp::templates::{layout, story}` (`Layout::rects` and
+   `enter_offset` live in `templates::layout`; assembly re-exports them), expanded when a comp
+   is read; `ffcine comp lower` and `ffcine comp new --template story`; the `ffcine.comp`
+   generator clip ([timeline.md](timeline.md#ffcinecomp)), planned as `Unit::Comp` segments
+   by `assembly::plan_with`. The planner still builds the existing units (shot, gap,
+   transitions, split, split dissolve, overlay clips) as before, and `exec` keeps their layer
+   code ([Not yet](#not-yet)). Tests: `crates/ffcine/tests/timeline_parity.rs` (GPU: 16
+   segments covering each unit kind, their keys and `framemd5`s recorded before the move, in
+   `tests/data/timeline_parity.json`), `ffcine-comp`'s template tests (the worked example as
+   golden files `tests/data/story.{comp,lowered}.json`, checked against this page too),
+   `crates/ffcine/tests/story_gpu.rs` (GPU: the sampled story frames) and the planner's
+   `comp_clips_lower_to_comp_segments`.
 
 ## Not yet
 
+- The rest of step 7: lowering the existing timeline units (shot, gap, dissolve, dip, flash,
+  whip, split, split dissolve, overlay clips) through `ffcine-comp` per the
+  [mapping](#mapping-of-existing-features), and removing `exec`'s hand-built layers for them.
+  The parity suite (`timeline_parity.rs`) is the gate: same keys, same `framemd5`s. Until
+  then a timeline effect's expression sees only its own clock's time.
+- `ffcine.comp` clips in a timeline: only on the picture track (on an overlay track or in a
+  split-screen panel they are left out, warned), cut in and out (a transition next to one is
+  a cut, warned), and the comp's fps must be the timeline's.
 - Per-layer grade, the rest of step 4: an animated `lut_strength` (the LUT-mix hook; a
   constant one is baked as today), `cdl`, per-layer `denoise`, `grain` (and `canvas.grain`) and
   `stabilize` on a layer. Filters `extra` can't parse stay an error in `grade.filters`; the
