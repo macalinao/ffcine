@@ -9,13 +9,16 @@ permissions: {}
 
 jobs:
   # The built-in GITHUB_TOKEN can maintain release PRs when repository and
-  # organization settings allow it. Its PR CI runs require manual approval.
+  # organization settings allow it. CI is dispatched explicitly below.
   release-plz-pr:
     if: github.repository_owner == 'talaagent' && !github.event.repository.private
     runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: write
+      actions: write
+    env:
+      USE_BUILTIN_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN == '' }}
     concurrency:
       group: release-plz-${{ github.ref }}
       cancel-in-progress: false
@@ -59,6 +62,23 @@ jobs:
           --repo-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Start CI for release PRs
+        if: env.USE_BUILTIN_TOKEN == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          BASE_BRANCH: ${{ github.ref_name }}
+        run: |
+          gh pr list --base "$BASE_BRANCH" --state open \
+            --json headRefName,headRefOid,isCrossRepository \
+            --jq '.[] | select(.isCrossRepository == false) | select(.headRefName | startswith("release-plz-")) | [.headRefName, .headRefOid] | @tsv' |
+          while IFS=$'\t' read -r branch sha; do
+            runs=$(gh run list --workflow ci.yml --commit "$sha" --limit 1 --json databaseId --jq 'length')
+            if [ "$runs" = 0 ]; then
+              gh workflow run ci.yml --ref "$branch"
+            fi
+          done
 
   # Publishes unpublished versions to crates.io, tags them and creates the
   # GitHub release. The registry secret supports first publication too;

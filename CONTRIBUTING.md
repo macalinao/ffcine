@@ -46,8 +46,7 @@ All workspace crates share a version. `release-plz.toml` keeps their versions in
 sync and combines changes in the root `CHANGELOG.md`, with `ffcine-cli` owning the
 `v<version>` tag and GitHub release. `release_always = false` publishes only after
 a release PR is merged. Review version bumps and changelog entries and require
-passing CI before merging. An existing release PR may need a maintainer to approve
-its Actions run before checks start.
+passing CI before merging. CI is dispatched explicitly for token-created release PRs.
 
 Release automation uses **release-plz** for both release PRs and publishing.
 A crate's first publication needs a crates.io token; trusted publishing cannot
@@ -61,11 +60,11 @@ Actions to create and approve pull requests** in the organization and repository
 Actions settings, then set repository variable `RELEASE_PR=true`. The setup
 check prevents a failing updater from disturbing an existing release PR.
 
-GitHub requires a maintainer to approve CI runs on PRs created or updated with
-`GITHUB_TOKEN`; token-generated pushes do not start ordinary push workflows.
-An optional `RELEASE_PLZ_TOKEN` (GitHub App token or PAT) can override the built-in
-token to run PR CI without that approval and support workflow-file updates.
-No personal GitHub token is required for the default setup.
+The release workflow dispatches CI explicitly for PRs created with `GITHUB_TOKEN`,
+using `actions: write`. It reuses existing runs for the same commit. This uses
+GitHub's [workflow dispatch exception](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow)
+to the token's event restrictions. An optional `RELEASE_PLZ_TOKEN` (GitHub App
+token or PAT) can override the built-in token; no personal token is required.
 
 For tokenless registry publication, configure every crate's trusted publisher
 for owner `talaagent`, repository `ffcine`, workflow `release-plz.yml` (no
