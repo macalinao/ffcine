@@ -86,7 +86,6 @@
                 ./Cargo.lock
                 ./README.md
                 ./LICENSE
-                ./NOTICE
                 ./crates
               ];
             };
