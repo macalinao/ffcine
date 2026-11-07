@@ -54,11 +54,17 @@ create it. `CARGO_REGISTRY_TOKEN` is configured as a repository Actions secret,
 so release-plz can publish `ffcine-comp` and any future new crates alongside
 the existing workspace packages.
 
-The release PR updater requires `RELEASE_PLZ_TOKEN`: a GitHub App token or PAT
-with repository contents, pull-request, and workflow write permissions. The
-built-in `GITHUB_TOKEN` failed to create a release branch after workflow edits;
-the updater stops early without closing the existing PR when this secret is
-absent. The user/App token also allows release PR updates to trigger CI.
+Release PRs use the built-in `GITHUB_TOKEN` by default, with job-level
+`contents: write` and `pull-requests: write` permissions. Enable **Allow GitHub
+Actions to create and approve pull requests** in the organization and repository
+Actions settings, then set repository variable `RELEASE_PR=true`. The setup
+check prevents a failing updater from disturbing an existing release PR.
+
+GitHub requires a maintainer to approve CI runs on PRs created or updated with
+`GITHUB_TOKEN`; token-generated pushes do not start ordinary push workflows.
+An optional `RELEASE_PLZ_TOKEN` (GitHub App token or PAT) can override the built-in
+token to run PR CI without that approval and support workflow-file updates.
+No personal GitHub token is required for the default setup.
 
 For tokenless registry publication, configure every crate's trusted publisher
 for owner `talaagent`, repository `ffcine`, workflow `release-plz.yml` (no
