@@ -2,6 +2,9 @@
 //! bindgen from the system headers (pkg-config `libplacebo` >= 7.365). Covers the Vulkan backend,
 //! the renderer, colour spaces, tone/gamut mapping, LUTs and custom (mpv `.hook`) shaders.
 //!
+//! docs.rs uses a documentation-only API 375 snapshot; normal builds regenerate
+//! bindings from the installed headers. No snapshot is used for native linking.
+//!
 //! Safe wrappers live in the `ffcine` crate's placebo backend.
 
 #![allow(non_upper_case_globals, non_camel_case_types, non_snake_case)]

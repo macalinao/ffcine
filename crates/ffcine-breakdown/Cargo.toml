@@ -7,6 +7,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme.workspace = true
+documentation = "https://docs.rs/ffcine-breakdown"
 authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
@@ -29,3 +30,8 @@ ffmpeg-next = { workspace = true, optional = true }
 
 [lints]
 workspace = true
+
+# docs.rs has no matching ffmpeg/libplacebo system libraries.
+[package.metadata.docs.rs]
+no-default-features = true
+targets = ["x86_64-unknown-linux-gnu"]

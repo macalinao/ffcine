@@ -18,6 +18,7 @@ changelog_include = [
   "ffcine-audio",
   "ffcine-breakdown",
   "ffcine-core",
+  "ffcine-comp",
   "ffcine-delivery",
   "ffcine-filters",
   "ffcine-hooks",
@@ -98,4 +99,8 @@ version_group = "ffcine"
 
 [[package]]
 name = "ffcine-triage"
+version_group = "ffcine"
+
+[[package]]
+name = "ffcine-comp"
 version_group = "ffcine"

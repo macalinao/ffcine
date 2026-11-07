@@ -78,10 +78,26 @@ jobs:
       - name: cargo test (audio)
         run: nix develop .#audio --command cargo test -p ffcine-audio
 
+  portable-docs:
+    name: docs.rs portable builds
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      # Deliberately outside Nix: prove these docs need no native headers/libraries.
+      - name: Portable facade
+        run: cargo doc -p ffcine --no-default-features --no-deps --locked
+      - name: FFI documentation snapshot
+        run: cargo doc -p ffcine-libplacebo-sys --no-default-features --no-deps --locked
+        env:
+          DOCS_RS: "1"
+
   # The one check branch protection requires.
   ci:
     if: always()
-    needs: [nix, deny, macos]
+    needs: [nix, deny, macos, portable-docs]
     runs-on: ubuntu-latest
     steps:
       - name: All jobs passed

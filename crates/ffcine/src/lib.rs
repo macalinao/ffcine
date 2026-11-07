@@ -2,9 +2,11 @@
 //! shaders) and encode, with frames kept in VRAM end to end.
 //!
 //! The types here ([`Pipeline`], [`Grade`], [`Lut`], [`ColorSpace`], [`EncoderSettings`]) are
-//! backend-neutral; [`backend::Ffmpeg`] runs them on ffmpeg's libav* and libplacebo/Vulkan.
+//! backend-neutral; `backend::Ffmpeg` (feature `ffmpeg`) runs them on ffmpeg's libav* and libplacebo/Vulkan.
 //!
 //! ```no_run
+//! # #[cfg(all(feature = "ffmpeg", feature = "placebo"))]
+//! # fn render() -> ffcine::Result<()> {
 //! use ffcine::{Backend, Grade, Lut, LutStage, LutType, Pipeline, backend};
 //!
 //! let ff = backend::Ffmpeg::new()?;
@@ -14,9 +16,42 @@
 //!     ..Grade::default()
 //! };
 //! Pipeline::new("in.mov", "out.mkv").grade(grade).run(&ff)?;
-//! # Ok::<(), ffcine::Error>(())
+//! # Ok(()) }
 //! ```
 
+//!
+//! # Portable API
+//!
+//! Use `ffcine = { version = "0.3", default-features = false }` for timeline
+//! editing, LUT parsing, and pipeline construction without native dependencies.
+//!
+//! ```
+//! use ffcine::{Pipeline, Rational, timeline::Timeline};
+//!
+//! let rate: Rational = "24000/1001".parse()?;
+//! assert_eq!(rate.den, 1001);
+//! let pipeline = Pipeline::new("input.mov", "output.mkv");
+//! assert!(pipeline.stages.is_empty());
+//! let timeline = Timeline::new("Example edit");
+//! assert_eq!(Timeline::from_json(&timeline.to_json()?)?, timeline);
+//! # Ok::<(), ffcine::Error>(())
+//! ```
+//!
+//! # Features and native dependencies
+//!
+//! | Feature | Default | Requires |
+//! | --- | --- | --- |
+//! | `ffmpeg` | Yes | ffmpeg 9 development libraries; enables audio too |
+//! | `placebo` | Yes | libplacebo >= 7.365 and Vulkan headers |
+//! | `nvof` | Yes | `ffmpeg`; NVIDIA optical flow driver at runtime |
+//! | `audio` | No (enabled by `ffmpeg`) | ffmpeg audio I/O and filters |
+//! | `telemetry` | No | `nvof`; camera gyro parsing |
+//!
+//! docs.rs builds the portable API with default features disabled. To browse
+//! the GPU backend, use the repository's Nix shell and run
+//! `cargo doc --workspace --no-deps --open`. The
+//! [README](https://github.com/talaagent/ffcine#requirements) lists hardware
+//! requirements and the supported native build environment.
 //!
 //! This crate is a facade: each part lives in its own crate (`docs/design.md#crates`) and is
 //! re-exported here under the module names it always had.
@@ -104,3 +139,8 @@ pub fn stabilize_pipeline(
     }
     Ok((st, det))
 }
+
+/// Repository README examples, compiled with and without native features.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;

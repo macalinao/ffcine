@@ -1,5 +1,5 @@
 //! The ffcine render path: [`Pipeline`], [`Grade`] and [`EncoderSettings`] (backend-neutral),
-//! and [`backend::Ffmpeg`], which runs them on ffmpeg's libav* and libplacebo/Vulkan with frames
+//! and `backend::Ffmpeg` (feature `ffmpeg`), which runs them on ffmpeg's libav* and libplacebo/Vulkan with frames
 //! kept in VRAM end to end.
 
 pub mod backend;

@@ -9,6 +9,16 @@ const MIN_VERSION: &str = "7.365";
 
 fn main() {
     println!("cargo:rerun-if-changed=wrapper.h");
+    println!("cargo:rerun-if-env-changed=DOCS_RS");
+    if env::var_os("DOCS_RS").is_some() {
+        // docs.rs cannot install our pinned native libraries. This snapshot is
+        // only for rustdoc; normal builds always generate from the real headers.
+        println!("cargo:rerun-if-changed=docs/bindings.rs");
+        let out = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
+        std::fs::copy("docs/bindings.rs", out.join("bindings.rs"))
+            .expect("copy documentation bindings");
+        return;
+    }
     let lib = pkg_config::Config::new()
         .atleast_version(MIN_VERSION)
         .probe("libplacebo")

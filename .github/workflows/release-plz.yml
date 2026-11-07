@@ -3,6 +3,7 @@ name: release-plz
 on:
   push:
     branches: [master]
+  workflow_dispatch:
 
 permissions: {}
 
@@ -58,6 +59,9 @@ jobs:
   # publishes when the commit comes from a merged release PR (a `release-plz-`
   # branch), which it looks up through the GitHub API.
   release-plz-release:
+    concurrency:
+      group: release-plz-publish-${{ github.ref }}
+      cancel-in-progress: false
     if: github.repository_owner == 'talaagent' && !github.event.repository.private
     runs-on: ubuntu-latest
     permissions:
@@ -80,6 +84,14 @@ jobs:
       - uses: rust-lang/crates-io-auth-action@v1
         id: auth
         continue-on-error: true
+      - name: Verify publishing credentials
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token || secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          if [ -z "$CARGO_REGISTRY_TOKEN" ]; then
+            echo "::error::No crates.io credentials. Configure trusted publishing for every crate, or CARGO_REGISTRY_TOKEN for first publication. See CONTRIBUTING.md."
+            exit 1
+          fi
       - name: Install release-plz
         run: nix profile install nixpkgs#release-plz
       - name: release-plz release

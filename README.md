@@ -1,5 +1,11 @@
 # ffcine
 
+[![CI](https://github.com/talaagent/ffcine/actions/workflows/ci.yml/badge.svg)](https://github.com/talaagent/ffcine/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/ffcine.svg)](https://crates.io/crates/ffcine)
+[![docs.rs](https://docs.rs/ffcine/badge.svg)](https://docs.rs/ffcine)
+[![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://github.com/talaagent/ffcine/blob/master/Cargo.toml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/talaagent/ffcine/blob/master/LICENSE)
+
 GPU video finishing in Rust. ffcine decodes camera footage, grades it (HDR tone mapping, camera
 LUTs, crop/scale, 3D LUTs, denoise, stabilization, user shaders) and encodes it with the frames
 kept in VRAM end to end: libav* (ffmpeg) for demux/decode/encode/mux on NVDEC/NVENC, libplacebo
@@ -10,7 +16,7 @@ EBU R128, and handles the jobs before and after the edit: card offload, clip cat
 with transcripts, chapters and stills.
 
 It is a set of library crates (`ffcine` is the facade) with the `ffcine` CLI on top. Design:
-[docs/design.md](docs/design.md).
+[docs/design.md](https://github.com/talaagent/ffcine/blob/master/docs/design.md).
 
 ## Requirements
 
@@ -66,9 +72,83 @@ ffcine render --profile master -o master.mp4 timeline.otio
 | `chapters`, `tag`, `credits`, `still`, `publish` | YouTube chapters, chapters and cover art in the MP4, music credits, stills, upload to Immich |
 
 `ffcine <command> --help` has every flag with its default, examples and the docs page to read
-next (`-h` is the brief form); [docs/](docs) has one page per area.
-[skills/](skills) has agent skills: [shot-breakdown](skills/shot-breakdown/SKILL.md) turns a
+next (`-h` is the brief form); [docs/](https://github.com/talaagent/ffcine/blob/master/docs) has one page per area.
+[skills/](https://github.com/talaagent/ffcine/blob/master/skills) has agent skills: [shot-breakdown](https://github.com/talaagent/ffcine/blob/master/skills/shot-breakdown/SKILL.md) turns a
 TikTok, reel or YouTube link into a shot list to recreate it.
+
+## Rust library quickstart
+
+For timeline manipulation, LUT parsing, and pipeline construction without native
+libraries, disable the default GPU features:
+
+```toml
+[dependencies]
+ffcine = { version = "0.3", default-features = false }
+```
+
+```rust
+use ffcine::{Pipeline, Rational, timeline::Timeline};
+
+let rate: Rational = "24000/1001".parse()?;
+assert_eq!(rate.num, 24_000);
+let pipeline = Pipeline::new("input.mov", "output.mkv");
+assert!(pipeline.stages.is_empty());
+let timeline = Timeline::new("Example edit");
+let json = timeline.to_json()?;
+assert_eq!(Timeline::from_json(&json)?, timeline);
+# Ok::<(), ffcine::Error>(())
+```
+
+This constructs values and serializes JSON; it does not open media or use a GPU.
+To run a render, enable default features and install the native requirements above:
+
+```rust,no_run
+# #[cfg(all(feature = "ffmpeg", feature = "placebo"))]
+# fn render() -> ffcine::Result<()> {
+use ffcine::{Backend, Grade, Pipeline, backend::Ffmpeg};
+
+let backend = Ffmpeg::new()?;
+println!("{}", backend.probe("input.mov".as_ref())?);
+Pipeline::new("input.mov", "output.mkv")
+    .grade(Grade::default())
+    .run(&backend)?;
+# Ok(()) }
+```
+
+The [API reference](https://docs.rs/ffcine) describes the portable API; docs.rs
+builds without default features because its builders lack the matching native
+libraries. Generate the complete backend docs locally with
+`nix develop --command cargo doc --workspace --no-deps --open`.
+See [CONTRIBUTING.md](https://github.com/talaagent/ffcine/blob/master/CONTRIBUTING.md)
+for checks, examples, native dependencies, and release instructions.
+
+## Workspace packages
+
+All crates share a version. The published release may lag behind `master`;
+`ffcine-comp` requires its first publication before the current workspace can
+be released in full.
+
+| Crate | crates.io | rustdoc |
+| --- | --- | --- |
+| `ffcine` | [package](https://crates.io/crates/ffcine) | [API docs](https://docs.rs/ffcine) |
+| `ffcine-assembly` | [package](https://crates.io/crates/ffcine-assembly) | [API docs](https://docs.rs/ffcine-assembly) |
+| `ffcine-audio` | [package](https://crates.io/crates/ffcine-audio) | [API docs](https://docs.rs/ffcine-audio) |
+| `ffcine-breakdown` | [package](https://crates.io/crates/ffcine-breakdown) | [API docs](https://docs.rs/ffcine-breakdown) |
+| `ffcine-cli` | [package](https://crates.io/crates/ffcine-cli) | [API docs](https://docs.rs/ffcine-cli) |
+| `ffcine-comp` | [package](https://crates.io/crates/ffcine-comp) | [API docs](https://docs.rs/ffcine-comp) |
+| `ffcine-core` | [package](https://crates.io/crates/ffcine-core) | [API docs](https://docs.rs/ffcine-core) |
+| `ffcine-delivery` | [package](https://crates.io/crates/ffcine-delivery) | [API docs](https://docs.rs/ffcine-delivery) |
+| `ffcine-filters` | [package](https://crates.io/crates/ffcine-filters) | [API docs](https://docs.rs/ffcine-filters) |
+| `ffcine-hooks` | [package](https://crates.io/crates/ffcine-hooks) | [API docs](https://docs.rs/ffcine-hooks) |
+| `ffcine-import` | [package](https://crates.io/crates/ffcine-import) | [API docs](https://docs.rs/ffcine-import) |
+| `ffcine-ingest` | [package](https://crates.io/crates/ffcine-ingest) | [API docs](https://docs.rs/ffcine-ingest) |
+| `ffcine-reframe` | [package](https://crates.io/crates/ffcine-reframe) | [API docs](https://docs.rs/ffcine-reframe) |
+| `ffcine-render` | [package](https://crates.io/crates/ffcine-render) | [API docs](https://docs.rs/ffcine-render) |
+| `ffcine-stabilize` | [package](https://crates.io/crates/ffcine-stabilize) | [API docs](https://docs.rs/ffcine-stabilize) |
+| `ffcine-text` | [package](https://crates.io/crates/ffcine-text) | [API docs](https://docs.rs/ffcine-text) |
+| `ffcine-timeline` | [package](https://crates.io/crates/ffcine-timeline) | [API docs](https://docs.rs/ffcine-timeline) |
+| `ffcine-triage` | [package](https://crates.io/crates/ffcine-triage) | [API docs](https://docs.rs/ffcine-triage) |
+| `ffcine-libplacebo-sys` | [package](https://crates.io/crates/ffcine-libplacebo-sys) | [API docs](https://docs.rs/ffcine-libplacebo-sys) |
 
 ## Development
 
@@ -81,9 +161,16 @@ nix fmt
 
 Tests that need a GPU skip themselves when there is none, so `cargo test` passes on CI runners.
 
+## Security
+
+Report vulnerabilities privately using the instructions in
+[SECURITY.md](https://github.com/talaagent/ffcine/blob/master/SECURITY.md).
+Use [GitHub Issues](https://github.com/talaagent/ffcine/issues) for other bugs and
+feature requests, with the command, native library versions, and a minimal example.
+
 ## License
 
-ffcine is licensed under the [Apache License, Version 2.0](LICENSE).
+ffcine is licensed under the [Apache License, Version 2.0](https://github.com/talaagent/ffcine/blob/master/LICENSE).
 
 No binaries are distributed; build from source. A built `ffcine` links ffmpeg, so its licence
 terms follow the ffmpeg you link: the flake's ffmpeg is configured with `--enable-gpl
