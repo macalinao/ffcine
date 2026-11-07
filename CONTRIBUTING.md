@@ -55,8 +55,12 @@ and the registry secret is used. For existing crates it uses OIDC, falling back
 to the registry secret when OIDC is unavailable.
 Never commit registry tokens. Configure each crate's trusted publisher for owner
 `talaagent`, repository `ffcine`, workflow `release-plz.yml` (no environment).
-`RELEASE_PLZ_TOKEN` is an optional GitHub token for release PRs that trigger CI;
-otherwise organization/repository policy must permit PRs from `GITHUB_TOKEN`.
+The release PR updater requires `RELEASE_PLZ_TOKEN`: a GitHub App token or PAT
+with repository contents, pull-request, and workflow write permissions. The
+built-in `GITHUB_TOKEN` failed to create a release branch after workflow edits;
+the updater now stops early without closing the existing PR when this secret
+is absent. A user/App token also allows release PR updates to trigger CI.
+Publication uses the separate registry credentials described above.
 
 After publication, check each package version on crates.io and the docs.rs build
 status. The published CLI and library may lag behind `master`; source-only crates

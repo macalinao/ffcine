@@ -20,6 +20,16 @@ jobs:
       group: release-plz-${{ github.ref }}
       cancel-in-progress: false
     steps:
+      # GITHUB_TOKEN failed to create a release branch after workflow edits.
+      # Stop before release-plz can close the existing PR as a recovery action.
+      - name: Require release PR credentials
+        env:
+          HAS_RELEASE_PLZ_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN != '' }}
+        run: |
+          if [ "$HAS_RELEASE_PLZ_TOKEN" != true ]; then
+            echo "::error::Configure RELEASE_PLZ_TOKEN with repository contents, pull-request, and workflow write permissions. GITHUB_TOKEN could not create the release branch. See CONTRIBUTING.md."
+            exit 1
+          fi
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
@@ -40,7 +50,7 @@ jobs:
           nix profile install --inputs-from . nixpkgs#cargo-semver-checks
       - uses: release-plz/git-config@59144859caf016f8b817a2ac9b051578729173c4
         env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
       # The semver check builds the published crates, which link libav* and
       # libplacebo, so this also runs in the nix dev shell.
       - name: release-plz release-pr
@@ -49,7 +59,7 @@ jobs:
           --git-token "$GITHUB_TOKEN"
           --repo-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
         env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
 
   # Publishes unpublished versions to crates.io, tags them and creates the
   # GitHub release. The token comes from trusted publishing; a crate's first
