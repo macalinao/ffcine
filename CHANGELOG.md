@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/talaagent/ffcine/compare/v0.3.0...v0.4.0) - 2026-11-06
+
+### Added
+
+- *(comp)* per-layer grade (compositing step 4, BUK-104) ([#26](https://github.com/talaagent/ffcine/pull/26))
+- *(comp)* media layers (compositing step 3, BUK-100) ([#24](https://github.com/talaagent/ffcine/pull/24))
+- compositor core, ffcine-comp (compositing step 2, BUK-98) ([#23](https://github.com/talaagent/ffcine/pull/23))
+- param tracks and expressions (compositing step 1) ([#21](https://github.com/talaagent/ffcine/pull/21))
+
+### Other
+
+- Compositing step 7: templates, ffcine.comp clips, unit lowering, comp lower/new (BUK-101) ([#29](https://github.com/talaagent/ffcine/pull/29))
+- Compositing step 6: libavfilter filter node on layers (BUK-105) ([#28](https://github.com/talaagent/ffcine/pull/28))
+- per-layer time remap (speed, source, freeze, reverse) for comps ([#27](https://github.com/talaagent/ffcine/pull/27))
+- move repository to talaagent/ffcine ([#25](https://github.com/talaagent/ffcine/pull/25))
+
 ## [0.3.0](https://github.com/talaagent/ffcine/compare/v0.2.0...v0.3.0) - 2026-11-02
 
 ### Added
