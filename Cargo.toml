@@ -16,7 +16,7 @@ readme = "README.md"
 authors = ["Ian Macalinao <me@ianm.com>"]
 keywords = ["video", "ffmpeg", "libplacebo", "vulkan", "color-grading"]
 categories = ["multimedia::video"]
-rust-version = "1.85"
+rust-version = "1.89"
 
 [workspace.dependencies]
 # Internal crates
@@ -41,47 +41,50 @@ ffcine-breakdown = { path = "crates/ffcine-breakdown", version = "0.4.0", defaul
 libplacebo-sys = { package = "ffcine-libplacebo-sys", path = "crates/libplacebo-sys", version = "0.4.0" }
 
 # External
-anyhow = "1"
-thiserror = "2"
+anyhow = "1.0.104"
+thiserror = "2.0.21"
 # OTIO JSON timeline model: key order kept, floats written back bit-exact.
-serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.154", features = [
+  "preserve_order",
+  "float_roundtrip",
+] }
 # FCPXML and MLT XML importers.
-roxmltree = "0.21"
+roxmltree = "0.21.2"
 # Text layout and rasterising for ffcine.text clips.
-cosmic-text = { version = "0.19", default-features = false, features = [
+cosmic-text = { version = "0.19.0", default-features = false, features = [
   "std",
   "swash",
   "fontconfig",
 ] }
 # edit.yaml importer.
-yaml_serde = "0.10"
+yaml_serde = "0.10.7"
 # Content keys of the assembly recipe cache.
-sha2 = "0.10"
+sha2 = "0.11.1"
 # Contact sheets and JPEG stills (`ffcine looks`).
-image = { version = "0.25", default-features = false, features = [
+image = { version = "0.25.10", default-features = false, features = [
   "png",
   "jpeg",
 ] }
 # Chapters and cover art written into finished MP4s.
-mp4-atom = "0.17"
+mp4-atom = "0.17.1"
 # Ingest checksums (verify copies against the card).
-blake3 = "1"
+blake3 = "1.8.7"
 # Command-line parsing, derive API.
-bpaf = { version = "0.9", features = ["derive"] }
+bpaf = { version = "0.9.28", features = ["derive"] }
 # libav* demux/decode/encode/mux; tracks ffmpeg majors (9.x <-> ffmpeg 9).
-ffmpeg-next = "9"
-bindgen = "0.73"
-pkg-config = "0.3"
-cc = "1"
+ffmpeg-next = "9.0.0"
+bindgen = "0.73.2"
+pkg-config = "0.3.34"
+cc = "1.11.1"
 # Audio: EBU R128 loudness and true peak, WAV I/O (32-bit float), FFT cross-correlation.
-ebur128 = "0.1"
-hound = "3"
-rustfft = "6"
+ebur128 = "0.1.11"
+hound = "3.5.1"
+rustfft = "6.4.1"
 # dlopen of the NVIDIA driver libraries (CUDA, optical flow) at run time.
-libloading = "0.8"
-# Camera gyro and attitude metadata (optional, `telemetry`). 0.2.6 is the last crates.io release.
-telemetry-parser = "0.2.6"
+libloading = "0.9.0"
+# Camera gyro and attitude metadata (optional, `telemetry`). kept current with the upstream stable release.
+telemetry-parser = "0.4.0"
 
 # PNG decode and JPEG encode in `ffcine looks` are unusably slow unoptimised.
 [profile.dev.package.image]

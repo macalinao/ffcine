@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.4.0](https://github.com/talaagent/ffcine/compare/v0.3.0...v0.4.0) - 2026-11-06
+## [0.4.0](https://github.com/talaagent/ffcine/compare/v0.3.0...v0.4.0) - 2026-11-07
 
 ### Added
 
@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - param tracks and expressions (compositing step 1) ([#21](https://github.com/talaagent/ffcine/pull/21))
 
 ### Other
+
+- Refresh direct dependencies and lockfiles, including telemetry-parser 0.4 and SHA-2 0.11; require Rust 1.89.
+- Use cargo-nextest in CI and Nix, retain separate doctests, and enable weekly dependency checks.
+- Build portable docs on docs.rs and include shared README/license files in Nix source archives.
 
 - Compositing step 7: templates, ffcine.comp clips, unit lowering, comp lower/new (BUK-101) ([#29](https://github.com/talaagent/ffcine/pull/29))
 - Compositing step 6: libavfilter filter node on layers (BUK-105) ([#28](https://github.com/talaagent/ffcine/pull/28))

@@ -23,10 +23,10 @@ ffcine-ingest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-image = { version = "0.25", default-features = false, features = ["jpeg"] }
+image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
 ffmpeg-next = { workspace = true, optional = true }
 # Immich API (clip locations); plain HTTP on the LAN.
-ureq = { version = "3", default-features = false, features = ["json"] }
+ureq = { version = "3.5.1", default-features = false, features = ["json"] }
 
 [lints]
 workspace = true

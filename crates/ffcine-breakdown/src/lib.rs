@@ -205,7 +205,7 @@ fn median(sorted: &[f64]) -> f64 {
     let n = sorted.len();
     match n {
         0 => 0.0,
-        _ if n % 2 == 0 => f64::midpoint(sorted[n / 2 - 1], sorted[n / 2]),
+        _ if n.is_multiple_of(2) => f64::midpoint(sorted[n / 2 - 1], sorted[n / 2]),
         _ => sorted[n / 2],
     }
 }

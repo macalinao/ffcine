@@ -866,18 +866,18 @@ impl GradeArgs {
                 Some(peak) => profile.camera_lut_hdr(peak)?,
                 None => profile.camera_lut(&camera::lut_dirs())?,
             };
-            if let Some(cam) = cam {
-                if let Some(ffcine::Stage::Grade(g)) = p.stages.first_mut() {
-                    if profile.as_str().starts_with("dlog") && !no_deband {
-                        g.deband.get_or_insert_with(Deband::default);
-                    }
-                    g.input_color.primaries.get_or_insert(cam.primaries);
-                    g.input_color.transfer.get_or_insert(cam.transfer);
-                    g.input_lut = Some(LutStage {
-                        lut: cam.lut,
-                        kind: LutType::Normalized,
-                    });
+            if let Some(cam) = cam
+                && let Some(ffcine::Stage::Grade(g)) = p.stages.first_mut()
+            {
+                if profile.as_str().starts_with("dlog") && !no_deband {
+                    g.deband.get_or_insert_with(Deband::default);
                 }
+                g.input_color.primaries.get_or_insert(cam.primaries);
+                g.input_color.transfer.get_or_insert(cam.transfer);
+                g.input_lut = Some(LutStage {
+                    lut: cam.lut,
+                    kind: LutType::Normalized,
+                });
             }
         }
         if let Some(params) = stab {

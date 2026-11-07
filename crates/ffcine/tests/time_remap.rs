@@ -100,7 +100,9 @@ fn oracle(n: u32, setpts: &str, fps: u32) -> Vec<i64> {
     let raw = ffmpeg(&[
         "-f", "lavfi", "-i", &src, "-vf", &vf, "-f", "rawvideo", "-pix_fmt", "gray16le", "-",
     ]);
-    raw.chunks_exact(16 * 16 * 2)
+    raw.as_chunks::<{ 16 * 16 * 2 }>()
+        .0
+        .iter()
         .map(|f| i64::from(u16::from_le_bytes([f[0], f[1]])))
         .collect()
 }

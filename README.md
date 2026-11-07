@@ -3,7 +3,7 @@
 [![CI](https://github.com/talaagent/ffcine/actions/workflows/ci.yml/badge.svg)](https://github.com/talaagent/ffcine/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/ffcine.svg)](https://crates.io/crates/ffcine)
 [![docs.rs](https://docs.rs/ffcine/badge.svg)](https://docs.rs/ffcine)
-[![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://github.com/talaagent/ffcine/blob/master/Cargo.toml)
+[![Rust 1.89+](https://img.shields.io/badge/rust-1.89%2B-orange.svg)](https://github.com/talaagent/ffcine/blob/master/Cargo.toml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/talaagent/ffcine/blob/master/LICENSE)
 
 GPU video finishing in Rust. ffcine decodes camera footage, grades it (HDR tone mapping, camera
@@ -153,12 +153,12 @@ use the Git repository when you need changes that have not reached crates.io.
 
 ```sh
 nix develop            # or direnv; installs the git hooks
-cargo build && cargo test
+cargo build && cargo nextest run --workspace && cargo test --workspace --doc
 cargo clippy --workspace --all-targets -- -D warnings
 nix fmt
 ```
 
-Tests that need a GPU skip themselves when there is none, so `cargo test` passes on CI runners.
+Tests that need a GPU skip themselves when there is none, so `cargo nextest run` passes on CI runners.
 
 ## Security
 

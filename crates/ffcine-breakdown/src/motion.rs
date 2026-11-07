@@ -28,7 +28,9 @@ impl Luma {
     /// BT.709 luma of packed RGB24.
     pub fn from_rgb(rgb: &[u8], w: usize, h: usize) -> Self {
         let px = rgb
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .take(w * h)
             .map(|p| 0.2126 * f32::from(p[0]) + 0.7152 * f32::from(p[1]) + 0.0722 * f32::from(p[2]))
             .collect();

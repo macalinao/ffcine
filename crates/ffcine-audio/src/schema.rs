@@ -485,13 +485,13 @@ pub fn clip_effect<T: for<'de> Deserialize<'de>>(clip: &Clip, name: &str) -> Res
         let Some(params) = g.ffcine() else {
             return Ok(Some(serde_json::from_value(Value::Object(Map::new()))?));
         };
-        if let Some(schema) = params.get("schema").and_then(Value::as_str) {
-            if schema != format!("{name}/1") {
-                return Err(Error::Invalid {
-                    what: "audio effect schema",
-                    value: schema.to_owned(),
-                });
-            }
+        if let Some(schema) = params.get("schema").and_then(Value::as_str)
+            && schema != format!("{name}/1")
+        {
+            return Err(Error::Invalid {
+                what: "audio effect schema",
+                value: schema.to_owned(),
+            });
         }
         return Ok(Some(serde_json::from_value(Value::Object(params.clone()))?));
     }

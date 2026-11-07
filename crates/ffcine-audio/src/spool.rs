@@ -105,7 +105,7 @@ impl Spool {
             .map_err(io_err(&self.path))?;
         let mut out = vec![Vec::with_capacity(len); self.channels];
         for frame in bytes.chunks_exact(self.channels * SAMPLE) {
-            for (c, s) in out.iter_mut().zip(frame.chunks_exact(SAMPLE)) {
+            for (c, s) in out.iter_mut().zip(frame.as_chunks::<SAMPLE>().0.iter()) {
                 c.push(f32::from_ne_bytes([s[0], s[1], s[2], s[3]]));
             }
         }

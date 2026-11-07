@@ -181,7 +181,7 @@ impl Layout {
         let t0 = i as f64 * self.stagger - if self.first_static { 0.0 } else { 0.16 };
         let u = ((t - t0) / self.slide.max(1e-6)).clamp(0.0, 1.0);
         let e = 1.0 - (1.0 - u).powi(3);
-        let d = if i % 2 == 0 { 1.0 } else { -1.0 };
+        let d = if i.is_multiple_of(2) { 1.0 } else { -1.0 };
         if self.kind == "column" {
             [d * f64::from(w) * (1.0 - e), 0.0]
         } else {

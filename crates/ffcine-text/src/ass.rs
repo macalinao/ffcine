@@ -244,10 +244,10 @@ fn style_params(s: &AssStyle, play_res: [f64; 2], k: f64, frac: bool) -> Map<Str
             json!({"colour": back, "offset": [px(d), px(d)], "blur": 0.0}),
         );
     }
-    if let Some(sp) = num("Spacing").filter(|v| *v != 0.0) {
-        if let Some(size) = num("Fontsize").filter(|v| *v > 0.0) {
-            m.insert("tracking".into(), json!(sp / size));
-        }
+    if let Some(sp) = num("Spacing").filter(|v| *v != 0.0)
+        && let Some(size) = num("Fontsize").filter(|v| *v > 0.0)
+    {
+        m.insert("tracking".into(), json!(sp / size));
     }
     let an = num("Alignment").map_or(2, numpad);
     let margin = |n: &str| num(n).unwrap_or(10.0);

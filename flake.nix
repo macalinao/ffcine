@@ -70,6 +70,8 @@
             buildInputs = [ pkgs.ffmpeg ] ++ pkgs.lib.optional pkgs.stdenv.hostPlatform.isDarwin pkgs.libiconv;
             packages = [
               pkgs.cargo
+              pkgs.cargo-nextest
+              pkgs.cargo-deny
               pkgs.rustc
               pkgs.clippy
               pkgs.rustfmt
@@ -90,6 +92,18 @@
               ];
             };
             cargoLock.lockFile = ./Cargo.lock;
+            useNextest = true;
+            postCheck = ''
+              cargo test --workspace --all-features --doc --offline --release
+            '';
+            cargoBuildFlags = [
+              "--workspace"
+              "--all-features"
+            ];
+            cargoTestFlags = [
+              "--workspace"
+              "--all-features"
+            ];
             # bindgenHook points bindgen (ffmpeg-sys-next, libplacebo-sys) at libclang.
             nativeBuildInputs = [
               pkgs.pkg-config
@@ -151,6 +165,8 @@
             inputsFrom = [ ffcine ];
             packages = [
               pkgs.cargo
+              pkgs.cargo-nextest
+              pkgs.cargo-deny
               pkgs.rustc
               pkgs.clippy
               pkgs.rustfmt

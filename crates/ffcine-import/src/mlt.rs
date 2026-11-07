@@ -181,11 +181,11 @@ impl Doc {
     /// Registers every service with an id, including ones defined inline.
     fn collect(&mut self, e: &Element) {
         for c in &e.children {
-            if SERVICES.contains(&c.name.as_str()) {
-                if let Some(id) = c.attr("id") {
-                    self.order.push(id.to_owned());
-                    self.services.insert(id.to_owned(), Node::new(c));
-                }
+            if SERVICES.contains(&c.name.as_str())
+                && let Some(id) = c.attr("id")
+            {
+                self.order.push(id.to_owned());
+                self.services.insert(id.to_owned(), Node::new(c));
             }
             self.collect(c);
         }

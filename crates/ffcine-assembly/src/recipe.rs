@@ -111,7 +111,13 @@ impl Fingerprinter for FsFingerprinter {
 
     fn content_hash(&self, path: &Path) -> Option<String> {
         let bytes = std::fs::read(path).ok()?;
-        Some(Key::of(&Value::String(format!("{:x}", Sha256::digest(&bytes)))).0)
+        let hash = Sha256::digest(&bytes)
+            .iter()
+            .fold(String::new(), |mut s, b| {
+                let _ = write!(s, "{b:02x}");
+                s
+            });
+        Some(Key::of(&Value::String(hash)).0)
     }
 
     /// Of `$FFMPEG` (default `ffmpeg` on the `PATH`, as the renderer runs it), asked once.

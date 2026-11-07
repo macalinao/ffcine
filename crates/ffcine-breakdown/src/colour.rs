@@ -23,7 +23,7 @@ impl Sample {
         let mut sat = 0f64;
         let mut hist = [0u32; BINS];
         let mut n = 0usize;
-        for p in rgb.chunks_exact(3) {
+        for p in rgb.as_chunks::<3>().0 {
             let (r, g, b) = (f32::from(p[0]), f32::from(p[1]), f32::from(p[2]));
             sum[0] += f64::from(r);
             sum[1] += f64::from(g);

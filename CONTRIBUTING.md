@@ -7,13 +7,14 @@ remove private metadata, credentials, and identifying footage first.
 
 ## Development
 
-Rust 1.85 is the declared minimum. Use the pinned Nix shell for the matching
+Rust 1.89 is the declared minimum. Use the pinned Nix shell for the matching
 ffmpeg 9, libplacebo, Vulkan headers, font libraries, Clang, and Rust toolchain.
 See [the design guide](docs/design.md#crates) for the crate map.
 
 ```sh
 nix develop --command cargo fmt --all --check
-nix develop --command nice -n 19 cargo test --workspace --locked
+nix develop --command nice -n 19 cargo nextest run --workspace --locked
+nix develop --command cargo test --workspace --doc --locked
 nix develop --command nice -n 19 cargo clippy --workspace --all-targets --locked -- -D warnings
 RUSTDOCFLAGS="-D warnings" nix develop --command nice -n 19 cargo doc --workspace --no-deps --locked
 ```
@@ -80,3 +81,11 @@ must be published in dependency order as part of the release.
 Contributions use Apache-2.0. Preserve fixture and shader notices. A built binary's
 redistribution terms also depend on the ffmpeg configuration; see the root
 [license notes](README.md#license).
+
+Use `jiff` for date/time handling; do not add a direct `chrono` dependency.
+The Nix dev shell supplies Rust, Cargo, Clippy, rustfmt, and cargo-nextest.
+
+The optional `telemetry` feature uses upstream camera parsers that still depend
+on Chrono and unmaintained YAML helpers. Those exceptions are limited in
+`deny.toml`; the normal GPU/audio features do not enable telemetry. Application
+code must use Jiff, and newly introduced Chrono edges fail cargo-deny.
