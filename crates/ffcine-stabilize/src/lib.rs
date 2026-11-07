@@ -1,15 +1,15 @@
 //! Video stabilization: optical-flow motion detect on the GPU, camera path smoothing on the CPU,
 //! and a per-frame warp ([`Mat3`], output pixel -> source pixel) for the grade pass.
 //!
-//! 1. [`detect`] (feature `nvof`): NVDEC decode, `scale_cuda` to an analysis size, NVIDIA
+//! 1. `detect` (feature `nvof`): NVDEC decode, `scale_cuda` to an analysis size, NVIDIA
 //!    optical flow between consecutive frames, a robust similarity per frame
-//!    ([`motion::estimate`]). Cached on disk by source and parameters ([`detect_cached`]).
+//!    ([`motion::estimate`]). Cached on disk by source and parameters (`detect_cached`).
 //! 2. [`stabilize`]: the camera path, vidstab's Gaussian smoothing, and the static zoom that
 //!    keeps every frame free of black borders. Cheap, so it is recomputed every time.
 //! 3. [`hook::warp_hook`]: the warps as an mpv `.hook` for libplacebo.
 //!
 //! [`gyro`] is the other way to get the motions of step 1, from what the camera recorded;
-//! [`detect_motion`] chooses between them.
+//! `detect_motion` chooses between them.
 
 // Numeric code: pixel counts and grid indices convert to f64 and back all over, always in range.
 #![allow(
@@ -130,7 +130,7 @@ pub struct MotionOptions {
     pub gyro: GyroParams,
 }
 
-/// What [`detect_motion`] found, and how.
+/// What `detect_motion` found, and how.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MotionDetection {
     pub detection: Detection,
@@ -285,7 +285,7 @@ pub struct Jitter {
     pub confidence: f64,
 }
 
-/// [`Jitter`] of `motions` (as from [`detect`]), skipping the frame pairs ending at the indices
+/// [`Jitter`] of `motions` (as from `detect`), skipping the frame pairs ending at the indices
 /// in `exclude` (cuts, punch-ins) in both the smoothing and the RMS.
 pub fn jitter(motions: &[Motion], sigma: f64, exclude: &[usize]) -> Jitter {
     let keep: Vec<usize> = (1..motions.len())

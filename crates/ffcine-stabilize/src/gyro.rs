@@ -1,10 +1,10 @@
 //! Camera motion from recorded attitude or gyro readings instead of optical flow: per-frame
 //! rotation between frames, projected through a focal length to the same [`Motion`]s
-//! [`detect`](crate::detect) produces, so smoothing, zoom and warp don't change.
+//! `detect` produces, so smoothing, zoom and warp don't change.
 //!
 //! Everything here works in image axes: `x` right, `y` down, `z` forward (right-handed), with an
 //! attitude `q` taking camera rays to the world. The rotation from frame `k` to `k - 1` is then
-//! `q[k-1]^-1 * q[k]`. The readers (`read`, behind [`detect_motion`](crate::detect_motion), and
+//! `q[k-1]^-1 * q[k]`. The readers (`read`, behind `detect_motion`, and
 //! feature `nvof`) convert to these axes.
 
 use crate::motion::Motion;

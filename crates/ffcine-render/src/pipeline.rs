@@ -163,7 +163,7 @@ impl Pipeline {
 }
 
 /// An implementation of ffcine's operations. The library's types don't depend on any backend;
-/// the ffmpeg + libplacebo one is [`crate::backend::Ffmpeg`].
+/// the ffmpeg + libplacebo one is `crate::backend::Ffmpeg` (feature `ffmpeg`).
 pub trait Backend {
     fn name(&self) -> &'static str;
     fn probe(&self, path: &Path) -> Result<MediaInfo>;
