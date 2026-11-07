@@ -83,7 +83,7 @@ libraries, disable the default GPU features:
 
 ```toml
 [dependencies]
-ffcine = { version = "0.3", default-features = false }
+ffcine = { version = "0.4", default-features = false }
 ```
 
 ```rust
@@ -125,8 +125,7 @@ for checks, examples, native dependencies, and release instructions.
 ## Workspace packages
 
 All crates share a version. The published release may lag behind `master`;
-`ffcine-comp` requires its first publication before the current workspace can
-be released in full.
+use the Git repository when you need changes that have not reached crates.io.
 
 | Crate | crates.io | rustdoc |
 | --- | --- | --- |
