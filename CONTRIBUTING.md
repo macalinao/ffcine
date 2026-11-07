@@ -50,7 +50,9 @@ its Actions run before checks start.
 
 A crate's first publication needs a crates.io token; trusted publishing cannot
 create it. `ffcine-comp` still needs its first publication. The workflow supports
-`CARGO_REGISTRY_TOKEN` for bootstrap, falling back to it when OIDC is unavailable.
+`CARGO_REGISTRY_TOKEN` for bootstrap: when any crate is missing, OIDC is skipped
+and the registry secret is used. For existing crates it uses OIDC, falling back
+to the registry secret when OIDC is unavailable.
 Never commit registry tokens. Configure each crate's trusted publisher for owner
 `talaagent`, repository `ffcine`, workflow `release-plz.yml` (no environment).
 `RELEASE_PLZ_TOKEN` is an optional GitHub token for release PRs that trigger CI;
