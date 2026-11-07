@@ -266,19 +266,19 @@ pub fn grade(mut args: GradeArgs, ff: &dyn Backend) -> anyhow::Result<()> {
         let secs = s.frames as f64 / out_fps;
         let audio = (ffcine::profile::AUDIO_BITRATE as f64 * secs / 8.0) as u64;
         let size = std::fs::metadata(&p.output)?.len();
-        if size + audio > cap {
-            if let RateControl::Bitrate(b) = p.encoder.rate {
-                let k = cap.saturating_sub(audio) as f64 / size as f64 * 0.97;
-                p.encoder.rate = RateControl::Bitrate((b as f64 * k) as u64);
-                eprintln!(
-                    "{:.2} MB (with audio) is over the {:.2} MB budget: second pass at {}",
-                    (size + audio) as f64 / 1e6,
-                    cap as f64 / 1e6,
-                    p.encoder.rate
-                );
-                let s = p.run(ff)?;
-                report(&p.output, &s);
-            }
+        if size + audio > cap
+            && let RateControl::Bitrate(b) = p.encoder.rate
+        {
+            let k = cap.saturating_sub(audio) as f64 / size as f64 * 0.97;
+            p.encoder.rate = RateControl::Bitrate((b as f64 * k) as u64);
+            eprintln!(
+                "{:.2} MB (with audio) is over the {:.2} MB budget: second pass at {}",
+                (size + audio) as f64 / 1e6,
+                cap as f64 / 1e6,
+                p.encoder.rate
+            );
+            let s = p.run(ff)?;
+            report(&p.output, &s);
         }
     }
     faststart(&p.output)

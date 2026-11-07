@@ -354,7 +354,7 @@ fn stts(r: &mut Reader, b: BoxHdr, timescale: u32, t: &mut Track) -> io::Result<
     let (mut count, mut total) = (0u64, 0u64);
     // The dominant (longest) run sets the rate; a short last entry is common.
     let mut best = (0u64, 0u32);
-    for e in p[8..].chunks_exact(8).take(n) {
+    for e in p[8..].as_chunks::<8>().0.iter().take(n) {
         let (c, d) = (u64::from(be32(&e[0..4])), be32(&e[4..8]));
         count += c;
         total += c * u64::from(d);

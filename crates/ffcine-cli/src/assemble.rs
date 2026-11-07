@@ -177,10 +177,10 @@ impl RenderArgs {
             let Some(src) = r.path().map(|m| base.join(m)) else {
                 continue;
             };
-            if let Some(out) = assembly::proxy::needed(&src, dir, &fp) {
-                if !todo.iter().any(|(s, _)| *s == src) {
-                    todo.push((src, out));
-                }
+            if let Some(out) = assembly::proxy::needed(&src, dir, &fp)
+                && !todo.iter().any(|(s, _)| *s == src)
+            {
+                todo.push((src, out));
             }
         }
         let ffmpeg = std::env::var_os("FFMPEG").unwrap_or_else(|| "ffmpeg".into());

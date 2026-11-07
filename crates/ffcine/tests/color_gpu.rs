@@ -87,7 +87,9 @@ fn rgb48(path: &Path, matrix: &str, post: &str) -> Vec<u16> {
          format=gbrp16le,{post}format=rgb48le"
     );
     let b = ffmpeg(&["-i", p, "-vf", &vf, "-f", "rawvideo", "-"]);
-    b.chunks_exact(2)
+    b.as_chunks::<2>()
+        .0
+        .iter()
         .map(|c| u16::from_le_bytes([c[0], c[1]]))
         .collect()
 }

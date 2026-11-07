@@ -22,7 +22,7 @@
 //!
 //! # Portable API
 //!
-//! Use `ffcine = { version = "0.3", default-features = false }` for timeline
+//! Use `ffcine = { version = "0.4", default-features = false }` for timeline
 //! editing, LUT parsing, and pipeline construction without native dependencies.
 //!
 //! ```

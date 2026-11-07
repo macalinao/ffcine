@@ -434,13 +434,13 @@ fn top_level(f: &mut File, path: &Path) -> Result<Vec<Top>> {
 /// Writes `input` with `tags` to `output` (a different path; see [`write_in_place`]).
 #[allow(clippy::too_many_lines)]
 pub fn write(input: &Path, output: &Path, tags: &Tags) -> Result<()> {
-    if let Some(c) = &tags.cover {
-        if image_type(c).is_none() {
-            return Err(invalid(
-                "cover image (JPEG or PNG)",
-                format!("{} bytes", c.len()),
-            ));
-        }
+    if let Some(c) = &tags.cover
+        && image_type(c).is_none()
+    {
+        return Err(invalid(
+            "cover image (JPEG or PNG)",
+            format!("{} bytes", c.len()),
+        ));
     }
     let mut f = File::open(input).map_err(io(input))?;
     let top = top_level(&mut f, input)?;

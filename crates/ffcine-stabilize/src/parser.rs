@@ -72,7 +72,6 @@ pub fn read(path: &Path) -> Result<Telemetry, String> {
     let parse = || -> Result<Telemetry, String> {
         let mut f = std::fs::File::open(path).map_err(|e| e.to_string())?;
         let size = f.metadata().map_err(|e| e.to_string())?.len();
-        let size = usize::try_from(size).map_err(|e| e.to_string())?;
         let cancel = Arc::new(AtomicBool::new(false));
         let input = Input::from_stream(&mut f, size, path, |_| (), cancel)
             .map_err(|e| format!("telemetry-parser: {e}"))?;

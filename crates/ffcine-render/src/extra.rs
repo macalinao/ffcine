@@ -411,7 +411,7 @@ fn hook(f: &Filter) -> Result<(Option<Hook>, Vec<String>), String> {
                 let v = n(i, 5.0)?;
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                 let s = v.round().clamp(3.0, 23.0) as u32;
-                if s % 2 == 0 {
+                if s.is_multiple_of(2) {
                     return Err(format!("extra filter unsharp: size {s} must be odd"));
                 }
                 Ok(s)

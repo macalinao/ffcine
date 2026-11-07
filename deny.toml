@@ -7,8 +7,8 @@ yanked = "deny"
 ignore = [
   # ttf-parser unmaintained: transitive through cosmic-text (rustybuzz), no fix to take yet.
   { id = "RUSTSEC-2026-0192", reason = "transitive via cosmic-text" },
-  # Unmaintained, transitive through telemetry-parser 0.2.6 (optional feature `telemetry`).
-  { id = "RUSTSEC-2024-0375", reason = "atty via telemetry-parser" },
+  # Optional telemetry-parser has no feature to replace its upstream YAML reader.
+  { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml via optional telemetry-parser; no upstream replacement available" },
   { id = "RUSTSEC-2024-0436", reason = "paste via telemetry-parser" },
 ]
 
@@ -26,10 +26,18 @@ allow = [
 confidence-threshold = 0.9
 # mp4parse comes in through telemetry-parser (optional feature `telemetry`).
 [[licenses.exceptions]]
-crate = "mp4parse"
+crate = "mp4parse-patched"
 allow = ["MPL-2.0"]
 
 [bans]
+# Upstream camera metadata parsing still uses Chrono internally.
+# Application crates must use Jiff; only this upstream edge is permitted.
+deny = [
+  { name = "chrono", wrappers = [
+    "telemetry-parser",
+    "fc-blackbox-patched",
+  ], reason = "Use jiff in application code" },
+]
 multiple-versions = "warn"
 wildcards = "deny"
 # ffcine-assembly's path-only ffcine-import dev-dependency (dropped on publish).

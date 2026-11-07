@@ -4,6 +4,7 @@ on:
   push:
     branches: [master]
   pull_request: {}
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -32,7 +33,7 @@ jobs:
         run: nix develop --command cargo fmt --all --check
 
       - name: cargo clippy
-        run: nix develop --command cargo clippy --workspace --all-targets -- -D warnings
+        run: nix develop --command cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
       - name: cargo doc
         run: nix develop --command cargo doc --no-deps --workspace
@@ -40,8 +41,11 @@ jobs:
           RUSTDOCFLAGS: -D warnings
 
       # No GPU on the runner: tests needing one skip themselves.
-      - name: cargo test
-        run: nix develop --command cargo test --workspace
+      - name: cargo nextest
+        run: nix develop --command cargo nextest run --profile ci --workspace --all-features --locked
+
+      - name: Rustdoc examples
+        run: nix develop --command cargo test --workspace --all-features --doc --locked
 
       # Catches a broken crates.io package before release-plz publishes it.
       - name: cargo publish --dry-run
@@ -75,8 +79,11 @@ jobs:
       - name: cargo build (audio)
         run: nix develop .#audio --command cargo build -p ffcine-cli --no-default-features --features audio
 
-      - name: cargo test (audio)
-        run: nix develop .#audio --command cargo test -p ffcine-audio
+      - name: cargo nextest (audio)
+        run: nix develop .#audio --command cargo nextest run --profile ci -p ffcine-audio --locked
+
+      - name: Rustdoc examples (audio)
+        run: nix develop .#audio --command cargo test -p ffcine-audio --doc --locked
 
   portable-docs:
     name: docs.rs portable builds
