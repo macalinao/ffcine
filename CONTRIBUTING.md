@@ -48,19 +48,22 @@ a release PR is merged. Review version bumps and changelog entries and require
 passing CI before merging. An existing release PR may need a maintainer to approve
 its Actions run before checks start.
 
+Release automation uses **release-plz** for both release PRs and publishing.
 A crate's first publication needs a crates.io token; trusted publishing cannot
-create it. `ffcine-comp` still needs its first publication. The workflow supports
-`CARGO_REGISTRY_TOKEN` for bootstrap: when any crate is missing, OIDC is skipped
-and the registry secret is used. For existing crates it uses OIDC, falling back
-to the registry secret when OIDC is unavailable.
-Never commit registry tokens. Configure each crate's trusted publisher for owner
-`talaagent`, repository `ffcine`, workflow `release-plz.yml` (no environment).
+create it. `CARGO_REGISTRY_TOKEN` is configured as a repository Actions secret,
+so release-plz can publish `ffcine-comp` and any future new crates alongside
+the existing workspace packages.
+
 The release PR updater requires `RELEASE_PLZ_TOKEN`: a GitHub App token or PAT
 with repository contents, pull-request, and workflow write permissions. The
 built-in `GITHUB_TOKEN` failed to create a release branch after workflow edits;
-the updater now stops early without closing the existing PR when this secret
-is absent. A user/App token also allows release PR updates to trigger CI.
-Publication uses the separate registry credentials described above.
+the updater stops early without closing the existing PR when this secret is
+absent. The user/App token also allows release PR updates to trigger CI.
+
+For tokenless registry publication, configure every crate's trusted publisher
+for owner `talaagent`, repository `ffcine`, workflow `release-plz.yml` (no
+environment), then remove the registry secret. Release-plz obtains OIDC
+credentials itself. New crates still need a token for first publication.
 
 After publication, check each package version on crates.io and the docs.rs build
 status. The published CLI and library may lag behind `master`; source-only crates

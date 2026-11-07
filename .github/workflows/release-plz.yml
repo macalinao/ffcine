@@ -62,8 +62,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
 
   # Publishes unpublished versions to crates.io, tags them and creates the
-  # GitHub release. The token comes from trusted publishing; a crate's first
-  # publish can't use it, so CARGO_REGISTRY_TOKEN (a secret) covers that.
+  # GitHub release. The registry secret supports first publication too;
+  # without a secret, release-plz can obtain trusted-publishing credentials.
   # The crates link libav* and libplacebo, so publishing (which builds each
   # package) runs in the nix dev shell. With release_always = false it only
   # publishes when the commit comes from a merged release PR (a `release-plz-`
@@ -91,43 +91,10 @@ jobs:
         with:
           name: nix-community
           skipPush: true
-      # An OIDC token can only publish existing trusted crates. If the
-      # workspace adds a crate, its first upload needs the registry secret.
-      - name: Check for first publications
-        id: registry
-        run: |
-          metadata=$(nix develop --command cargo metadata --no-deps --format-version 1)
-          bootstrap=false
-          while read -r name; do
-            code=$(curl --silent --show-error --retry 3 -o /dev/null -w '%{http_code}' \
-              -H "User-Agent: $GITHUB_REPOSITORY release workflow" "https://crates.io/api/v1/crates/$name")
-            case "$code" in
-              200) ;;
-              404)
-                bootstrap=true
-                echo "::notice::$name needs its first publication using CARGO_REGISTRY_TOKEN."
-                echo "- $name needs bootstrap publication in the next merged release PR." >> "$GITHUB_STEP_SUMMARY"
-                ;;
-              *) echo "::error::crates.io lookup for $name returned HTTP $code"; exit 1 ;;
-            esac
-          done < <(jq -r '.packages[] | select(.publish != []) | .name' <<< "$metadata")
-          echo "bootstrap=$bootstrap" >> "$GITHUB_OUTPUT"
-      - uses: rust-lang/crates-io-auth-action@v1
-        if: steps.registry.outputs.bootstrap != 'true'
-        id: auth
-        continue-on-error: true
-      - name: Verify publishing credentials
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token || secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          if [ -z "$CARGO_REGISTRY_TOKEN" ]; then
-            echo "::error::No crates.io credentials. Configure trusted publishing for every crate, or CARGO_REGISTRY_TOKEN for first publication. See CONTRIBUTING.md."
-            exit 1
-          fi
       - name: Install release-plz
         run: nix profile install nixpkgs#release-plz
       - name: release-plz release
         run: nix develop --command release-plz release --git-token "$GITHUB_TOKEN"
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token || secrets.CARGO_REGISTRY_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
