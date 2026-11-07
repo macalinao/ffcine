@@ -78,12 +78,15 @@
 
           ffcine = pkgs.rustPlatform.buildRustPackage {
             pname = "ffcine";
-            version = "0.1.0";
+            version = (pkgs.lib.importTOML ./Cargo.toml).workspace.package.version;
             src = pkgs.lib.fileset.toSource {
               root = ./.;
               fileset = pkgs.lib.fileset.unions [
                 ./Cargo.toml
                 ./Cargo.lock
+                ./README.md
+                ./LICENSE
+                ./NOTICE
                 ./crates
               ];
             };
